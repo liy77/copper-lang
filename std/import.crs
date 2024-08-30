@@ -1,0 +1,11 @@
+import { Library, library_filename, Symbol } from libloading
+
+@copper_std("import")
+/// Dynamic import
+public unsafe <T> func T import(library: string) {
+    unsafe {
+        lib = Library::new(library_filename(library)).unwrap()
+
+        
+    }
+}

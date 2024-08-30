@@ -1,0 +1,57 @@
+$project
+    name: String
+    description: String?
+    version: String
+    rust_edition: Integer
+
+$dependencies
+    $[key]
+        version: String
+        features: Array<String>?
+        default_features: Array<String>?
+        branch: String?
+        git: String?
+        optional: Bool?
+        package: String?
+        path: String?
+        registry: String?
+        registry_index: String?
+        rev: String?
+        tag: String?
+
+    [key]: String
+
+$dev_dependencies
+    $[key]
+        version: String
+        features: Array<String>?
+        default_features: Array<String>?
+        branch: String?
+        git: String?
+        optional: Bool?
+        package: String?
+        path: String?
+        registry: String?
+        registry_index: String?
+        rev: String?
+        tag: String?
+
+    [key]: String
+
+$lib
+    bench: Bool?
+    crate_type: Array<String>?
+    doc: Bool?
+    doctest: Bool?
+    edition: String?
+    plugin: Bool?
+    harness: Bool?
+    name: String?
+    path: String?
+    plugin: Bool?
+    proc_macro: Bool?
+    required_features: Array<String>?
+    test: Bool?
+
+$features
+    [key]: Array<String>

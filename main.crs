@@ -1,0 +1,31 @@
+import test_alias from std
+import { io } from std
+
+func void hello() {
+    println!("Hello World!")
+}
+
+func void hello_with_name(name: string) {
+    println!("Hello {}",  name)
+}
+
+mut integer = 1
+integer++
+integer++
+integer--
+
+println!("{}", integer)
+hello()
+hello_with_name("Liy".to_string())
+
+func void alo_fito() {
+    println!("Alo ")
+}
+
+alo_fito()
+
+func void luis() {
+    println!("Hello Luis")
+}
+
+luis()
