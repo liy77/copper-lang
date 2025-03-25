@@ -38,7 +38,11 @@ pub enum TokenKind {
     CurrencySign,
     ModuleVar,
     ModulePath,
-    Regex
+    Regex,
+    Lifetime,
+    Type,
+    AngleStart,
+    AngleEnd,
 }
 
 impl ToString for TokenKind {
@@ -83,6 +87,10 @@ impl ToString for TokenKind {
             TokenKind::ModuleVar => "ModuleVar".to_string(),
             TokenKind::ModulePath => "ModulePath".to_string(),
             TokenKind::Regex => "Regex".to_string(),
+            TokenKind::Lifetime => "Lifetime".to_string(),
+            TokenKind::Type => "Type".to_string(),
+            TokenKind::AngleStart => "AngleStart".to_string(),
+            TokenKind::AngleEnd => "AngleEnd".to_string(),
         }
     }
 }

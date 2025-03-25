@@ -2,15 +2,18 @@ pub mod kson;
 pub mod properties;
 pub mod fetch;
 
-use std::fs;
+use std::{fs, process::Command};
 use colored::Colorize;
+use once_cell::sync::Lazy;
 
 use crate::{parser, tokenizer::tokenizer::Tokenizer};
 
 pub const VERSION: &str = "0.1.0";
+pub const COPPER_PATH: Lazy<String> = Lazy::new(|| std::env::var("COPPER_PATH").unwrap());
 
 pub fn get_copper_version() -> String {
-    let toml =  fs::read("./Cargo.toml").unwrap();
+    let path = std::path::Path::new(&(*COPPER_PATH)).join("Cargo.toml");
+    let toml = fs::read(path.to_str().unwrap()).unwrap();
     let toml = String::from_utf8(toml).unwrap();
 
     let version = toml.split("version = \"").collect::<Vec<&str>>()[1].split("\"").collect::<Vec<&str>>()[0];
@@ -19,6 +22,23 @@ pub fn get_copper_version() -> String {
 }
 
 pub fn print() {
+    println!("{}", *COPPER_PATH);
+    let cargo_output = Command::new("which") 
+        .arg("cargo")
+        .output()
+        .unwrap();
+
+    let cargo_path = String::from_utf8_lossy(&cargo_output.stdout);
+    println!("{}", cargo_path.trim());
+
+    let rustc_output = Command::new("which") 
+        .arg("rustc")
+        .output()
+        .unwrap();
+    
+    let rustc_path = String::from_utf8_lossy(&rustc_output.stdout);
+
+    println!("{}", rustc_path.trim());
     println!("🔥 Using CForge v{}", VERSION);
     println!("⛏️  Using Copper v{}", get_copper_version());
 }
@@ -74,7 +94,7 @@ pub fn run() {
 
     if run.status.success() {
         let stdout = String::from_utf8_lossy(&run.stdout);
-        println!("🦦 Running {} v{}:\n\n{}", get_toml_package_name(), get_toml_package_version(), stdout);
+        println!("▶️ Running {} v{}:\n\n{}", get_toml_package_name(), get_toml_package_version(), stdout);
     } else {
         let stderr = String::from_utf8_lossy(&run.stderr);
         println!("🚨 Error running compiled main file:\n\n{}", stderr);

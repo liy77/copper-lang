@@ -14,6 +14,9 @@ integer++
 integer++
 integer--
 
+constantvalue = 4
+
+println!("{}", constantvalue)
 println!("{}", integer)
 hello()
 hello_with_name("Liy".to_string())
@@ -24,8 +27,8 @@ func void alo_fito() {
 
 alo_fito()
 
-func void luis() {
-    println!("Hello Luis")
+func void copper() {
+    println!("Hello Copper")
 }
 
-luis()
+copper()

@@ -1,10 +1,36 @@
-use std::error::Error;
+use std::{error::Error, process::Command};
 use colored::Colorize;
 use serde_json::Value;
 
 const CRATES_IO_URL: &str = "https://crates.io";
 
+fn is_local_network_connected() -> bool {
+    let mut output = Command::new("ping");
+        
+        if cfg!(target_os = "windows") {
+            output.arg("-n").arg("1");
+        } else {
+            output.arg("-c").arg("1");
+        }
+
+        output.arg("8.8.8.8");
+        
+    let output = output.output();
+
+    match output {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}
+
+// Check if a version exists in the registry and if is yanked
 pub async fn check_version_exists(crate_name: &str, mut version: &str, registry: Option<&str>) -> Result<(bool, String), Box<dyn Error>> {
+    if !is_local_network_connected() {
+        println!("🛜 Could not connect to the internet. Skipping version check.");
+        return Ok((false, version.to_string()));
+    }
+
+
     let url = format!("{}/api/v1/crates/{}/versions", registry.unwrap_or(CRATES_IO_URL), crate_name);
     let client = reqwest::Client::new();
     let response = client.get(&url)

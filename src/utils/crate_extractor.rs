@@ -5,24 +5,22 @@ use crate::class;
 /// A package extracted from a Cargo.lock file.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct Package {
-    name: String,
-    version: String,
-    source: Option<String>,
-    manifest_path: PathBuf,
+    pub name: String,
+    pub version: String,
+    pub source: Option<String>,
+    pub manifest_path: PathBuf,
 }
 
 /// Metadata extracted from a Cargo.lock file.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub(crate) struct Metadata {
-    packages: Vec<Package>,
+    pub packages: Vec<Package>,
 }
-
-
 
 class!(
     self {
         #[derive(Debug)]
-        class Extractor {
+        pub(crate) class Extractor {
             public {
                 #[doc = "The metadata extracted from the Cargo.lock file."]
                 metadata: Metadata
@@ -59,7 +57,7 @@ class!(
 
                 :companion {
                     #[doc = "Creates a new instance of the Extractor class."]
-                    create(): Self {
+                    new(): Self {
                         Self {
                             metadata: Metadata {
                                 packages: vec![],
@@ -78,7 +76,7 @@ mod tests {
 
     #[test]
     fn test_fetch_metadata() {
-        let mut extractor = Extractor::create();
+        let mut extractor = Extractor::new();
         let metadata = extractor.fetch_metadata();
 
         println!("{:?}", metadata);

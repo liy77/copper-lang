@@ -266,6 +266,18 @@ impl Tokenizer {
             kind = TokenKind::CurrencySign;
         }
 
+        if self.current_char() == '<' || self.current_char() == '>' {
+            value.push(self.current_char());
+            self.next_char();
+            consumed += 1;
+
+            kind = match value.as_str() {
+                "<" => TokenKind::AngleStart,
+                ">" => TokenKind::AngleEnd,
+                _ => TokenKind::Symbol
+            };
+        }
+
         if self.current_char() == '(' || self.current_char() == ')' {
             value.push(self.current_char());
             self.next_char();
@@ -453,7 +465,20 @@ impl Tokenizer {
         let mut value = String::new();
         let mut kind = TokenKind::Unknown;
 
-        if self.current_char().is_alphabetic() || self.current_char() == '_' {
+        if self.current_char() == '\'' {
+            value.push(self.current_char());
+            self.next_char();
+            consumed += 1;
+
+            // Continuar capturando o nome do lifetime
+            while self.current_char().is_alphanumeric() || self.current_char() == '_' {
+                value.push(self.current_char());
+                self.next_char();
+                consumed += 1;
+            }
+
+            kind = TokenKind::Lifetime;
+        } else if self.current_char().is_alphabetic() || self.current_char() == '_' {
             while self.current_char().is_alphanumeric() || self.current_char() == '_' {
                 value.push(self.current_char());
                 self.next_char();

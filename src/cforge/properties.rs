@@ -1,7 +1,8 @@
+use once_cell::sync::Lazy;
 use serde_json::Value;
 use colored::Colorize;
 
-use crate::cforge::fetch::check_version_exists;
+use crate::{cargo, cforge::fetch::check_version_exists};
 
 #[derive(Clone)]
 pub enum PropertyKind {
@@ -55,6 +56,11 @@ pub struct Properties<'a> {
     dependencies: Vec<Dependency>,
 }
 
+const METADATA: Lazy<cargo::Metadata> = Lazy::new(|| {
+    let mut extractor = cargo::Extractor::new();
+    extractor.fetch_metadata()
+});
+
 // Map dependencies from properties.kson to Cargo.toml
 async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepMode) {
     let deps = deps.as_object().unwrap();
@@ -88,11 +94,25 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
 
             let (valid, v) = check_version_exists(&name, &version, None).await.unwrap();
             if !valid {
-                println!("❌ {} {} {}", name.green(), "=>".yellow(), version.black());
-                continue;
+                let packages = &METADATA.packages;
+                let version_found = packages.iter().find(|p| {
+                    if &version == "\"*\"" {
+                        return &p.name == name;
+                    }
+
+                    &p.name == name && p.version == version.replacen("\"", "", 2)
+                });
+
+                if version_found.is_none() {
+                    println!("❌ {} {} {}", name.green(), "=>".yellow(), version.black());
+                    continue;
+                } else {
+                    version = version_found.unwrap().version.replacen("\"", "", 2);
+                }
+            } else {
+                version = v; // Replace * or latest with the actual version
             }
             
-            version = v; // Replace * or latest with the actual version
 
             props.dependencies.push(Dependency {
                 name: name.to_string(),
@@ -110,11 +130,24 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
             let (valid, v) = check_version_exists(&name, &version, None).await.unwrap();
 
             if !valid {
-                println!("❌ {} {} {}", name.green(), "->".yellow(), version.black());
-                continue;
-            }
+                let packages = &METADATA.packages;
+                let version_found = packages.iter().find(|p| {
+                    if &version == "\"*\"" {
+                        return &p.name == name;
+                    }
 
-            version = v; // Replace * or latest with the actual version
+                    &p.name == name && p.version == version.replacen("\"", "", 2)
+                });
+
+                if version_found.is_none() {
+                    println!("❌ {} {} {}", name.green(), "=>".yellow(), version.black());
+                    continue;
+                } else {
+                    version = version_found.unwrap().version.replacen("\"", "", 2);
+                }
+            } else {
+                version = v; // Replace * or latest with the actual version
+            }
 
             props.dependencies.push(Dependency {
                 name: name.to_string(),
@@ -124,7 +157,7 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
             });
         }
 
-        println!("✅ {} {} {}", name.green(), "->".yellow(), version.black());
+        println!("✅ {} {} {}", name.green(), "=>".yellow(), version.black());
     }
 }
 

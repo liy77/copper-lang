@@ -2,6 +2,8 @@
 name = "copper-lang"
 version = "0.0.1-pre-alpha"
 edition = "2021"
+build = "build.rs"
+authors = ["Liy", "Copper Authors"]
 
 [dependencies]
 colored = "2.1.0"

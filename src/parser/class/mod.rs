@@ -18,14 +18,47 @@ pub struct ParsedClass {
 
 impl ToString for ParsedClass {
     fn to_string(&self) -> String {
-        let builded = "struct ".to_string() + &self.name + " {\n";
+        let mut builded = format!("struct {} {{\n", self.name);
         
-        let fields = self.fields.iter().map(|field| {
-            let visibility = if field.is_private { "" } else { "pub" };
-            format!("    {} {}: {},\n", visibility, field.name, field.field_type)
-        }).collect::<String>();
+        // Adicionar campos
+        for field in &self.fields {
+            let visibility = if field.is_private { "" } else { "pub " };
+            builded.push_str(&format!("    {}{}: {},\n", visibility, field.name, field.field_type));
+        }
+        builded.push_str("}\n\n");
 
-        "".to_string()
+        // Implementação dos métodos
+        builded.push_str(&format!("impl {} {{\n", self.name));
+        for method in &self.methods {
+            let visibility = if method.is_private { "" } else { "pub " };
+            let generics = if !method.generics.is_empty() {
+                let generics_str = method.generics.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(", ");
+                format!("<{}>", generics_str)
+            } else {
+                "".to_string()
+            };
+            let args = method.args.iter()
+                .map(|(name, ty)| format!("{}: {}", name, ty))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let return_type = if method.return_type != "()" {
+                format!(" -> {}", method.return_type)
+            } else {
+                "".to_string()
+            };
+            let body = if method.body.is_empty() {
+                ";".to_string()
+            } else {
+                format!(" {{\n        {}\n    }}", method.body)
+            };
+            builded.push_str(&format!(
+                "    {}fn {}{}({}){}{}\n",
+                visibility, method.name, generics, args, return_type, body
+            ));
+        }
+        builded.push_str("}\n");
+
+        builded
     }
 }
 
@@ -59,7 +92,6 @@ pub fn parse_class(class: &str) -> ParsedClass {
 
     // Split class definition into lines for easier parsing
     for line in class.lines() {
-        println!("Processing line: {}", line); // Debugging line
         if let Some(cap) = field_re.captures(line) {
             let is_public = cap.get(1).is_some();
             parsed_class.fields.push(Field {
@@ -67,9 +99,6 @@ pub fn parse_class(class: &str) -> ParsedClass {
                 field_type: cap[3].trim().to_string(),
                 is_private: !is_public,
             });
-            println!("Captured field: {:?}", parsed_class.fields.last()); // Debugging captured field
-        } else {
-            println!("No match for field regex in line: {}", line); // Debugging non-matching lines
         }
     }
 
@@ -87,7 +116,7 @@ pub fn parse_class(class: &str) -> ParsedClass {
         let is_const = cap.name("const").is_some();
         let is_public = cap.name("pub").is_some();
 
-        // Parse genéricos do tipo de retorno (se existirem)
+        // Parse generics of return type if exists
         let mut return_type_generics = Vec::new();
         if !return_type_generics_str.is_empty() {
             for generic in return_type_generics_str.split(',') {
@@ -100,7 +129,7 @@ pub fn parse_class(class: &str) -> ParsedClass {
             }
         }
 
-        // Parse argumentos
+        // Parse arguments
         let mut args = Vec::new();
         for arg in args_str.split(',') {
             let arg = arg.trim();
@@ -112,7 +141,7 @@ pub fn parse_class(class: &str) -> ParsedClass {
             }
         }
 
-        // Verifica se o método é apenas uma assinatura (sem implementação)
+        // Check if the method is abstract
         let is_empty_method = body == ";";
 
         parsed_class.methods.push(Method {
@@ -127,4 +156,31 @@ pub fn parse_class(class: &str) -> ParsedClass {
     }
 
     parsed_class
+}
+
+#[cfg(test)]
+#[test]
+fn test() {
+    let class = r#"
+class Test<T, 'a> {
+    pub field1: i32;
+    field2: String;
+    priv field3: Vec<T>;
+
+    pub Self new() {
+        Self {
+            field1: 0,
+            field2: String::new(),
+            field3: Vec::new(),
+        }
+    }
+
+    pub &Vec<T> get_field3(&self) {
+        &self.field3
+    }
+}
+    "#;
+
+    let parsed_class = parse_class(class);
+    println!("{:#?}", parsed_class.to_string());
 }

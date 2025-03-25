@@ -1,3 +1,5 @@
+use std::vec;
+
 use crate::tokenizer::{kind::TokenKind, tokens::Token};
 
 pub mod result;
@@ -37,6 +39,8 @@ pub struct Parser {
     seen_import: bool,
     current_import_vars: Vec<String>,
     is_import_list: bool,
+    is_inside_class: bool,
+    current_class: Option<String>,
 }
 
 impl Parser {
@@ -50,6 +54,8 @@ impl Parser {
             seen_import: false,
             current_import_vars: vec![],
             is_import_list: false,
+            is_inside_class: false,
+            current_class: None,
         }
     }
 
@@ -153,12 +159,20 @@ impl Parser {
 
     pub fn parse_var(&mut self) -> Consumed {
         let mut consumed = 0;
-        if self.peek_value() == Some("=".to_string()) {
-            let next = self.select(self.current + 2).unwrap();
-            
-            if next.value != "=" {
+
+        if self.kind() == TokenKind::Identifier && self.peek_value() == Some("=".to_string()) {
+            let var_value = self.select(self.current + 2);
+
+            if var_value.is_none() {
+                // Empty variable
+                return Consumed::consume(0);
+            }
+
+            let var_value = var_value.unwrap().value.clone();
+
+            if var_value != "=" {
                 consumed += 2;
-                self.append(&format!("let {}", self.value()), AppendMode::AppendWithSpace);
+                self.append(&format!("let {} = ", self.value()), AppendMode::AppendWithSpace);
             }
 
             return Consumed::Consumed(consumed);
@@ -183,6 +197,51 @@ impl Parser {
 
         Consumed::consume(0)        
     }
+
+    pub fn parse_class_definition(&mut self) -> Consumed {
+        let mut consumed = 0;
+
+        if self.value() == "class" && self.kind() == TokenKind::Keyword {
+            // Iniciar coleta de tokens da classe
+            let mut class_tokens = Vec::new();
+            consumed += 1; // Consumir a palavra-chave "class"
+            self.next();
+
+            // Coletar tokens até o fechamento da classe
+            let mut brace_count = 1; // Já encontramos o primeiro '{'
+            while !self.eof && brace_count > 0 {
+                if let Some(token) = self.current() {
+                    if token.kind == TokenKind::BraceStart {
+                        brace_count += 1;
+                    } else if token.kind == TokenKind::BraceEnd {
+                        brace_count -= 1;
+                    }
+                    class_tokens.push(token.value.clone());
+                    consumed += 1;
+                    self.next();
+                } else {
+                    break;
+                }
+            }
+
+            // Converter tokens para uma string de definição de classe
+            let class_str = class_tokens[0..class_tokens.len() - 1].join(" ");
+
+            // Analisar a classe utilizando o `parse_class`
+            let class_str = "class ".to_owned() + &class_str;
+            println!("Class definition: {}", class_str);
+            let parsed_class = class::parse_class(&class_str);
+
+            // Incorporar o resultado ao `result`
+            self.result.append(&parsed_class.to_string(), true);
+
+            self.is_inside_class = false;
+            return Consumed::Consumed(consumed);
+        }
+
+        Consumed::consume(consumed)
+    }
+
 
     pub fn parse_function_params(&mut self) -> Consumed {
         let mut consumed = 0;
@@ -214,7 +273,7 @@ impl Parser {
         }
 
         if self.value() == "}" && self.kind() == TokenKind::BraceEnd {
-            if !self.seen_import {
+            if !self.seen_import && !self.is_inside_class {
                 self.append(&self.value(), AppendMode::Append);
                 self.append("\n", AppendMode::AppendWithSpace);
                 self.result.is_inside_function = false;
@@ -323,6 +382,15 @@ impl Parser {
 
         Consumed::consume(consumed)
     }
+
+    pub fn parse_class(&mut self) -> Consumed {
+        if self.value() == "class" {
+            self.is_inside_class = true;
+            return self.parse_class_definition()
+        }
+
+        Consumed::consume(0)
+    }
     
     pub fn parse(&mut self) -> String {
         loop {
@@ -340,6 +408,7 @@ impl Parser {
                     TokenKind::Keyword => {
                         self.parse_mut()
                             .or(|| self.parse_var())
+                            .or(|| self.parse_class())
                             .or(|| self.parse_function())
                             .or(|| self.parse_any())
                             .consume_var(&mut self.current);

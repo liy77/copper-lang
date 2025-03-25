@@ -6,6 +6,7 @@ pub struct Result {
     pub main_function_code: String,
     pub(crate) return_type: String,
     pub(crate) is_function: bool,
+    pub(crate) is_class: bool,
     pub(crate) is_inside_function: bool,
 }
 
@@ -16,6 +17,7 @@ impl Result {
             main_function_code: String::new(),
             return_type: String::new(),
             is_function: false,
+            is_class: false,
             is_inside_function: false,
         }
     }
@@ -55,6 +57,16 @@ impl Result {
     pub fn enter_function(&mut self) {
         self.is_function = true;
         self.append(&"fn ".to_owned(), false);
+    }
+
+    pub fn enter_class(&mut self, name: &str) {
+        self.is_class = true;
+        self.append(&("struct ".to_owned() + name + " {"), false);
+    }
+
+    pub fn exit_class(&mut self) {
+        self.is_class = false;
+        self.append(&"}".to_owned(), false);
     }
 
     pub fn exit_function(&mut self) {
