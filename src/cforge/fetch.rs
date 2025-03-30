@@ -50,7 +50,7 @@ pub async fn check_version_exists(crate_name: &str, mut version: &str, registry:
                     let version = latest.unwrap().to_string();
 
                     if is_deprecated {
-                        println!("💀 Yanked dependency: {} {} {}", crate_name.red(), "->".yellow(), version.black());
+                        println!("💀 Yanked dependency: {} {} {}", crate_name.red(), "=>".yellow(), version.black());
                     }
 
                     return Ok((true, version));
@@ -64,7 +64,7 @@ pub async fn check_version_exists(crate_name: &str, mut version: &str, registry:
                     let is_deprecated = v["yanked"].as_bool().unwrap_or(false);
 
                     if is_deprecated {
-                        println!("💀 Yanked dependency: {} {} {}", crate_name.red(), "->".yellow(), v_num.black());
+                        println!("💀 Yanked dependency: {} {} {}", crate_name.red(), "=>".yellow(), v_num.black());
                     }
 
                     return Ok((true, v_num.to_string()));
