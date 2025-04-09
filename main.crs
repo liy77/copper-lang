@@ -32,3 +32,26 @@ func void copper() {
 }
 
 copper()
+
+class Person {
+    name: String
+    name2: String
+    inttest: i32
+
+    Person(name: String, name2: String) {
+        self.name = name
+        self.name2 = "Carlos".to_string()
+        self.inttest = 32
+    }
+
+    void test(self) { 
+        println!("{} {}", self.name, self.name2); 
+    }
+
+    String concat_names(self) {
+        return self.name.to_string() + &self.name2
+    }
+}
+
+Person::new("Brian".to_string(), "Curis".to_string()).test()
+
