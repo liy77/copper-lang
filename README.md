@@ -25,7 +25,7 @@ cforge -i ./src
 | `-od`       | `--outdir`    | Specifies the output directory.                  | `cforge -od /path/to/directory`|
 | `-t`        | `--target`    | Specifies the operation system of target         | `cforge -t windows`            |
 | `-c`        | `--compile`   | Indicates that the program should be compiled    | `cforge -c -i main.crs`        |
-| `           | `--clean`     | Cleans the output directory                      | `cforge clean`                 |
+|             | `--clean`     | Cleans the output directory                      | `cforge clean`                 |
 
 
 # Running
