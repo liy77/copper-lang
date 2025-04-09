@@ -2,7 +2,3 @@ name = "Teste"
 version = "1.0.0"
 edition = 2021
 
-$dependencies
-    tokio = "*"
-    regex = "1.10.5"
-    syn = "2.0.19"
