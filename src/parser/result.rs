@@ -106,6 +106,10 @@ impl Result {
         let output = process.wait_with_output()?;
         let formatted = String::from_utf8(output.stdout)?;
 
+        if formatted.is_empty() {
+            return Ok(self.value.clone());
+        }
+
         Ok(formatted)
     }
 }
