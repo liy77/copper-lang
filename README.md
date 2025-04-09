@@ -1,33 +1,31 @@
-<html>
-    <img src="./assets/copper-foundation.png"/>
-</html>
+<img src="./assets/copperlang.png"/>
 
-# Stop using directly rust, use copper instead.
-
-<img src="./assets/no-rust-use-copper-instead.png" width="60%">
+# Example Usage
 
 ```crs
 import * from std.io
 
-func void main() {
-    name = input!("What's your name?")
-
-    println!("Your name is $name")
-}
+name = input!("What's your name?")
+println!("Your name is $name")
 ```
 
-# Compiling
+<p align="center">
+    <img src="./assets/cforge.png" width=300 height=300 />
+</p>
+
+# Compiling your project
 ```sh
-cforge -o ./hello.exe
+cforge -i ./src
 ```
 
 ### Flags
 | Flag        | Full Name     | Description                                      | Example Usage                  |
 |-------------|---------------|--------------------------------------------------|--------------------------------|
-| `-o`        | `--out`       | Specifies the output file.                       | `cforge -o result.exe`         |
-| `-d`        | `--outdir`    | Specifies the output directory.                  | `cforge -d /path/to/directory` |
+| `-i`        | `--input`     | Specifies the output file.                       | `cforge -o result.exe`         |
+| `-od`       | `--outdir`    | Specifies the output directory.                  | `cforge -od /path/to/directory`|
 | `-t`        | `--target`    | Specifies the operation system of target         | `cforge -t windows`            |
-| `-c`        | `--config`    | Specifies the configuration file used to compile | `cforge -c ./src/config.kson`  |
+| `-c`        | `--compile`   | Indicates that the program should be compiled    | `cforge -c -i main.crs`        |
+| `           | `--clean`     | Cleans the output directory                      | `cforge clean`                 |
 
 
 # Running
