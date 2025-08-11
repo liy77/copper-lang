@@ -34,27 +34,23 @@ cforge run ./src/main.crs
 ```
 
 ## Some Features
-### Native JSON and KSON Support
-```crs
-let json = json_{
-    "some_key": "some value"
+### Classes
+```
+class Person {
+    name: String
+    name2: String
+    inttest: i32
+
+    Person(name: String, name2: String) {
+        self.name = name
+        self.name2 = "Carlos".to_string()
+        self.inttest = 32
+    }
+
+    void test(self) { 
+        println!("{} {}", self.name, self.name2); 
+    }
 }
 
-let kmodel = kmodel_`
-    some_key: String
-`
-
-let kson = kson_`
-    some_key = "some value"
-`.use_model(kmodel)
-
-println!("$json") // Prints json
-println!("$kson") // Prints kson
-println!("{}", kson.json()) // Prints json
-
-let kmodel2 = kson_`
-    some_key: Integer
-`
-
-kson.use_model(kmodel2) // Throws error, invalid property type for "some_key"
+Person::new(strfy("Brian"), strfy("Rhudy")).test()
 ```
