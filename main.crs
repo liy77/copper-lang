@@ -55,3 +55,21 @@ class Person {
 
 Person::new("Brian".to_string(), "Curis".to_string()).test()
 
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+impl Point {
+    func Point new(x: f64, y: f64) {
+        return Point {
+            x,
+            y
+        }
+    }
+    func f64 getX(self) {
+        return self.x
+    }
+}
+
+Point::new(2.0, 1.0)

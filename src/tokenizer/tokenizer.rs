@@ -82,6 +82,9 @@ pub(self) const COPPER_KEYWORDS: &[&'static str] = &[
 
     // Class Keywords
     "class", "extends",
+
+    // Struct and Impl Keywords
+    "struct", "impl", "trait", "for",
 ];
 
 pub(crate) struct Tokenizer {
@@ -487,8 +490,6 @@ impl Tokenizer {
 
             if BOOL.contains(&value.as_str()) {
                 kind = TokenKind::Keyword;
-            } else if RUST_KEYWORDS.contains(&value.as_str()) {
-                kind = TokenKind::Keyword;
             } else if COPPER_KEYWORDS.contains(&value.as_str()) {
                 match value.as_str() {
                     "import" => {
@@ -509,10 +510,24 @@ impl Tokenizer {
                         self.seen_for = true;
                         kind = TokenKind::For;
                     },
+                    "struct" => {
+                        kind = TokenKind::Struct;
+                    },
+                    "impl" => {
+                        kind = TokenKind::Impl;
+                    },
+                    "trait" => {
+                        kind = TokenKind::Trait;
+                    },
+                    "func" => {
+                        kind = TokenKind::Keyword;
+                    },
                     _ => {
                         kind = TokenKind::Keyword;
                     }
                 }
+            } else if RUST_KEYWORDS.contains(&value.as_str()) {
+                kind = TokenKind::Keyword;
             } else if self.import_specifier_list {
                 kind = TokenKind::ModuleVar;
             } else if self.seen_import {

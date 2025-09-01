@@ -10,16 +10,11 @@ use clap::{Arg, Command as ClapCommand};
 use utils::parsed_command::{ParsedCommand, ParsedCommands};
 pub use utils::*;
 
-fn is_command_available(command: &str) -> bool {
-    ProcessCommand::new(command)
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
 
-fn parse_commands() -> ParsedCommands {
-    let matches = ClapCommand::new("cforge")
+use once_cell::sync::Lazy;
+
+static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
+    ClapCommand::new("cforge")
         .arg(Arg::new("input")
             .short('i')
             .long("input")
@@ -53,7 +48,6 @@ fn parse_commands() -> ParsedCommands {
             .long("verbose")
             .action(clap::ArgAction::SetTrue)
             .help("Enable verbose output"))
-            
         .subcommand(ClapCommand::new("run")
             .about("Compile and run the project")
             .args([
@@ -67,7 +61,18 @@ fn parse_commands() -> ParsedCommands {
                     .help("Output directory for compiled files"),
             ])
         )
-        .get_matches();
+});
+
+fn is_command_available(command: &str) -> bool {
+    ProcessCommand::new(command)
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn parse_commands() -> ParsedCommands {
+    let matches = BASE_CMD.clone().get_matches();
     
     let mut parsed_args = ParsedCommands::new();
     
@@ -187,9 +192,15 @@ async fn main() {
         env::set_var("CFORGE_VERBOSE", "0");
     }
 
-    let files_cmd = commands.get_command("input").unwrap();
-    let files = files_cmd.args.clone();
+    let files_cmd = commands.get_command("input");
+    if files_cmd.is_none() {
+        println!("{}", BASE_CMD.clone().render_help());
+        return;
+    }
 
+    // Input exists, continue
+    let files_cmd = files_cmd.unwrap();
+    let files = files_cmd.args.clone();
     let input_dir = if files_cmd.is_dir {
         Some(files[0].clone())
     } else {

@@ -43,6 +43,9 @@ pub enum TokenKind {
     Type,
     AngleStart,
     AngleEnd,
+    Struct,
+    Impl,
+    Trait,
 }
 
 impl ToString for TokenKind {
@@ -91,6 +94,9 @@ impl ToString for TokenKind {
             TokenKind::Type => "Type".to_string(),
             TokenKind::AngleStart => "AngleStart".to_string(),
             TokenKind::AngleEnd => "AngleEnd".to_string(),
+            TokenKind::Struct => "Struct".to_string(),
+            TokenKind::Impl => "Impl".to_string(),
+            TokenKind::Trait => "Trait".to_string(),
         }
     }
 }

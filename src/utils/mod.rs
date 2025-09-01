@@ -1,7 +1,6 @@
 mod null;
 mod consumed;
 mod crate_extractor;
-mod class;
 pub(crate) mod parsed_command;
 
 pub mod cargo {
