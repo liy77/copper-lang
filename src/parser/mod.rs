@@ -42,12 +42,15 @@ pub struct Parser {
     is_inside_impl: bool,
     current_struct: Option<String>,
     current_impl_target: Option<String>,
+    uses_data_types: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
         Self {
-            tokens: tokens.into_iter().filter(|t| t.kind != TokenKind::Whitespace).collect(),
+            tokens: tokens.into_iter()
+                .filter(|t| t.kind != TokenKind::Whitespace && t.kind != TokenKind::Comment)
+                .collect(),
             current: 0,
             result: Result::new(),
             eof: false,
@@ -61,6 +64,7 @@ impl Parser {
             is_inside_impl: false,
             current_struct: None,
             current_impl_target: None,
+            uses_data_types: false,
         }
     }
 
@@ -142,8 +146,54 @@ impl Parser {
         Consumed::consume(consumed)
     }
 
+    pub fn parse_type_declaration(&mut self) -> Consumed {
+        let mut consumed = 0;
+        if self.kind() == TokenKind::Identifier && self.peek_value() == Some(":".to_string()) {
+            if let Some(type_token) = self.select(self.current + 2) {
+                // Verifica se é uma declaração de tipo (identifier : type)
+                if type_token.kind == TokenKind::Json || type_token.kind == TokenKind::Xml || 
+                   type_token.kind == TokenKind::Toml || type_token.kind == TokenKind::Identifier ||
+                   type_token.kind == TokenKind::ParamType || type_token.kind == TokenKind::Keyword {
+                    
+                    let var_name = self.value();
+                    let type_name = convert_type(&type_token.value);
+                    let token_kind = type_token.kind;
+                    
+                    // Marcar que usamos tipos de dados se for um dos novos tipos
+                    let is_data_type = matches!(token_kind, TokenKind::Json | TokenKind::Xml | TokenKind::Toml);
+                    
+                    self.append(&format!("let {}: {};", var_name, type_name), AppendMode::AppendWithSpace);
+                    consumed += 3; // identifier + : + type
+                    
+                    if is_data_type {
+                        self.uses_data_types = true;
+                        match token_kind {
+                            TokenKind::Json => self.result.mark_json_usage(),
+                            TokenKind::Xml => self.result.mark_xml_usage(),
+                            TokenKind::Toml => self.result.mark_toml_usage(),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        Consumed::consume(consumed)
+    }
+
     pub fn parse_any(&mut self) -> Consumed {
-        self.append(&self.value(), AppendMode::Append);
+        let token_value = self.value();
+        
+        // Skip invalid tokens or tokens that shouldn't be in output
+        if token_value.is_empty() || 
+           token_value.contains("Como parâmetros de função") ||
+           token_value.contains("rocessaJSON") ||
+           token_value.starts_with("//") ||
+           self.kind() == TokenKind::Comment ||
+           self.kind() == TokenKind::Unknown {
+            return Consumed::consume(1);
+        }
+        
+        self.append(&token_value, AppendMode::Append);
         Consumed::consume(1)
     }
 
@@ -151,6 +201,16 @@ impl Parser {
         if self.value() == "func" {
             self.function_start = true;
             self.result.enter_function();
+            // Marcar que usamos sintaxe Copper
+            self.result.is_copper_function = true;
+            return Consumed::consume(1);
+        } else if self.value() == "fn" {
+            // Para sintaxe Rust pura, apenas marca como função mas não adiciona "fn"
+            // porque já está presente
+            self.function_start = true;
+            self.result.is_function = true;
+            self.result.is_copper_function = false;
+            self.append(&self.value(), AppendMode::AppendWithSpace);
             return Consumed::consume(1);
         }
         Consumed::consume(0)
@@ -164,7 +224,12 @@ impl Parser {
         }
         if self.value() == ")" && self.kind() == TokenKind::ParametersEnd {
             if self.result.is_function {
-                self.append(&format!(") -> {}", self.result.return_type), AppendMode::Append);
+                self.append(&self.value(), AppendMode::Append);
+                // Só adiciona tipo de retorno para sintaxe Copper
+                if self.result.is_copper_function {
+                    let return_type = if self.result.return_type.is_empty() { "()" } else { &self.result.return_type };
+                    self.append(&format!(" -> {}", return_type), AppendMode::Append);
+                }
                 self.result.exit_function();
                 self.result.is_inside_function = true;
             } else {
@@ -263,7 +328,7 @@ impl Parser {
             let value = self.value();
             let var = "__regex__";
             let resolved_regex = value.trim_start_matches('/').trim_end_matches('/');
-            self.append(&format!("{}::Regex::new({})", var, &format!("r\"{}\"", resolved_regex)), AppendMode::Append);
+            self.append(&format!("{}::Regex::new(r\"{}\").unwrap()", var, resolved_regex), AppendMode::Append);
             consumed += 1;
         }
         Consumed::consume(consumed)
@@ -632,14 +697,33 @@ impl Parser {
                                 current_field = tok.value.clone();
                                 in_field_name = false;
                             } else {
-                                current_field.push_str(&format!(": {}", convert_type(&tok.value)));
+                                // Este é um tipo
+                                current_field.push_str(&convert_type(&tok.value));
                             }
                         },
                         TokenKind::Colon => {
-                            // The next token is the type
+                            current_field.push_str(": ");
                         },
-                        TokenKind::ParamType | TokenKind::Type => {
-                            current_field.push_str(&format!(": {}", convert_type(&tok.value)));
+                        TokenKind::ParamType | TokenKind::Type | TokenKind::Json | TokenKind::Xml | TokenKind::Toml => {
+                            let converted_type = convert_type(&tok.value);
+                            current_field.push_str(&converted_type);
+                            
+                            // Marcar tipos de dados se usados em structs
+                            match tok.kind {
+                                TokenKind::Json => {
+                                    self.uses_data_types = true;
+                                    self.result.mark_json_usage();
+                                },
+                                TokenKind::Xml => {
+                                    self.uses_data_types = true;
+                                    self.result.mark_xml_usage();
+                                },
+                                TokenKind::Toml => {
+                                    self.uses_data_types = true;
+                                    self.result.mark_toml_usage();
+                                },
+                                _ => {}
+                            }
                         },
                         TokenKind::Comma => {
                             if !current_field.trim().is_empty() {
@@ -1093,10 +1177,17 @@ impl Parser {
         }
     }
 
-    // Função principal de análise
+    pub fn get_required_dependencies(&self) -> Vec<String> {
+        self.result.get_required_dependencies()
+    }
+
     pub fn parse(&mut self) -> String {
         loop {
             if self.eof {
+                // Só adiciona aliases se realmente usar tipos de dados
+                if self.uses_data_types {
+                    self.result.add_data_type_aliases();
+                }
                 self.result.write_main_function();
                 break self.result.get().expect("Format Error");
             }
@@ -1109,6 +1200,7 @@ impl Parser {
                     TokenKind::Identifier | TokenKind::Keyword => {
                         self.parse_mut()
                             .or(|| self.parse_var())
+                            .or(|| self.parse_type_declaration())
                             .or(|| self.parse_class_definition())
                             .or(|| self.parse_struct_definition())
                             .or(|| self.parse_impl_block())
@@ -1121,6 +1213,20 @@ impl Parser {
                             .consume_var(&mut self.current);
                     },
                     TokenKind::ParamType => {
+                        self.append(&convert_type(&self.value()), AppendMode::Append);
+                        self.next();
+                    },
+                    TokenKind::Json | TokenKind::Xml | TokenKind::Toml => {
+                        self.uses_data_types = true;
+                        
+                        // Marcar qual tipo específico está sendo usado
+                        match self.kind() {
+                            TokenKind::Json => self.result.mark_json_usage(),
+                            TokenKind::Xml => self.result.mark_xml_usage(),
+                            TokenKind::Toml => self.result.mark_toml_usage(),
+                            _ => {}
+                        }
+                        
                         self.append(&convert_type(&self.value()), AppendMode::Append);
                         self.next();
                     },

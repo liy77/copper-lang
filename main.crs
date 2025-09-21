@@ -22,7 +22,7 @@ hello()
 hello_with_name("Liy".to_string())
 
 func void alo_fito() {
-    println!("Alo ")
+    println!("Alo Test")
 }
 
 alo_fito()
@@ -73,3 +73,13 @@ impl Point {
 }
 
 Point::new(2.0, 1.0)
+
+struct Container {
+    json_data: json,
+    xml_content: xml,
+    toml_config: toml
+}
+
+func void process(input: json) {
+    // processa JSON
+}

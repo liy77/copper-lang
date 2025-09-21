@@ -8,6 +8,10 @@ pub struct Result {
     pub(crate) is_function: bool,
     pub(crate) is_class: bool,
     pub(crate) is_inside_function: bool,
+    pub(crate) is_copper_function: bool,
+    pub(crate) uses_json: bool,
+    pub(crate) uses_xml: bool,
+    pub(crate) uses_toml: bool,
 }
 
 impl Result {
@@ -19,6 +23,10 @@ impl Result {
             is_function: false,
             is_class: false,
             is_inside_function: false,
+            is_copper_function: false,
+            uses_json: false,
+            uses_xml: false,
+            uses_toml: false,
         }
     }
 
@@ -79,6 +87,58 @@ impl Result {
 
     pub fn add_required_import(&mut self, value: &str) {
         self.value = "use ".to_owned() + value + " as " + "__" + value + "__" + "; // Imported by CForge for implementations\n" + &self.value;
+    }
+
+    pub fn add_data_type_aliases(&mut self) {
+        let mut aliases = String::new();
+        let mut imports = String::new();
+
+        if self.uses_json {
+            imports.push_str("use serde_json;\n");
+            aliases.push_str("type JsonValue = serde_json::Value;\n");
+        }
+
+        if self.uses_xml {
+            aliases.push_str("type XmlValue = String; // For now, XML is represented as String\n");
+        }
+
+        if self.uses_toml {
+            imports.push_str("use toml;\n");
+            aliases.push_str("type TomlValue = toml::Value;\n");
+        }
+
+        if !aliases.is_empty() {
+            let full_aliases = format!("// Native data type aliases for Copper\n{}\n{}\n", imports, aliases);
+            self.value = full_aliases + &self.value;
+        }
+    }
+
+    pub fn mark_json_usage(&mut self) {
+        self.uses_json = true;
+    }
+
+    pub fn mark_xml_usage(&mut self) {
+        self.uses_xml = true;
+    }
+
+    pub fn mark_toml_usage(&mut self) {
+        self.uses_toml = true;
+    }
+
+    pub fn get_required_dependencies(&self) -> Vec<String> {
+        let mut deps = Vec::new();
+        
+        if self.uses_json {
+            deps.push("serde_json".to_string());
+        }
+        
+        if self.uses_toml {
+            deps.push("toml".to_string());
+        }
+        
+        // XML não precisa de dependência externa por enquanto (usa String)
+        
+        deps
     }
 
     pub fn has_required_import(&self, value: &str) -> bool {

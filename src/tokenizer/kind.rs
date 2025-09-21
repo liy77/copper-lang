@@ -46,6 +46,9 @@ pub enum TokenKind {
     Struct,
     Impl,
     Trait,
+    Json,
+    Xml,
+    Toml,
 }
 
 impl ToString for TokenKind {
@@ -97,6 +100,9 @@ impl ToString for TokenKind {
             TokenKind::Struct => "Struct".to_string(),
             TokenKind::Impl => "Impl".to_string(),
             TokenKind::Trait => "Trait".to_string(),
+            TokenKind::Json => "Json".to_string(),
+            TokenKind::Xml => "Xml".to_string(),
+            TokenKind::Toml => "Toml".to_string(),
         }
     }
 }

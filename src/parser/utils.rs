@@ -1,4 +1,4 @@
-const COPPER_TYPES : [(&str, &str); 15] = [
+const COPPER_TYPES : [(&str, &str); 18] = [
     ("int", "i64"),
     ("float", "f64"),
     ("uint", "u64"),
@@ -14,6 +14,9 @@ const COPPER_TYPES : [(&str, &str); 15] = [
     ("float64", "f64"),
     ("string", "String"),
     ("void", "()"),
+    ("json", "JsonValue"),
+    ("xml", "XmlValue"),
+    ("toml", "TomlValue"),
 ];
 
 pub fn convert_type(value: &str) -> String {

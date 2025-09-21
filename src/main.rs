@@ -176,7 +176,9 @@ async fn main() {
 
     env::set_var("CFORGE_VERSION", "0.1.0");
     env::set_var("COPPER_VERSION", "0.1.0-alpha.1");
-    env::set_var("COPPER_PATH", env::current_exe().unwrap().parent().unwrap().to_str().unwrap());
+    if env::var("COPPER_PATH").is_err() {
+        env::set_var("COPPER_PATH", env::current_exe().unwrap().parent().unwrap().to_str().unwrap());
+    }
     
     let commands = parse_commands();
 
@@ -234,8 +236,8 @@ async fn main() {
     }
 
     if commands.get_command("compile").unwrap().is_valid {
-        cforge::compile(files, input_dir, output_dir);
-        cforge::generate_toml().await;
+        let detected_dependencies = cforge::compile(files, input_dir, output_dir);
+        cforge::generate_toml(detected_dependencies).await;
         cforge::run();
     }
     

@@ -85,6 +85,9 @@ pub(self) const COPPER_KEYWORDS: &[&'static str] = &[
 
     // Struct and Impl Keywords
     "struct", "impl", "trait", "for",
+
+    // Data Format Types
+    "json", "xml", "toml",
 ];
 
 pub(crate) struct Tokenizer {
@@ -137,12 +140,12 @@ impl Tokenizer {
                 let consumed = self.identifier_token()
                     .or(|| self.number_token())
                     .or(|| self.string_token())
+                    .or(|| self.comment_token())
                     .or(|| self.regex_token())
                     .or(|| self.operator_token())
                     .or(|| self.symbol_token())
                     .or(|| self.whitespace_token())
-                    .or(|| self.line_break_token())
-                    .or(|| self.comment_token());
+                    .or(|| self.line_break_token());
 
                 if !consumed.is_consumed() {
                     self.next_char();
@@ -519,6 +522,15 @@ impl Tokenizer {
                     "trait" => {
                         kind = TokenKind::Trait;
                     },
+                    "json" => {
+                        kind = TokenKind::Json;
+                    },
+                    "xml" => {
+                        kind = TokenKind::Xml;
+                    },
+                    "toml" => {
+                        kind = TokenKind::Toml;
+                    },
                     "func" => {
                         kind = TokenKind::Keyword;
                     },
@@ -659,23 +671,42 @@ impl Tokenizer {
         let mut consumed = 0;
         let mut value = String::new();
         let kind = TokenKind::Regex;
-        let r = Regex::new(r"(/)([^/]+)(/)?").unwrap();
+        
+        // Só considera regex se começar com '/'
+        if self.current_char() != '/' {
+            return Consumed::consume(0);
+        }
+        
+        // Verifica se não é um comentário (//)
+        if self.peek() == '/' {
+            return Consumed::consume(0);
+        }
+        
+        // Processa apenas a partir da posição atual no chunk
+        let remaining_chunk = &self.chunk[self.chunk_column..];
+        
+        // Verifica novamente no chunk se é comentário
+        if remaining_chunk.starts_with("//") {
+            return Consumed::consume(0);
+        }
+        
+        let r = Regex::new(r"^(/)([^/]+)(/)?").unwrap(); // Adicionado ^ para início da string
 
-        for cap in r.captures_iter(&self.chunk) {
+        if let Some(cap) = r.captures(remaining_chunk) {
             let start = cap.get(1).unwrap().start();
-            let end = cap.get(3);
+            let end_cap = cap.get(3);
 
-            if end.is_none() {
+            if end_cap.is_none() {
                 self.error("Unterminated regex literal");
             }
 
-            let end = end.unwrap().end();
-
-            if self.source.get(self.index..).unwrap_or_default().starts_with(cap.get(0).unwrap().as_str()) {
-                value.push_str(&self.chunk.get(start..end).unwrap());
-                consumed = end - start;
-                self.drain(self.index + consumed);
-                break;
+            let end = end_cap.unwrap().end();
+            value.push_str(&remaining_chunk[start..end]);
+            consumed = end - start;
+            
+            // Avança o chunk_column em vez de drenar
+            for _ in 0..consumed {
+                self.next_char();
             }
         }
 
@@ -685,8 +716,8 @@ impl Tokenizer {
     }
 
     pub fn error(&self, message: &str) {
-        let (line, column, _) = self.get_line_and_column(self.chunk_offset);
-        eprintln!("Error: {}\nLine: {}:{}", message, line, column);
+        let (line, column, _) = self.get_line_and_column(self.chunk_column);
+        eprintln!("Error: {}\nLine: {}:{}", message, line + 1, column + 1); // +1 para linha/coluna 1-indexed
         exit(1);
     }
 

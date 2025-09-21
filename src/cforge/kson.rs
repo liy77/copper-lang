@@ -1,13 +1,21 @@
+use std::path::Path;
 use std::{env, fs};
 use std::process::{exit, Command};
 use serde_json::Value;
 
+use crate::cforge::COPPER_PATH;
+
 fn parse(text: &str) -> Value {
+    let exe_dir = env::current_exe().unwrap().parent().unwrap().to_path_buf();
+    let binding = COPPER_PATH;
+    let cop_path = Path::new(binding.as_str());
     let path = if cfg!(target_os = "windows") {
-        "./lson/win32/lson.exe"
+        exe_dir.join(cop_path.join(format!("lson{}win32{}lson.exe", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)))
     } else {
-        "./lson/linux/lson"
+        exe_dir.join(cop_path.join(format!("lson{}unix{}lson", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)))
     };
+
+    let path = path.as_os_str();
 
     let dir_binding = env::current_exe().unwrap();
     let current_dir = dir_binding.parent().unwrap();
@@ -38,6 +46,12 @@ fn parse(text: &str) -> Value {
 
         return parsed_json;
     } else {
+        let cmd = cmd;
+        if cmd.is_err() {
+            let err = cmd.err().unwrap();
+            println!("Failed to execute lson: {}", err);
+            exit(1);
+        }
         let cmd = cmd.unwrap();
         let stderr = String::from_utf8_lossy(&cmd.stderr);
         println!("Invalid configuration file: {}", stderr);
@@ -45,10 +59,31 @@ fn parse(text: &str) -> Value {
     }
 }
 
-pub fn read_properties(file: &str) -> Value {
-    let c = fs::read(file).unwrap();
-    let text = String::from_utf8(c).unwrap();
+/// Read properties from a KSON or TOML file.
+/// If both files exist, KSON takes precedence.
+/// 
+/// Returns (is_toml, Value)
+pub fn read_properties(file: &str) -> (bool, Value) {
+    let mut file = file.to_string();
+    let mut c = fs::read(&file);
+    if c.is_err() {
+        // No properties.kson file found, trying Cargo.toml
+        file = file.replace("properties.kson", "Cargo.toml");
+        c = fs::read(&file);
+        if c.is_err() {
+            println!("Error: Missing properties.kson or Cargo.toml. Please ensure the file exists and is readable.");
+            exit(1);
+        }
+    }
+
+    if file.ends_with("Cargo.toml") {
+        let text = String::from_utf8(c.unwrap()).unwrap();
+        let parsed: toml::Value = toml::from_str(&text).expect("Invalid Cargo.toml file");
+        return (true, serde_json::to_value(parsed).unwrap());
+    }
+
+    let text = String::from_utf8(c.unwrap()).unwrap();
 
     // text = "@kmodel(./src/models/cforge.kmodel)\n".to_string() + &text;
-    parse(&text)
+    (false, parse(&text))
 }

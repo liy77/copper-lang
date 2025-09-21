@@ -15,7 +15,7 @@ println!("Your name is $name")
 
 # Compiling your project
 ```sh
-cforge -i ./src
+cforge -c -i ./src
 ```
 
 ### Flags
