@@ -148,6 +148,9 @@ pub async fn generate_toml(extra_dependencies: Vec<String>) {
     let properties = kson::read_properties(std::env::current_dir().unwrap().join("properties.kson").to_str().unwrap());
     let toml: String;
 
+    println!("🔍 Debug: properties.0 (is_toml): {}", properties.0);
+    println!("🔍 Debug: properties.1 JSON: {}", serde_json::to_string_pretty(&properties.1).unwrap_or_else(|_| "Failed to serialize".to_string()));
+
     if properties.0 {
         println!("⚠️  Warning: Detected Cargo.toml file. CForge now uses properties.kson as the main configuration file. Please migrate your configuration to properties.kson. See https://copper-lang.org/docs/cforge/properties for more information.");
         let mut properties_obj = properties::Properties::from_toml(&properties.1).await;

@@ -47,6 +47,9 @@ pub struct Dependency {
     version: String,
     features: Vec<String>,
     kind: DepKind,
+    git: Option<String>,
+    branch: Option<String>,
+    tag: Option<String>,
 }
 
 pub struct Properties<'a> {
@@ -80,84 +83,99 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
         }
     };
 
-
-    let mut inside_dep_information = false;
     for (name, value) in deps {
-        if value.is_object() {
-            inside_dep_information = true;
-        }
+        println!("🔍 Debug: Processing dependency '{}' with value: {}", name, serde_json::to_string(value).unwrap());
+        
+        if value.is_string() {
+            // Simple version dependency
+            let version = value.as_str().unwrap().trim_matches('"').to_string();
+            
+            if !version.is_empty() && version != "*" && version != "latest" {
+                props.dependencies.push(Dependency {
+                    name: name.to_string(),
+                    version: version.clone(),
+                    features: Vec::new(),
+                    kind: kind.0,
+                    git: None,
+                    branch: None,
+                    tag: None,
+                });
+                println!("✅ {} {} {}", name.green(), "=>".yellow(), version.black());
+                continue;
+            }
 
-
-        let mut version = String::new();
-        if value.is_string() && !value.is_object() {
-            version = value.to_string();
-
-            let (valid, v) = check_version_exists(&name, &version, None).await.unwrap();
+            let (valid, v) = check_version_exists(&name, &version, None).await.unwrap_or((false, version.clone()));
             if !valid {
                 let packages = &METADATA.packages;
                 let version_found = packages.iter().find(|p| {
-                    if &version == "\"*\"" {
+                    if &version == "*" {
                         return &p.name == name;
                     }
-
-                    &p.name == name && p.version == version.replacen("\"", "", 2)
+                    &p.name == name && p.version == version
                 });
 
                 if version_found.is_none() {
-                    println!("❌ {} {} {}", name.green(), "=>".yellow(), version.black());
-                    continue;
+                    println!("⚠️  {} {} {} (using original version)", name.green(), "=>".yellow(), version.black());
                 } else {
-                    version = version_found.unwrap().version.replacen("\"", "", 2);
+                    let found_version = &version_found.unwrap().version;
+                    println!("✅ {} {} {}", name.green(), "=>".yellow(), found_version.black());
                 }
             } else {
-                version = v; // Replace * or latest with the actual version
+                println!("✅ {} {} {}", name.green(), "=>".yellow(), v.black());
             }
             
-
             props.dependencies.push(Dependency {
                 name: name.to_string(),
-                version: version.to_string(),
+                version: if valid { v } else { version },
                 features: Vec::new(),
                 kind: kind.0,
+                git: None,
+                branch: None,
+                tag: None,
             });
-        } else if !inside_dep_information {
-            let dep = value.as_object().unwrap();
-            let features_vec: Vec<Value> = vec![];
-            let features = dep["features"].as_array().unwrap_or(&features_vec);
             
-            version = dep["version"].as_str().expect("Version is required in properties.kson").to_string();
-
-            let (valid, v) = check_version_exists(&name, &version, None).await.unwrap();
-
-            if !valid {
-                let packages = &METADATA.packages;
-                let version_found = packages.iter().find(|p| {
-                    if &version == "\"*\"" {
-                        return &p.name == name;
-                    }
-
-                    &p.name == name && p.version == version.replacen("\"", "", 2)
+        } else if value.is_object() {
+            // Complex dependency (with git, features, etc.)
+            let dep_obj = value.as_object().unwrap();
+            
+            // Check if it's a git dependency
+            if let Some(git_url) = dep_obj.get("git").and_then(|v| v.as_str()) {
+                println!("🔗 Git dependency found: {} => {}", name, git_url);
+                
+                props.dependencies.push(Dependency {
+                    name: name.to_string(),
+                    version: "0.1.0".to_string(), // Git dependencies don't need version
+                    features: dep_obj.get("features")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().filter_map(|f| f.as_str()).map(|s| s.to_string()).collect())
+                        .unwrap_or_default(),
+                    kind: kind.1,
+                    git: Some(git_url.to_string()),
+                    branch: dep_obj.get("branch").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    tag: dep_obj.get("tag").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 });
-
-                if version_found.is_none() {
-                    println!("❌ {} {} {}", name.green(), "=>".yellow(), version.black());
-                    continue;
-                } else {
-                    version = version_found.unwrap().version.replacen("\"", "", 2);
-                }
-            } else {
-                version = v; // Replace * or latest with the actual version
+                
+                println!("✅ {} {} {}", name.green(), "=>".yellow(), git_url.black());
+            } else if let Some(version) = dep_obj.get("version").and_then(|v| v.as_str()) {
+                // Regular dependency with version and possibly features
+                let (valid, v) = check_version_exists(&name, &version, None).await.unwrap_or((false, version.to_string()));
+                
+                props.dependencies.push(Dependency {
+                    name: name.to_string(),
+                    version: if valid { v.clone() } else { version.to_string() },
+                    features: dep_obj.get("features")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().filter_map(|f| f.as_str()).map(|s| s.to_string()).collect())
+                        .unwrap_or_default(),
+                    kind: kind.1,
+                    git: None,
+                    branch: None,
+                    tag: None,
+                });
+                
+                println!("✅ {} {} {}", name.green(), "=>".yellow(), if valid { v } else { version.to_string() }.black());
             }
-
-            props.dependencies.push(Dependency {
-                name: name.to_string(),
-                version: version.to_string(),
-                features: features.iter().map(|f| f.as_str().unwrap().to_string()).collect(),
-                kind: kind.1,
-            });
         }
-
-        println!("✅ {} {} {}", name.green(), "=>".yellow(), version.black());
     }
 }
 
@@ -201,6 +219,8 @@ impl<'a> Properties<'a> {
     pub async fn from_kson(kson: &'a Value) -> Self {
         let mut properties = Self::new();
 
+        println!("🔍 Debug: Full KSON JSON: {}", serde_json::to_string_pretty(kson).unwrap());
+
         validate!(properties, name, kson["name"].as_str());
         validate!(properties, version, kson["version"].as_str());
         validate!(properties, edition, kson["edition"].as_u64());
@@ -208,6 +228,11 @@ impl<'a> Properties<'a> {
         let deps = kson["dependencies"].as_object();
         let dev_deps = kson["dev_dependencies"].as_object();
         let build_deps = kson["build_dependencies"].as_object();
+
+        println!("🔍 Debug: Dependencies found: {}", deps.is_some());
+        if let Some(deps_obj) = deps {
+            println!("🔍 Debug: Dependencies content: {}", serde_json::to_string_pretty(deps_obj).unwrap());
+        }
 
         if deps.is_some() {
             map_deps(&mut properties, &kson["dependencies"], MapDepMode::Normal).await;
@@ -237,6 +262,9 @@ impl<'a> Properties<'a> {
             version: actual_version.clone(),
             features: Vec::new(),
             kind: DepKind::NormalOnlyVersion,
+            git: None,
+            branch: None,
+            tag: None,
         };
 
         // Verificar se a dependência já existe
@@ -250,13 +278,27 @@ impl<'a> Properties<'a> {
         let mut deps_str = String::new();
 
         for dep in &self.dependencies {
-            if matches!(dep.kind, DepKind::NormalOnlyVersion | DepKind::DevOnlyVersion | DepKind::BuildOnlyVersion) {
+            if let Some(git_url) = &dep.git {
+                // Git dependency
+                deps_str.push_str(&format!("{} = {{ git = \"{}\"", dep.name, git_url));
+                if let Some(branch) = &dep.branch {
+                    deps_str.push_str(&format!(", branch = \"{}\"", branch));
+                }
+                if let Some(tag) = &dep.tag {
+                    deps_str.push_str(&format!(", tag = \"{}\"", tag));
+                }
+                if !dep.features.is_empty() {
+                    deps_str.push_str(&format!(", features = [{}]", dep.features.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join(", ")));
+                }
+                deps_str.push_str(" }\n");
+            } else if matches!(dep.kind, DepKind::NormalOnlyVersion | DepKind::DevOnlyVersion | DepKind::BuildOnlyVersion) {
                 deps_str.push_str(&format!("{} = \"{}\"\n", dep.name, dep.version));
             } else {
-                deps_str.push_str(&format!("[{}]\nversion = \"{}\"\n", dep.name, dep.version));
+                deps_str.push_str(&format!("{} = {{ version = \"{}\"", dep.name, dep.version));
                 if !dep.features.is_empty() {
-                    deps_str.push_str(&format!("features = [{}]\n", dep.features.join(", ")));
+                    deps_str.push_str(&format!(", features = [{}]", dep.features.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join(", ")));
                 }
+                deps_str.push_str(" }\n");
             }
         }
 

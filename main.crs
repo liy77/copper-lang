@@ -1,5 +1,6 @@
 import test_alias from std
 import { io } from std
+import ai from ai_copper
 
 func void hello() {
     println!("Hello World!")
@@ -9,10 +10,15 @@ func void hello_with_name(name: string) {
     println!("Hello {}",  name)
 }
 
+a = ai::Tensor::rand(3, 3)
+
+a.print()
 mut integer = 1
 integer++
 integer++
 integer--
+
+
 
 constantvalue = 4
 

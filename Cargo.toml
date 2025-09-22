@@ -17,3 +17,4 @@ tokio = { version = "1.38.0", features = ["full"] }
 toml = "0.9.7"
 quick-xml = "0.38.3"
 walkdir = "2.5.0"
+ai_copper = { git = "https://github.com/CopperRS/ai_copper.git" }
