@@ -12,7 +12,7 @@ fn parse(text: &str) -> Value {
     let path = if cfg!(target_os = "windows") {
         exe_dir.join(cop_path.join(format!("lson{}win32{}lson.exe", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)))
     } else {
-        exe_dir.join(cop_path.join(format!("lson{}unix{}lson", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)))
+        exe_dir.join(cop_path.join(format!("lson{}linux{}lson", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)))
     };
 
     let path = path.as_os_str();
