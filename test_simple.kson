@@ -1,3 +1,0 @@
-$dependencies
-    $ai_copper
-        git = "https://github.com/CopperRS/ai_copper.git"
