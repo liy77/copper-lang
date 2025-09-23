@@ -27,11 +27,11 @@ println!("{}", integer)
 hello()
 hello_with_name("Liy".to_string())
 
-func void alo_fito() {
+func void alo() {
     println!("Alo Test")
 }
 
-alo_fito()
+alo()
 
 func void copper() {
     println!("Hello Copper")
@@ -59,7 +59,7 @@ class Person {
     }
 }
 
-Person::new("Brian".to_string(), "Curis".to_string()).test()
+Person::new("Liy".to_string(), "Jones".to_string()).test()
 
 struct Point {
     x: f64,
