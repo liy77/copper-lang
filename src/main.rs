@@ -52,9 +52,10 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
             .about("Compile and run the project")
             .args([
                 Arg::new("input")
-                    .short('i')
-                    .long("input")
-                    .help("Input files to compile"),
+                    .help("Input files to compile")
+                    .value_name("FILE")
+                    .required(false)
+                    .index(1),
                 Arg::new("output")
                     .short('o')
                     .long("output")
@@ -150,13 +151,78 @@ fn parse_commands() -> ParsedCommands {
     parsed_args.add_command(cmd);
     
     // Handle subcommands
-    if let Some(("run", _run_matches)) = matches.subcommand() {
-        // Process run subcommand similar to main command
+    if let Some(("run", run_matches)) = matches.subcommand() {
+        // Process run subcommand
         let mut cmd = ParsedCommand::new("run".to_string(), vec![]);
         cmd.set_valid(true);
         parsed_args.add_command(cmd);
         
-        // Could process run-specific arguments here if needed
+        // Override input if provided in run subcommand
+        if let Some(file_path) = run_matches.get_one::<String>("input") {
+            let path = path::Path::new(file_path);
+            
+            if !path.exists() {
+                eprintln!("Error: '{}' does not exist", file_path);
+                std::process::exit(1);
+            }
+            
+            let is_dir = path.is_dir();
+            let is_file = path.is_file();
+            let mut files = Vec::new();
+            
+            if is_dir {
+                files.push(file_path.to_string());
+                for entry in walkdir::WalkDir::new(path)
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|e| e.path().is_file())
+                {
+                    files.push(entry.path().to_string_lossy().into_owned());
+                }
+            } else if is_file {
+                files.push(file_path.to_string());
+            }
+            
+            // Replace the existing input command with run-specific input
+            let mut cmd = ParsedCommand::new("input".to_string(), files);
+            cmd.set_file(is_file);
+            cmd.set_dir(is_dir);
+            cmd.set_valid(true);
+            parsed_args.update_or_add_command(cmd);
+        } else {
+            // Se não foi especificado arquivo no run, tentar usar main.crs como padrão
+            let default_file = "main.crs";
+            if path::Path::new(default_file).exists() {
+                let mut cmd = ParsedCommand::new("input".to_string(), vec![default_file.to_string()]);
+                cmd.set_file(true);
+                cmd.set_dir(false);
+                cmd.set_valid(true);
+                parsed_args.update_or_add_command(cmd);
+            } else {
+                eprintln!("Error: No input file specified and '{}' does not exist", default_file);
+                std::process::exit(1);
+            }
+        }
+        
+        // Override output if provided in run subcommand
+        if let Some(output_path) = run_matches.get_one::<String>("output") {
+            let output_dir = output_path.to_string();
+            
+            if !path::Path::new(&output_dir).exists() {
+                match fs::create_dir_all(&output_dir) {
+                    Ok(_) => {},
+                    Err(e) => {
+                        eprintln!("Error creating output directory '{}': {}", output_dir, e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            
+            let mut cmd = ParsedCommand::new("output".to_string(), vec![output_dir]);
+            cmd.set_valid(true);
+            parsed_args.update_or_add_command(cmd);
+        }
     }
 
     parsed_args
@@ -236,7 +302,13 @@ async fn main() {
     }
 
     if commands.get_command("compile").unwrap().is_valid {
-        let detected_dependencies = cforge::compile(files, input_dir, output_dir);
+        let detected_dependencies = cforge::compile(files.clone(), input_dir.clone(), output_dir.clone());
+        cforge::generate_toml(detected_dependencies).await;
+    }
+    
+    // Handle run subcommand
+    if commands.get_command("run").is_some() && commands.get_command("run").unwrap().is_valid {
+        let detected_dependencies = cforge::compile(files, input_dir, output_dir.clone());
         cforge::generate_toml(detected_dependencies).await;
         cforge::run();
     }

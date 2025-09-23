@@ -14,12 +14,19 @@ pub const COPPER_PATH: Lazy<String> = Lazy::new(|| std::env::var("COPPER_PATH").
 
 pub fn get_copper_version() -> String {
     let path = std::path::Path::new(&(*COPPER_PATH)).join("Cargo.toml");
-    let toml = fs::read(path.to_str().unwrap()).unwrap();
-    let toml = String::from_utf8(toml).unwrap();
-
-    let version = toml.split("version = \"").collect::<Vec<&str>>()[1].split("\"").collect::<Vec<&str>>()[0];
-
-    return version.to_string();
+    
+    // Try to read Cargo.toml from installation directory, fallback to default version
+    if let Ok(toml_content) = fs::read_to_string(&path) {
+        if let Some(version_start) = toml_content.find("version = \"") {
+            let version_start = version_start + "version = \"".len();
+            if let Some(version_end) = toml_content[version_start..].find("\"") {
+                return toml_content[version_start..version_start + version_end].to_string();
+            }
+        }
+    }
+    
+    // Fallback to hardcoded version if Cargo.toml is not found (installed version)
+    "0.1.0-alpha.1".to_string()
 }
 
 pub fn print() {
@@ -129,18 +136,34 @@ pub fn get_toml_package_version() -> String {
 }
 
 pub fn run() {
+    println!("🚀 Building and running project...");
+    
+    let build_result = std::process::Command::new("cargo")
+        .arg("build")
+        .current_dir("./dist/rust")
+        .output()
+        .expect("Failed to execute cargo build");
+
+    if !build_result.status.success() {
+        let stderr = String::from_utf8_lossy(&build_result.stderr);
+        println!("❌ Build failed:\n\n{}", stderr);
+        return;
+    }
+
+    println!("✅ Build successful");
+
     let run = std::process::Command::new("cargo")
         .arg("run")
         .current_dir("./dist/rust")
         .output()
-        .expect("ERROR");
+        .expect("Failed to execute cargo run");
 
     if run.status.success() {
         let stdout = String::from_utf8_lossy(&run.stdout);
         println!("Running {} v{}:\n\n{}", get_toml_package_name().bold(), get_toml_package_version().bold(), stdout);
     } else {
         let stderr = String::from_utf8_lossy(&run.stderr);
-        println!("Error running compiled main file:\n\n{}", stderr);
+        println!("❌ Error running compiled project:\n\n{}", stderr);
     }
 }
 
@@ -148,8 +171,8 @@ pub async fn generate_toml(extra_dependencies: Vec<String>) {
     let properties = kson::read_properties(std::env::current_dir().unwrap().join("properties.kson").to_str().unwrap());
     let toml: String;
 
-    println!("🔍 Debug: properties.0 (is_toml): {}", properties.0);
-    println!("🔍 Debug: properties.1 JSON: {}", serde_json::to_string_pretty(&properties.1).unwrap_or_else(|_| "Failed to serialize".to_string()));
+    vprint!("🔍 Debug: properties.0 (is_toml): {}", properties.0);
+    vprint!("🔍 Debug: properties.1 JSON: {}", serde_json::to_string_pretty(&properties.1).unwrap_or_else(|_| "Failed to serialize".to_string()));
 
     if properties.0 {
         println!("⚠️  Warning: Detected Cargo.toml file. CForge now uses properties.kson as the main configuration file. Please migrate your configuration to properties.kson. See https://copper-lang.org/docs/cforge/properties for more information.");

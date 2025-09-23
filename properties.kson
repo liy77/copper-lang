@@ -9,3 +9,4 @@ $dependencies
     regex = "1.10.5"
     $ai_copper
         git = "https://github.com/CopperRS/ai_copper.git"
+        branch = "main"

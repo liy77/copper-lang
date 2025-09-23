@@ -41,4 +41,12 @@ impl ParsedCommands {
     pub fn get_command(&self, name: &str) -> Option<&ParsedCommand> {
         self.commands.iter().find(|cmd| cmd.name == name)
     }
+    
+    pub fn update_or_add_command(&mut self, command: ParsedCommand) {
+        if let Some(pos) = self.commands.iter().position(|cmd| cmd.name == command.name) {
+            self.commands[pos] = command;
+        } else {
+            self.commands.push(command);
+        }
+    }
 }

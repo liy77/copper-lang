@@ -2,7 +2,7 @@ use once_cell::sync::Lazy;
 use serde_json::Value;
 use colored::Colorize;
 
-use crate::{cargo, cforge::fetch::check_version_exists};
+use crate::{cargo, cforge::{fetch::check_version_exists, vprint}};
 
 #[derive(Clone)]
 pub enum PropertyKind {
@@ -84,7 +84,7 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
     };
 
     for (name, value) in deps {
-        println!("🔍 Debug: Processing dependency '{}' with value: {}", name, serde_json::to_string(value).unwrap());
+        vprint!("🔍 Debug: Processing dependency '{}' with value: {}", name, serde_json::to_string(value).unwrap());
         
         if value.is_string() {
             // Simple version dependency
@@ -219,7 +219,7 @@ impl<'a> Properties<'a> {
     pub async fn from_kson(kson: &'a Value) -> Self {
         let mut properties = Self::new();
 
-        println!("🔍 Debug: Full KSON JSON: {}", serde_json::to_string_pretty(kson).unwrap());
+        vprint!("🔍 Debug: Full KSON JSON: {}", serde_json::to_string_pretty(kson).unwrap());
 
         validate!(properties, name, kson["name"].as_str());
         validate!(properties, version, kson["version"].as_str());
@@ -229,9 +229,9 @@ impl<'a> Properties<'a> {
         let dev_deps = kson["dev_dependencies"].as_object();
         let build_deps = kson["build_dependencies"].as_object();
 
-        println!("🔍 Debug: Dependencies found: {}", deps.is_some());
+        vprint!("🔍 Debug: Dependencies found: {}", deps.is_some());
         if let Some(deps_obj) = deps {
-            println!("🔍 Debug: Dependencies content: {}", serde_json::to_string_pretty(deps_obj).unwrap());
+            vprint!("🔍 Debug: Dependencies content: {}", serde_json::to_string_pretty(deps_obj).unwrap());
         }
 
         if deps.is_some() {

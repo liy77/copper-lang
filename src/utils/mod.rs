@@ -5,6 +5,8 @@ pub(crate) mod parsed_command;
 pub mod data_formats;
 
 pub mod cargo {
+    // Internal use only
+    #![allow(unused)]
     pub use crate_extractor::*;
 
     use super::crate_extractor;
