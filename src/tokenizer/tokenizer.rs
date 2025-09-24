@@ -24,7 +24,7 @@ impl EndToken {
 }
 
 pub(self) const TRAILING_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+$").unwrap());
-pub(self) const COMPOUND_SIGNS: [&'static str; 8] = ["-=", "+=", "/=", "*=", "%=", "&=", "^=", "|="];
+pub(self) const COMPOUND_SIGNS: [&'static str; 9] = ["::", "-=", "+=", "/=", "*=", "%=", "&=", "^=", "|="];
 pub(self) const COMPARE_SIGNS: [&'static str; 6] = ["==", "!=", "<=", ">=", ">", "<"];
 pub(self) const ARITHMETIC_SIGNS: [&'static str; 5] = ["+", "-", "*", "/", "%"];
 pub(self) const RANGE_SIGNS: [&'static str; 2] = ["..", "..="];
@@ -130,8 +130,13 @@ impl Tokenizer {
     }
 
     pub fn tokenize(&mut self) -> Vec<Token> {
-        while self.chunk_line < self.source.lines().count() as isize {
-            self.chunk = self.next_chunk();
+        while self.index < self.source.len() {
+            // Encontrar o final da linha atual
+            let line_end = self.source[self.index..].find('\n')
+                .map(|pos| self.index + pos + 1)
+                .unwrap_or(self.source.len());
+            
+            self.chunk = self.source[self.index..line_end].to_string();
             self.chunk_line += 1;
             self.chunk_column = 0;
             self.chunk_offset = self.index;
@@ -151,6 +156,9 @@ impl Tokenizer {
                     self.next_char();
                 }
             }
+            
+            // Avançar para a próxima linha
+            self.index = line_end;
         }
         
         if self.ends.len() > 0 {
@@ -168,9 +176,11 @@ impl Tokenizer {
         self.tokens.clone()
     }
 
-    pub fn drain(&mut self, start: usize) {
-        self.source.drain(self.index..start);
-        self.chunk_column += start - self.index;
+    pub fn drain(&mut self, end: usize) {
+        // Avança o chunk_column pela quantidade de caracteres consumidos
+        let consumed = end - self.index;
+        self.chunk_column += consumed;
+        self.index += consumed;
     }
 
     pub fn operator_token(&mut self) -> Consumed {
@@ -179,20 +189,20 @@ impl Tokenizer {
         let mut kind = TokenKind::Operator;
 
         for sign in COMPOUND_SIGNS.iter() {
-            if self.source.get(self.index..).unwrap_or_default().starts_with(sign) {
+            if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
                 value.push_str(sign);
                 consumed += sign.len();
-                self.drain(self.index + consumed);
+                self.chunk_column += sign.len();
                 break;
             }
         }
 
         if consumed == 0 {
             for sign in COMPARE_SIGNS.iter() {
-                if self.source.get(self.index..).unwrap_or_default().starts_with(sign) {
+                if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
                     value.push_str(sign);
                     consumed += sign.len();
-                    self.drain(self.index + consumed);
+                    self.chunk_column += sign.len();
                     break;
                 }
             }
@@ -200,10 +210,10 @@ impl Tokenizer {
 
         if consumed == 0 {
             for sign in ARITHMETIC_SIGNS.iter() {
-                if self.source.get(self.index..).unwrap_or_default().starts_with(sign) {
+                if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
                     value.push_str(sign);
                     consumed += sign.len();
-                    self.drain(self.index + consumed);
+                    self.chunk_column += sign.len();
                     break;
                 }
             }
@@ -211,10 +221,10 @@ impl Tokenizer {
 
         if consumed == 0 {
             for sign in RANGE_SIGNS.iter().rev() {
-                if self.source.get(self.index..).unwrap_or_default().starts_with(sign) {
+                if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
                     value.push_str(sign);
                     consumed += sign.len();
-                    self.drain(self.index + consumed);
+                    self.chunk_column += sign.len();
                     kind = TokenKind::Range;
                     break;
                 }
@@ -223,11 +233,13 @@ impl Tokenizer {
 
         if consumed == 0 {
             for sign in OPERATORS.iter() {
-                if self.source.get(self.index..).unwrap_or_default().starts_with(sign) {
+        if consumed == 0 {
+            for sign in OPERATORS.iter() {
+                if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
                     if *sign == ":" && self.kind() == Some(TokenKind::Param) {
                         value.push_str(":");
                         consumed += sign.len() + 1;
-                        self.drain(self.index + consumed);
+                        self.chunk_column += sign.len() + 1;
                         kind = TokenKind::Colon;
                         break;
                     } else if *sign == "." {
@@ -236,7 +248,7 @@ impl Tokenizer {
                         if self.seen_import {
                             value.push_str(sign);
                             consumed += sign.len();
-                            self.drain(self.index + consumed);
+                            self.chunk_column += sign.len();
                             self.add_to_value(sign);
                             
                             return Consumed::Consumed(consumed as isize);
@@ -245,9 +257,11 @@ impl Tokenizer {
 
                     value.push_str(sign);
                     consumed += sign.len();
-                    self.drain(self.index + consumed);
+                    self.chunk_column += sign.len();
                     break;
                 }
+            }
+        }
             }
         }
 
@@ -577,8 +591,10 @@ impl Tokenizer {
             }
         }
 
-        self.token(kind, value);
-
+        if consumed > 0 {
+            self.token(kind, value);
+        }
+        
         Consumed::consume(consumed)
 
     }
@@ -852,8 +868,11 @@ impl Tokenizer {
         let mut total_compensation = 0;
         let initial_end = end;
         let mut current = start;
+        let mut iterations = 0;
 
-        while start >= end {
+        while start >= end && iterations < 1000 {
+            iterations += 1;
+            
             if current == end && start != initial_end {
                 break;
             }
@@ -867,6 +886,11 @@ impl Tokenizer {
             }
 
             current += 1;
+            
+            // Condition de segurança adicional
+            if current >= self.source.len() + 1000 {
+                break;
+            }
         }
 
         total_compensation
@@ -928,9 +952,9 @@ impl Tokenizer {
         num
     }
     
-    pub fn next_chunk(&self) -> String {
-        self.source.get(self.index..).unwrap_or_default().to_owned()
-    }
+    // pub fn next_chunk(&self) -> String {
+    //     self.source.get(self.index..).unwrap_or_default().to_owned()
+    // }
 
     pub fn clean_source(&mut self) {
         let re = Regex::new(r"\r").unwrap();
@@ -966,15 +990,26 @@ impl Tokenizer {
     }
 
     fn current_char(&self) -> char {
-        self.source.chars().nth(self.index).unwrap_or_default()
+        // Use proper UTF-8 indexing
+        if let Some((_, ch)) = self.chunk.char_indices().find(|(pos, _)| *pos == self.chunk_column) {
+            ch
+        } else {
+            // Fallback for misaligned positions
+            self.chunk.chars().nth(0).unwrap_or('\0')
+        }
     }
 
     fn next_char(&mut self) {
-        self.index += 1;
-        self.chunk_column += 1;
+        // Find the next character boundary
+        if let Some((next_pos, _)) = self.chunk.char_indices().find(|(pos, _)| *pos > self.chunk_column) {
+            self.chunk_column = next_pos;
+        } else {
+            // End of string
+            self.chunk_column = self.chunk.len();
+        }
     }
 
     fn peek(&self) -> char {
-        self.source.chars().nth(self.index + 1).unwrap_or_default()
+        self.chunk.chars().nth(self.chunk_column + 1).unwrap_or_default()
     }
 }

@@ -15,6 +15,10 @@ const COPPER_OPERATORS: [(&str, &str); 2] = [
     ("--", "-= 1"),
 ];
 
+const RUST_MACROS: [(&str, &str); 1] = [
+    ("println", "println!"),
+];
+
 #[derive(Debug)]
 pub enum AppendMode {
     Append,
@@ -157,23 +161,12 @@ impl Parser {
                     
                     let var_name = self.value();
                     let type_name = convert_type(&type_token.value);
-                    let token_kind = type_token.kind;
-                    
-                    // Marcar que usamos tipos de dados se for um dos novos tipos
-                    let is_data_type = matches!(token_kind, TokenKind::Json | TokenKind::Xml | TokenKind::Toml);
                     
                     self.append(&format!("let {}: {};", var_name, type_name), AppendMode::AppendWithSpace);
                     consumed += 3; // identifier + : + type
                     
-                    if is_data_type {
-                        self.uses_data_types = true;
-                        match token_kind {
-                            TokenKind::Json => self.result.mark_json_usage(),
-                            TokenKind::Xml => self.result.mark_xml_usage(),
-                            TokenKind::Toml => self.result.mark_toml_usage(),
-                            _ => {}
-                        }
-                    }
+                    // Nota: Não marcamos uso de tipos de dados apenas por declará-los
+                    // Só marcaremos quando realmente usarmos os tipos em operações
                 }
             }
         }
@@ -191,6 +184,23 @@ impl Parser {
            self.kind() == TokenKind::Comment ||
            self.kind() == TokenKind::Unknown {
             return Consumed::consume(1);
+        }
+        
+        // Check if this is a Rust macro that needs a ! suffix
+        for (copper, rust) in RUST_MACROS.iter() {
+            if token_value == *copper {
+                // Check if next token is already !, if so, don't add another one
+                if let Some(next_token) = self.peek() {
+                    if next_token.value == "!" {
+                        // Next token is already !, just output the macro name without !
+                        self.append(copper, AppendMode::Append);
+                        return Consumed::consume(1);
+                    }
+                }
+                // Next token is not !, so add the ! suffix
+                self.append(rust, AppendMode::Append);
+                return Consumed::consume(1);
+            }
         }
         
         self.append(&token_value, AppendMode::Append);
@@ -708,22 +718,23 @@ impl Parser {
                             let converted_type = convert_type(&tok.value);
                             current_field.push_str(&converted_type);
                             
-                            // Marcar tipos de dados se usados em structs
-                            match tok.kind {
-                                TokenKind::Json => {
-                                    self.uses_data_types = true;
-                                    self.result.mark_json_usage();
-                                },
-                                TokenKind::Xml => {
-                                    self.uses_data_types = true;
-                                    self.result.mark_xml_usage();
-                                },
-                                TokenKind::Toml => {
-                                    self.uses_data_types = true;
-                                    self.result.mark_toml_usage();
-                                },
-                                _ => {}
-                            }
+                            // Nota: Não marcamos uso de tipos de dados apenas por declará-los em structs
+                            // Só marcaremos quando realmente usarmos os tipos em operações
+                            // match tok.kind {
+                            //     TokenKind::Json => {
+                            //         self.uses_data_types = true;
+                            //         self.result.mark_json_usage();
+                            //     },
+                            //     TokenKind::Xml => {
+                            //         self.uses_data_types = true;
+                            //         self.result.mark_xml_usage();
+                            //     },
+                            //     TokenKind::Toml => {
+                            //         self.uses_data_types = true;
+                            //         self.result.mark_toml_usage();
+                            //     },
+                            //     _ => {}
+                            // }
                         },
                         TokenKind::Comma => {
                             if !current_field.trim().is_empty() {
@@ -1217,16 +1228,8 @@ impl Parser {
                         self.next();
                     },
                     TokenKind::Json | TokenKind::Xml | TokenKind::Toml => {
-                        self.uses_data_types = true;
-                        
-                        // Marcar qual tipo específico está sendo usado
-                        match self.kind() {
-                            TokenKind::Json => self.result.mark_json_usage(),
-                            TokenKind::Xml => self.result.mark_xml_usage(),
-                            TokenKind::Toml => self.result.mark_toml_usage(),
-                            _ => {}
-                        }
-                        
+                        // Nota: Só convertemos o tipo, mas não marcamos como usado ainda
+                        // Será marcado quando realmente utilizado em operações
                         self.append(&convert_type(&self.value()), AppendMode::Append);
                         self.next();
                     },
