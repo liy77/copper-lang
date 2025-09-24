@@ -123,7 +123,7 @@ pub mod xml {
     /// Parse XML string into a simplified structure
     pub fn parse(xml_str: &str) -> Result<XmlElement, Box<dyn std::error::Error + Send + Sync>> {
         let mut reader = Reader::from_str(xml_str);
-        // versões recentes usam config_mut()
+        // Recent versions use config_mut()
         reader.config_mut().trim_text(true);
 
         let mut root = XmlElement {
@@ -208,23 +208,23 @@ pub mod xml {
                 Ok(Event::Text(e)) => {
                     if let Some(ref mut element) = current_element {
                         let raw = str::from_utf8(e.as_ref())?;           // BytesText -> &str
-                        let text = unescape(raw)?.into_owned();           // agora sim
+                        let text = unescape(raw)?.into_owned();           // Now it works
                         element.text.push_str(&text);
                     }
                 }
 
                 Ok(Event::CData(e)) => {
                     if let Some(ref mut element) = current_element {
-                        // mantém o conteúdo literalmente
+                        // Keep content literally
                         element.text.push_str(&String::from_utf8_lossy(e.as_ref()));
                     }
                 }
 
                 Ok(Event::Comment(_)) | Ok(Event::Decl(_)) | Ok(Event::PI(_)) | Ok(Event::DocType(_)) => {
-                    // ignorados
+                    // Ignored
                 }
                 Ok(Event::GeneralRef(_)) => {
-                    // ignorado (referência geral, como <!ENTITY ...>)
+                    // Ignored (general reference, like <!ENTITY ...>)
                 }
 
                 Ok(Event::Eof) => break,
@@ -235,7 +235,7 @@ pub mod xml {
             buf.clear();
         }
 
-        // fecha o que restou na pilha (XML possivelmente malformado)
+        // Close remaining elements in stack (possibly malformed XML)
         while let Some(mut parent) = element_stack.pop() {
             if let Some(child) = current_element.take() {
                 parent.children.push(child);
@@ -249,7 +249,7 @@ pub mod xml {
         Ok(root)
     }
 
-    /// Convert XML element to string (recursivo, com escape)
+    /// Convert XML element to string (recursive, with escaping)
     pub fn stringify(element: &XmlElement) -> String {
         fn write_el(el: &XmlElement, out: &mut String) {
             out.push('<');

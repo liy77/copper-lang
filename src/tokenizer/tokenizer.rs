@@ -131,7 +131,7 @@ impl Tokenizer {
 
     pub fn tokenize(&mut self) -> Vec<Token> {
         while self.index < self.source.len() {
-            // Encontrar o final da linha atual
+            // Find the end of current line
             let line_end = self.source[self.index..].find('\n')
                 .map(|pos| self.index + pos + 1)
                 .unwrap_or(self.source.len());
@@ -157,7 +157,7 @@ impl Tokenizer {
                 }
             }
             
-            // Avançar para a próxima linha
+            // Move to next line
             self.index = line_end;
         }
         
@@ -177,7 +177,7 @@ impl Tokenizer {
     }
 
     pub fn drain(&mut self, end: usize) {
-        // Avança o chunk_column pela quantidade de caracteres consumidos
+        // Advance chunk_column by the number of consumed characters
         let consumed = end - self.index;
         self.chunk_column += consumed;
         self.index += consumed;
@@ -333,12 +333,12 @@ impl Tokenizer {
 
             kind = match value.as_str() {
                 "[" => {
-                    self.end(TokenKind::BraceEnd, "]".to_string());
-                    TokenKind::BraceStart
+                    self.end(TokenKind::BracketEnd, "]".to_string());
+                    TokenKind::BracketStart
                 },
                 "]" => {
                     self.skip_end();
-                    TokenKind::BraceEnd
+                    TokenKind::BracketEnd
                 },
                 _ => TokenKind::Symbol
             };
@@ -490,7 +490,7 @@ impl Tokenizer {
             self.next_char();
             consumed += 1;
 
-            // Continuar capturando o nome do lifetime
+            // Continue capturing the lifetime name
             while self.current_char().is_alphanumeric() || self.current_char() == '_' {
                 value.push(self.current_char());
                 self.next_char();
@@ -683,30 +683,86 @@ impl Tokenizer {
         Consumed::consume(consumed)
     }
 
+    pub fn json_object_token(&mut self) -> Consumed {
+        let mut consumed = 0;
+        let mut value = String::new();
+        
+        // Check if there's a pattern: identifier whitespace = whitespace {
+        let remaining_chunk = &self.chunk[self.chunk_column..];
+        
+        // Only process if at line start or after whitespace
+        if self.chunk_column == 0 || 
+           (self.chunk_column > 0 && self.chunk.chars().nth(self.chunk_column - 1).unwrap_or(' ').is_whitespace()) {
+            
+            // Regex to detect: identifier followed by spaces, =, spaces and {
+            let json_obj_regex = Regex::new(r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*\{").unwrap();
+            
+            if let Some(cap) = json_obj_regex.captures(remaining_chunk) {
+                let _identifier = cap.get(1).unwrap().as_str();
+                let full_match = cap.get(0).unwrap();
+                let match_len = full_match.len();
+                
+                // Advance to JSON object start
+                for _ in 0..match_len {
+                    value.push(self.current_char());
+                    self.next_char();
+                    consumed += 1;
+                }
+                
+                // Now need to collect all content until matching }
+                let mut brace_count = 1;
+                let mut json_content = String::new();
+                
+                while brace_count > 0 && self.chunk_column < self.chunk.len() {
+                    let ch = self.current_char();
+                    json_content.push(ch);
+                    
+                    match ch {
+                        '{' => brace_count += 1,
+                        '}' => brace_count -= 1,
+                        _ => {}
+                    }
+                    
+                    self.next_char();
+                    consumed += 1;
+                }
+                
+                // If we managed to close all braces, create JSON token
+                if brace_count == 0 {
+                    value.push_str(&json_content);
+                    self.token(TokenKind::JsonObject, value);
+                    return Consumed::consume(consumed as isize);
+                }
+            }
+        }
+        
+        Consumed::consume(0)
+    }
+
     pub fn regex_token(&mut self) -> Consumed {
         let mut consumed = 0;
         let mut value = String::new();
         let kind = TokenKind::Regex;
         
-        // Só considera regex se começar com '/'
+        // Only consider regex if it starts with '/'
         if self.current_char() != '/' {
             return Consumed::consume(0);
         }
         
-        // Verifica se não é um comentário (//)
+        // Check if it's not a comment (//)
         if self.peek() == '/' {
             return Consumed::consume(0);
         }
         
-        // Processa apenas a partir da posição atual no chunk
+        // Process only from current position in chunk
         let remaining_chunk = &self.chunk[self.chunk_column..];
         
-        // Verifica novamente no chunk se é comentário
+        // Check again in chunk if it's a comment
         if remaining_chunk.starts_with("//") {
             return Consumed::consume(0);
         }
         
-        let r = Regex::new(r"^(/)([^/]+)(/)?").unwrap(); // Adicionado ^ para início da string
+        let r = Regex::new(r"^(/)([^/]+)(/)?").unwrap(); // Added ^ for string start
 
         if let Some(cap) = r.captures(remaining_chunk) {
             let start = cap.get(1).unwrap().start();
@@ -720,7 +776,7 @@ impl Tokenizer {
             value.push_str(&remaining_chunk[start..end]);
             consumed = end - start;
             
-            // Avança o chunk_column em vez de drenar
+            // Advance chunk_column instead of draining
             for _ in 0..consumed {
                 self.next_char();
             }
@@ -733,7 +789,7 @@ impl Tokenizer {
 
     pub fn error(&self, message: &str) {
         let (line, column, _) = self.get_line_and_column(self.chunk_column);
-        eprintln!("Error: {}\nLine: {}:{}", message, line + 1, column + 1); // +1 para linha/coluna 1-indexed
+        eprintln!("Error: {}\nLine: {}:{}", message, line + 1, column + 1); // +1 for 1-indexed line/column
         exit(1);
     }
 
@@ -887,7 +943,7 @@ impl Tokenizer {
 
             current += 1;
             
-            // Condition de segurança adicional
+            // Additional safety condition
             if current >= self.source.len() + 1000 {
                 break;
             }
@@ -939,14 +995,14 @@ impl Tokenizer {
 
     pub fn count_occurrences(&self, string: &str, substr: &str) -> usize {
         if substr.is_empty() {
-            return usize::MAX; // Usamos usize::MAX para representar infinito
+            return usize::MAX; // Use usize::MAX to represent infinity
         }
         let mut num = 0;
         let mut pos = 0;
         
         while let Some(p) = string[pos..].find(substr) {
             num += 1;
-            pos += p + 1; // Incrementa a posição para continuar a busca
+            pos += p + 1; // Increment position to continue search
         }
         
         num

@@ -142,8 +142,161 @@ impl Parser {
         if self.kind() == TokenKind::Identifier && self.peek_value() == Some("=".to_string()) {
             if let Some(var_value) = self.select(self.current + 2) {
                 if var_value.value != "=" {
-                    consumed += 2;
-                    self.append(&format!("let {} = ", self.value()), AppendMode::AppendWithSpace);
+                    let var_name = self.value();
+                    
+                    // Check if next token (after =) is { or [
+                if var_value.kind == TokenKind::BraceStart || var_value.kind == TokenKind::BracketStart {
+                        // Debug: show what type of token was detected
+                        // JSON detected var_value.kind, var_value.value);
+                        
+                        // This is a JSON object or array!
+                        consumed += 3; // identifier + = + { or [
+                        
+                        let is_array = var_value.kind == TokenKind::BracketStart;
+                        
+                        // Collect all tokens until matching } or ]
+                        let mut json_tokens = Vec::new();
+                        let mut brace_count = if is_array { 0 } else { 1 };
+                        let mut bracket_count = if is_array { 1 } else { 0 };
+                        let mut current_idx = self.current + 3;
+                        
+                        while (brace_count > 0 || bracket_count > 0) && current_idx < self.tokens.len() {
+                            if let Some(token) = self.select(current_idx) {
+                                // Process JSON token
+                                match token.kind {
+                                    TokenKind::BraceStart => {
+                                        brace_count += 1;
+                                        json_tokens.push(token.clone());
+                                    },
+                                    TokenKind::BraceEnd => {
+                                        json_tokens.push(token.clone());
+                                        brace_count -= 1;
+                                    },
+                                    TokenKind::BracketStart => {
+                                        bracket_count += 1;
+                                        json_tokens.push(token.clone());
+                                    },
+                                    TokenKind::BracketEnd => {
+                                        json_tokens.push(token.clone());
+                                        bracket_count -= 1;
+                                    },
+                                    TokenKind::Symbol => {
+                                        // Special case: split symbols containing brackets/braces
+                                        if token.value.contains(']') || token.value.contains('}') {
+                                            for ch in token.value.chars() {
+                                                match ch {
+                                                    ']' => {
+                                                        let mut bracket_token = token.clone();
+                                                        bracket_token.kind = TokenKind::BracketEnd;
+                                                        bracket_token.value = "]".to_string();
+                                                        json_tokens.push(bracket_token);
+                                                        bracket_count -= 1;
+                                                    },
+                                                    '}' => {
+                                                        let mut brace_token = token.clone();
+                                                        brace_token.kind = TokenKind::BraceEnd;
+                                                        brace_token.value = "}".to_string();
+                                                        json_tokens.push(brace_token);
+                                                        brace_count -= 1;
+                                                    },
+                                                    _ => {
+                                                        let mut symbol_token = token.clone();
+                                                        symbol_token.kind = TokenKind::Symbol;
+                                                        symbol_token.value = ch.to_string();
+                                                        json_tokens.push(symbol_token);
+                                                    }
+                                                }
+                                            }
+                                        } else if brace_count > 0 || bracket_count > 0 {
+                                            json_tokens.push(token.clone());
+                                        }
+                                    },
+                                    _ => {
+                                        if brace_count > 0 || bracket_count > 0 {
+                                            json_tokens.push(token.clone());
+                                        }
+                                    }
+                                }
+                                
+                                current_idx += 1;
+                                consumed += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        
+                        // Build JSON content
+                        let mut json_content = String::new();
+                        
+                        for (i, token) in json_tokens.iter().enumerate() {
+                            // Skip newline tokens that were converted to ";\n"
+                            if token.kind == TokenKind::Newline || token.value.contains(";\n") {
+                                continue;
+                            }
+                            
+                            let token_value = &token.value;
+                            
+                            // Add appropriate spacing
+                            if i > 0 && !json_content.is_empty() {
+                                let last_char = json_content.chars().last().unwrap_or(' ');
+                                let first_char = token_value.chars().next().unwrap_or(' ');
+                                
+                                // JSON spacing rules
+                                let needs_space = match (last_char, first_char) {
+                                    // After comma or colon, always space
+                                    (',', _) | (':', _) => true,
+                                    // Before closing delimiters, no space
+                                    (_, ',') | (_, ':') | (_, '}') | (_, ']') => false,
+                                    // After opening delimiters, no space
+                                    ('{', _) | ('[', _) => false,
+                                    // Between values, add space
+                                    _ if !",:]{}[]".contains(first_char) && !",:]{}[]".contains(last_char) => true,
+                                    _ => false
+                                };
+                                
+                                if needs_space {
+                                    json_content.push(' ');
+                                }
+                            }
+                            
+                            json_content.push_str(token_value);
+                        }
+                        
+                        // Mark that we're using JSON
+                        self.uses_data_types = true;
+                        self.result.mark_json_usage();
+                        
+                        // Complete JSON detection
+                        
+                        // Generate Rust code with json! macro
+                        if is_array {
+                            // Remove brackets from content for arrays
+                            let mut clean_content = json_content.trim();
+                            if clean_content.starts_with('[') {
+                                clean_content = &clean_content[1..];
+                            }
+                            if clean_content.ends_with(']') {
+                                clean_content = &clean_content[..clean_content.len()-1];
+                            }
+                            self.append(&format!("let {} = json!([{}]);", var_name, clean_content.trim()), AppendMode::AppendWithSpace);
+                        } else {
+                            // Remove braces from content for objects
+                            let mut clean_content = json_content.trim();
+                            if clean_content.starts_with('{') {
+                                clean_content = &clean_content[1..];
+                            }
+                            if clean_content.ends_with('}') {
+                                clean_content = &clean_content[..clean_content.len()-1];
+                            }
+                            self.append(&format!("let {} = json!({{{}}});", var_name, clean_content.trim()), AppendMode::AppendWithSpace);
+                        }
+                        self.append("\n", AppendMode::Append);
+                        
+                    } else {
+                        // Normal variable
+                        consumed += 2;
+                        self.append(&format!("let {} = ", var_name), AppendMode::AppendWithSpace);
+                    }
                 }
             }
         }
@@ -154,7 +307,7 @@ impl Parser {
         let mut consumed = 0;
         if self.kind() == TokenKind::Identifier && self.peek_value() == Some(":".to_string()) {
             if let Some(type_token) = self.select(self.current + 2) {
-                // Verifica se é uma declaração de tipo (identifier : type)
+                // Check if it's a type declaration (identifier : type)
                 if type_token.kind == TokenKind::Json || type_token.kind == TokenKind::Xml || 
                    type_token.kind == TokenKind::Toml || type_token.kind == TokenKind::Identifier ||
                    type_token.kind == TokenKind::ParamType || type_token.kind == TokenKind::Keyword {
@@ -165,9 +318,31 @@ impl Parser {
                     self.append(&format!("let {}: {};", var_name, type_name), AppendMode::AppendWithSpace);
                     consumed += 3; // identifier + : + type
                     
-                    // Nota: Não marcamos uso de tipos de dados apenas por declará-los
-                    // Só marcaremos quando realmente usarmos os tipos em operações
+                    // Note: We don't mark data types usage just by declaring them
+                    // We'll only mark when actually using the types in operations
                 }
+            }
+        }
+        Consumed::consume(consumed)
+    }
+
+    pub fn parse_json_object(&mut self) -> Consumed {
+        let mut consumed = 0;
+        if self.kind() == TokenKind::JsonObject {
+            let value = self.value();
+            
+            // Extract variable name and JSON content
+            if let Some(eq_pos) = value.find('=') {
+                let var_name = value[..eq_pos].trim();
+                let json_content = value[eq_pos + 1..].trim();
+                
+                // Mark that we're using JSON
+                self.uses_data_types = true;
+                self.result.mark_json_usage();
+                
+                // Generate Rust code with json! macro
+                self.append(&format!("let {} = json!({});", var_name, json_content), AppendMode::AppendWithSpace);
+                consumed += 1;
             }
         }
         Consumed::consume(consumed)
@@ -186,7 +361,6 @@ impl Parser {
             return Consumed::consume(1);
         }
         
-        // Check if this is a Rust macro that needs a ! suffix
         for (copper, rust) in RUST_MACROS.iter() {
             if token_value == *copper {
                 // Check if next token is already !, if so, don't add another one
@@ -211,12 +385,12 @@ impl Parser {
         if self.value() == "func" {
             self.function_start = true;
             self.result.enter_function();
-            // Marcar que usamos sintaxe Copper
+            // Mark that we're using Copper syntax
             self.result.is_copper_function = true;
             return Consumed::consume(1);
         } else if self.value() == "fn" {
-            // Para sintaxe Rust pura, apenas marca como função mas não adiciona "fn"
-            // porque já está presente
+            // For pure Rust syntax, just mark as function but don't add "fn"
+            // because it's already present
             self.function_start = true;
             self.result.is_function = true;
             self.result.is_copper_function = false;
@@ -235,7 +409,7 @@ impl Parser {
         if self.value() == ")" && self.kind() == TokenKind::ParametersEnd {
             if self.result.is_function {
                 self.append(&self.value(), AppendMode::Append);
-                // Só adiciona tipo de retorno para sintaxe Copper
+                // Only add return type for Copper syntax
                 if self.result.is_copper_function {
                     let return_type = if self.result.return_type.is_empty() { "()" } else { &self.result.return_type };
                     self.append(&format!(" -> {}", return_type), AppendMode::Append);
@@ -344,7 +518,6 @@ impl Parser {
         Consumed::consume(consumed)
     }
 
-    // Parses the definition of a class
     pub fn parse_class_definition(&mut self) -> Consumed {
         // Detects "class Name { ... }"
         if self.value() == "class" && self.kind() == TokenKind::Keyword {
@@ -707,7 +880,7 @@ impl Parser {
                                 current_field = tok.value.clone();
                                 in_field_name = false;
                             } else {
-                                // Este é um tipo
+                                // This is a type
                                 current_field.push_str(&convert_type(&tok.value));
                             }
                         },
@@ -718,8 +891,8 @@ impl Parser {
                             let converted_type = convert_type(&tok.value);
                             current_field.push_str(&converted_type);
                             
-                            // Nota: Não marcamos uso de tipos de dados apenas por declará-los em structs
-                            // Só marcaremos quando realmente usarmos os tipos em operações
+                            // Note: We don't mark data types usage just by declaring them in structs
+                            // We'll only mark when actually using the types in operations
                             // match tok.kind {
                             //     TokenKind::Json => {
                             //         self.uses_data_types = true;
@@ -768,7 +941,7 @@ impl Parser {
 
     pub fn parse_impl_block(&mut self) -> Consumed {
         if self.value() == "impl" && self.kind() == TokenKind::Impl {
-            let mut consumed = 1; // conta o 'impl'
+            let mut consumed = 1; // count the 'impl'
             
             // Generics for impl (optional)
             let mut impl_generics = String::new();
@@ -791,7 +964,7 @@ impl Parser {
                 }
             }
 
-            // Nome do tipo sendo implementado
+            // Name of the type being implemented
             let target_type = if let Some(tok) = self.select(self.current + consumed) {
                 if tok.kind == TokenKind::Identifier {
                     consumed += 1;
@@ -880,7 +1053,6 @@ impl Parser {
                 }
             }
 
-            // Processa métodos
             self.process_impl_methods(&method_tokens);
             
             self.append("}", AppendMode::ForceAppendWithSpace);
@@ -931,7 +1103,7 @@ impl Parser {
                     let return_type = convert_type(&return_type_token.value);
                     let method_name = &method_name_token.value;
                     
-                    // Found parameters 
+                    // Find parameters 
                     let mut param_start = fn_idx + 3;
                     while param_start < tokens.len() && tokens[param_start].kind != TokenKind::ParenthesesStart {
                         param_start += 1;
@@ -975,7 +1147,7 @@ impl Parser {
                         body_end += 1;
                     }
 
-                    // Process body params
+                    // Process parameters
                     let param_tokens: Vec<&Token> = tokens[param_start + 1..param_end - 1]
                         .iter()
                         .filter(|t| t.kind != TokenKind::Newline)
@@ -992,19 +1164,19 @@ impl Parser {
                             
                             let param_name = param_tokens[i_param].value.clone();
                             
-                            // Verify if has a type
+                            // Check if it has a type
                             if i_param + 2 < param_tokens.len() && 
                                param_tokens[i_param + 1].kind == TokenKind::Colon {
                                 let param_type = convert_type(&param_tokens[i_param + 2].value);
                                 params.push(format!("{}: {}", param_name, param_type));
                                 i_param += 3;
                             } else {
-                                // Apenas nome (self)
+                                // Just name (self)
                                 params.push(param_name);
                                 i_param += 1;
                             }
                             
-                            // Pula vírgula se presente
+                            // Skip comma if present
                             if i_param < param_tokens.len() && param_tokens[i_param].kind == TokenKind::Comma {
                                 i_param += 1;
                             }
@@ -1013,7 +1185,7 @@ impl Parser {
                         }
                     }
 
-                    // Extrai corpo
+                    // Extract body
                     let body_tokens: Vec<&Token> = tokens[body_start + 1..body_end - 1]
                         .iter()
                         .filter(|t| t.kind != TokenKind::Newline)
@@ -1023,7 +1195,7 @@ impl Parser {
                     for (idx, token) in body_tokens.iter().enumerate() {
                         let token_value = &token.value;
                         
-                        // Adiciona espaço antes do token se necessário
+                        // Add space before token if needed
                         if idx > 0 && !body_str.ends_with(' ') && !body_str.ends_with('{') && 
                            !token_value.starts_with(',') && !token_value.starts_with('}') &&
                            !token_value.starts_with('.') && !token_value.starts_with(';') {
@@ -1033,12 +1205,12 @@ impl Parser {
                         body_str.push_str(token_value);
                     }
 
-                    // Ajusta sintaxe para Rust
+                    // Adjust syntax for Rust
                     if !body_str.is_empty() && !body_str.ends_with(';') && !body_str.ends_with('}') {
                         body_str.push(';');
                     }
 
-                    // Gera método usando sintaxe Rust
+                    // Generate method using Rust syntax
                     let visibility = if is_pub { "pub " } else { "" };
                     let param_str = params.join(", ");
                     
@@ -1062,7 +1234,7 @@ impl Parser {
 
                     let method_name = &tokens[fn_idx + 1].value;
                     
-                    // Encontra os parâmetros
+                    // Find parameters
                     let mut param_start = fn_idx + 2;
                     while param_start < tokens.len() && tokens[param_start].kind != TokenKind::ParenthesesStart {
                         param_start += 1;
@@ -1084,7 +1256,7 @@ impl Parser {
                         param_end += 1;
                     }
 
-                    // Encontra o tipo de retorno
+                    // Find return type
                     let mut return_type = "()".to_string();
                     let mut body_start = param_end;
                     
@@ -1096,7 +1268,7 @@ impl Parser {
                         }
                     }
 
-                    // Encontra o corpo da função
+                    // Find function body
                     while body_start < tokens.len() && tokens[body_start].kind != TokenKind::BraceStart {
                         body_start += 1;
                     }
@@ -1117,7 +1289,7 @@ impl Parser {
                         body_end += 1;
                     }
 
-                    // Extrai parâmetros
+                    // Extract parameters
                     let param_tokens: Vec<&Token> = tokens[param_start + 1..param_end - 1]
                         .iter()
                         .filter(|t| t.kind != TokenKind::Newline)
@@ -1152,7 +1324,7 @@ impl Parser {
                         params.push(current_param.trim().to_string());
                     }
 
-                    // Extrai corpo
+                    // Extract body
                     let body_tokens: Vec<&Token> = tokens[body_start + 1..body_end - 1]
                         .iter()
                         .filter(|t| t.kind != TokenKind::Newline || !t.value.trim().is_empty())
@@ -1166,7 +1338,7 @@ impl Parser {
                         body_str.push_str(&token.value);
                     }
 
-                    // Gera método
+                    // Generate method
                     let visibility = if is_pub { "pub " } else { "" };
                     let param_str = params.join(", ");
                     
@@ -1195,7 +1367,7 @@ impl Parser {
     pub fn parse(&mut self) -> String {
         loop {
             if self.eof {
-                // Só adiciona aliases se realmente usar tipos de dados
+                // Only add aliases if actually using data types
                 if self.uses_data_types {
                     self.result.add_data_type_aliases();
                 }
@@ -1228,8 +1400,8 @@ impl Parser {
                         self.next();
                     },
                     TokenKind::Json | TokenKind::Xml | TokenKind::Toml => {
-                        // Nota: Só convertemos o tipo, mas não marcamos como usado ainda
-                        // Será marcado quando realmente utilizado em operações
+                        // Note: We only convert the type, but don't mark as used yet
+                        // Will be marked when actually used in operations
                         self.append(&convert_type(&self.value()), AppendMode::Append);
                         self.next();
                     },
@@ -1269,7 +1441,7 @@ impl Parser {
                             .consume_var(&mut self.current);
                     },
                     TokenKind::Trait => {
-                        // Para trait, apenas passar o token diretamente por enquanto
+                        // For trait, just pass token directly for now
                         self.parse_any()
                             .consume_var(&mut self.current);
                     },

@@ -82,7 +82,7 @@ pub fn compile(files: Vec<String>, input_dir: Option<String>, output_dir: Option
         let mut parser = parser::Parser::new(tokens);
         let result_code = parser.parse();
         
-        // Coletar dependências detectadas
+        // Collect detected dependencies
         let dependencies = parser.get_required_dependencies();
         for dep in dependencies {
             if !all_dependencies.contains(&dep) {

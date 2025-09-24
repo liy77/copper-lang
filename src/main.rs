@@ -191,7 +191,7 @@ fn parse_commands() -> ParsedCommands {
             cmd.set_valid(true);
             parsed_args.update_or_add_command(cmd);
         } else {
-            // Se não foi especificado arquivo no run, tentar usar main.crs como padrão
+            // If no file specified for run, try using main.crs as default
             let default_file = "main.crs";
             if path::Path::new(default_file).exists() {
                 let mut cmd = ParsedCommand::new("input".to_string(), vec![default_file.to_string()]);
@@ -313,5 +313,5 @@ async fn main() {
         cforge::run();
     }
     
-    println!(""); // Add a new line for better readability
+    println!("");
 }

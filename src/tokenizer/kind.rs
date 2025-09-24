@@ -49,6 +49,7 @@ pub enum TokenKind {
     Json,
     Xml,
     Toml,
+    JsonObject,
 }
 
 impl ToString for TokenKind {
@@ -103,6 +104,7 @@ impl ToString for TokenKind {
             TokenKind::Json => "Json".to_string(),
             TokenKind::Xml => "Xml".to_string(),
             TokenKind::Toml => "Toml".to_string(),
+            TokenKind::JsonObject => "JsonObject".to_string(),
         }
     }
 }

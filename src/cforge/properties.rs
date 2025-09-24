@@ -267,7 +267,7 @@ impl<'a> Properties<'a> {
             tag: None,
         };
 
-        // Verificar se a dependência já existe
+        // Check if dependency already exists
         if !self.dependencies.iter().any(|d| d.name == name) {
             self.dependencies.push(dep);
             println!("✅ {} {} {}", name.green(), "=>".yellow(), actual_version.black());
