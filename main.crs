@@ -10,18 +10,14 @@ func void hello_with_name(name: string) {
     println!("Hello {}",  name)
 }
 
-a = ai::Tensor::rand(3, 3)
-println("Versão do tensorflow: {} ", ai::FlowTensor::version_tf())
-a.print()
 mut integer = 1
 integer++
 integer++
 integer--
-
-
-
 constantvalue = 4
 
+a = ai::Tensor::rand(2,3)
+a.print()
 println!("{}", constantvalue)
 println!("{}", integer)
 hello()

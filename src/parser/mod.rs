@@ -313,13 +313,21 @@ impl Parser {
                    type_token.kind == TokenKind::ParamType || type_token.kind == TokenKind::Keyword {
                     
                     let var_name = self.value();
-                    let type_name = convert_type(&type_token.value);
+                    let (type_name, data_type) = utils::convert_type_with_marking(&type_token.value);
+                    
+                    // Mark data type usage when types are used
+                    if let Some(dt) = data_type {
+                        self.uses_data_types = true;
+                        match dt.as_str() {
+                            "json" => self.result.mark_json_usage(),
+                            "xml" => self.result.mark_xml_usage(),
+                            "toml" => self.result.mark_toml_usage(),
+                            _ => {}
+                        }
+                    }
                     
                     self.append(&format!("let {}: {};", var_name, type_name), AppendMode::AppendWithSpace);
                     consumed += 3; // identifier + : + type
-                    
-                    // Note: We don't mark data types usage just by declaring them
-                    // We'll only mark when actually using the types in operations
                 }
             }
         }
@@ -786,7 +794,19 @@ impl Parser {
                             }
     
                             let body_str = body.join(" ");
-                            let rust_type = convert_type(&return_type.value);
+                            let (rust_type, data_type) = utils::convert_type_with_marking(&return_type.value);
+                            
+                            // Mark data type usage for function return types  
+                            if let Some(dt) = data_type {
+                                self.uses_data_types = true;
+                                match dt.as_str() {
+                                    "json" => self.result.mark_json_usage(),
+                                    "xml" => self.result.mark_xml_usage(),
+                                    "toml" => self.result.mark_toml_usage(),
+                                    _ => {}
+                                }
+                            }
+                            
                             if rust_type == "()" {
                                 output.push_str(&format!("    pub fn {}(&self) {{\n", name_t.value));
                             } else {
@@ -881,14 +901,39 @@ impl Parser {
                                 in_field_name = false;
                             } else {
                                 // This is a type
-                                current_field.push_str(&convert_type(&tok.value));
+                                let (converted_type, data_type) = utils::convert_type_with_marking(&tok.value);
+                                
+                                // Mark data type usage for struct fields
+                                if let Some(dt) = data_type {
+                                    self.uses_data_types = true;
+                                    match dt.as_str() {
+                                        "json" => self.result.mark_json_usage(),
+                                        "xml" => self.result.mark_xml_usage(),
+                                        "toml" => self.result.mark_toml_usage(),
+                                        _ => {}
+                                    }
+                                }
+                                
+                                current_field.push_str(&converted_type);
                             }
                         },
                         TokenKind::Colon => {
                             current_field.push_str(": ");
                         },
                         TokenKind::ParamType | TokenKind::Type | TokenKind::Json | TokenKind::Xml | TokenKind::Toml => {
-                            let converted_type = convert_type(&tok.value);
+                            let (converted_type, data_type) = utils::convert_type_with_marking(&tok.value);
+                            
+                            // Mark data type usage for struct/param types
+                            if let Some(dt) = data_type {
+                                self.uses_data_types = true;
+                                match dt.as_str() {
+                                    "json" => self.result.mark_json_usage(),
+                                    "xml" => self.result.mark_xml_usage(),
+                                    "toml" => self.result.mark_toml_usage(),
+                                    _ => {}
+                                }
+                            }
+                            
                             current_field.push_str(&converted_type);
                             
                             // Note: We don't mark data types usage just by declaring them in structs
@@ -1100,7 +1145,19 @@ impl Parser {
                         continue;
                     }
                     
-                    let return_type = convert_type(&return_type_token.value);
+                    let (return_type, data_type) = utils::convert_type_with_marking(&return_type_token.value);
+                    
+                    // Mark data type usage for return types
+                    if let Some(dt) = data_type {
+                        self.uses_data_types = true;
+                        match dt.as_str() {
+                            "json" => self.result.mark_json_usage(),
+                            "xml" => self.result.mark_xml_usage(),
+                            "toml" => self.result.mark_toml_usage(),
+                            _ => {}
+                        }
+                    }
+                    
                     let method_name = &method_name_token.value;
                     
                     // Find parameters 
@@ -1167,7 +1224,19 @@ impl Parser {
                             // Check if it has a type
                             if i_param + 2 < param_tokens.len() && 
                                param_tokens[i_param + 1].kind == TokenKind::Colon {
-                                let param_type = convert_type(&param_tokens[i_param + 2].value);
+                                let (param_type, data_type) = utils::convert_type_with_marking(&param_tokens[i_param + 2].value);
+                                
+                                // Mark data type usage when types are used in parameters
+                                if let Some(dt) = data_type {
+                                    self.uses_data_types = true;
+                                    match dt.as_str() {
+                                        "json" => self.result.mark_json_usage(),
+                                        "xml" => self.result.mark_xml_usage(),
+                                        "toml" => self.result.mark_toml_usage(),
+                                        _ => {}
+                                    }
+                                }
+                                
                                 params.push(format!("{}: {}", param_name, param_type));
                                 i_param += 3;
                             } else {

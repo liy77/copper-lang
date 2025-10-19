@@ -136,7 +136,7 @@ impl Result {
             deps.push("toml".to_string());
         }
         
-        // XML doesn't need external dependency for now (uses String)
+        // XML não precisa de dependência externa por enquanto (usa String)
         
         deps
     }
@@ -148,7 +148,7 @@ impl Result {
     pub fn get(&mut self) -> std::result::Result<String, Box<dyn std::error::Error>> {
         self.value = self.value.trim().to_string();
 
-        // Start rustfmt process
+        // Inicia um processo rustfmt
         let mut process = Command::new("rustfmt")
             .arg("--emit")
             .arg("stdout")
@@ -156,12 +156,13 @@ impl Result {
             .stdout(Stdio::piped())
             .spawn()?;
         
-        // Write code to rustfmt stdin
+        // Escreve o código na entrada padrão do processo rustfmt
         {
             let stdin = process.stdin.as_mut().ok_or("Failed to open stdin").unwrap();
             stdin.write_all(self.value.as_bytes())?;
         }
 
+        // Captura a saída padrão do processo rustfmt
         let output = process.wait_with_output()?;
         let formatted = String::from_utf8(output.stdout)?;
 

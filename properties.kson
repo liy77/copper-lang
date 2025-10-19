@@ -6,3 +6,5 @@ $dependencies
     serde_json = "1.0.120"
     toml = "0.9.7"
     quick-xml = "0.38.3"
+    $ai_copper
+        git = "https://github.com/CopperRS/ai_copper.git"
