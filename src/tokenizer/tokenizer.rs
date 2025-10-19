@@ -176,13 +176,6 @@ impl Tokenizer {
         self.tokens.clone()
     }
 
-    pub fn drain(&mut self, end: usize) {
-        // Advance chunk_column by the number of consumed characters
-        let consumed = end - self.index;
-        self.chunk_column += consumed;
-        self.index += consumed;
-    }
-
     pub fn operator_token(&mut self) -> Consumed {
         let mut consumed = 0;
         let mut value = String::new();
@@ -233,8 +226,6 @@ impl Tokenizer {
 
         if consumed == 0 {
             for sign in OPERATORS.iter() {
-        if consumed == 0 {
-            for sign in OPERATORS.iter() {
                 if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
                     if *sign == ":" && self.kind() == Some(TokenKind::Param) {
                         value.push_str(":");
@@ -260,8 +251,6 @@ impl Tokenizer {
                     self.chunk_column += sign.len();
                     break;
                 }
-            }
-        }
             }
         }
 
@@ -682,63 +671,7 @@ impl Tokenizer {
 
         Consumed::consume(consumed)
     }
-
-    pub fn json_object_token(&mut self) -> Consumed {
-        let mut consumed = 0;
-        let mut value = String::new();
-        
-        // Check if there's a pattern: identifier whitespace = whitespace {
-        let remaining_chunk = &self.chunk[self.chunk_column..];
-        
-        // Only process if at line start or after whitespace
-        if self.chunk_column == 0 || 
-           (self.chunk_column > 0 && self.chunk.chars().nth(self.chunk_column - 1).unwrap_or(' ').is_whitespace()) {
-            
-            // Regex to detect: identifier followed by spaces, =, spaces and {
-            let json_obj_regex = Regex::new(r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*\{").unwrap();
-            
-            if let Some(cap) = json_obj_regex.captures(remaining_chunk) {
-                let _identifier = cap.get(1).unwrap().as_str();
-                let full_match = cap.get(0).unwrap();
-                let match_len = full_match.len();
-                
-                // Advance to JSON object start
-                for _ in 0..match_len {
-                    value.push(self.current_char());
-                    self.next_char();
-                    consumed += 1;
-                }
-                
-                // Now need to collect all content until matching }
-                let mut brace_count = 1;
-                let mut json_content = String::new();
-                
-                while brace_count > 0 && self.chunk_column < self.chunk.len() {
-                    let ch = self.current_char();
-                    json_content.push(ch);
-                    
-                    match ch {
-                        '{' => brace_count += 1,
-                        '}' => brace_count -= 1,
-                        _ => {}
-                    }
-                    
-                    self.next_char();
-                    consumed += 1;
-                }
-                
-                // If we managed to close all braces, create JSON token
-                if brace_count == 0 {
-                    value.push_str(&json_content);
-                    self.token(TokenKind::JsonObject, value);
-                    return Consumed::consume(consumed as isize);
-                }
-            }
-        }
-        
-        Consumed::consume(0)
-    }
-
+    
     pub fn regex_token(&mut self) -> Consumed {
         let mut consumed = 0;
         let mut value = String::new();

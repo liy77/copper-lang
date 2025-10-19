@@ -85,3 +85,7 @@ struct Container {
 func void process(input: json) {
     // processa JSON
 }
+
+testjson = {
+    "teste": "ao"
+}
