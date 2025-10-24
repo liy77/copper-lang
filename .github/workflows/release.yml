@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-release:
+    name: Build and Release ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: cforge
+            asset_name: cforge-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: cforge.exe
+            asset_name: cforge-windows-x86_64.exe
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: cforge
+            asset_name: cforge-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: cforge
+            asset_name: cforge-macos-arm64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: release-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build release
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Strip binary (Linux and macOS)
+      if: matrix.os != 'windows-latest'
+      run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
+    - name: Get version from tag
+      id: get_version
+      shell: bash
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Create Release and Upload Asset
+      uses: softprops/action-gh-release@v2
+      with:
+        files: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+        name: CForge ${{ steps.get_version.outputs.VERSION }}
+        body: |
+          ## CForge ${{ steps.get_version.outputs.VERSION }}
+          
+          ### What's New
+          - CForge command-line tool (cforge) built from the Copper project
+          - Cross-platform support (Windows, Linux, macOS)
+          - Build tools and project utilities for Copper language
+          
+          ### Downloads
+          Choose the appropriate binary for your platform:
+          
+          - **Windows (64-bit)**: `cforge-windows-x86_64.exe`
+          - **Linux (64-bit)**: `cforge-linux-x86_64`
+          - **macOS (Intel)**: `cforge-macos-x86_64`
+          - **macOS (Apple Silicon)**: `cforge-macos-arm64`
+          
+          ### Installation
+          1. Download the binary for your platform
+          2. Make it executable (Linux/macOS): `chmod +x cforge-*`
+          3. Move to a directory in your PATH or run directly
+          
+          ### Usage
+          ```bash
+          # Run cforge
+          cforge --help
+          ```
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -138,11 +138,18 @@ pub fn get_toml_package_version() -> String {
 pub fn run() {
     println!("🚀 Building and running project...");
     
-    let build_result = std::process::Command::new("cargo")
-        .arg("build")
-        .current_dir("./dist/rust")
-        .output()
-        .expect("Failed to execute cargo build");
+    let mut build_cmd = std::process::Command::new("cargo");
+    build_cmd.arg("build");
+    let mut build_args: Vec<String> = Vec::new();
+    if let Ok(t) = std::env::var("CFORGE_TARGET") {
+        build_args.push("--target".to_string());
+        build_args.push(t);
+    }
+    if !build_args.is_empty() {
+        build_cmd.args(&build_args);
+    }
+    build_cmd.current_dir("./dist/rust");
+    let build_result = build_cmd.output().expect("Failed to execute cargo build");
 
     if !build_result.status.success() {
         let stderr = String::from_utf8_lossy(&build_result.stderr);
@@ -152,11 +159,18 @@ pub fn run() {
 
     println!("✅ Build successful");
 
-    let run = std::process::Command::new("cargo")
-        .arg("run")
-        .current_dir("./dist/rust")
-        .output()
-        .expect("Failed to execute cargo run");
+    let mut run_cmd = std::process::Command::new("cargo");
+    run_cmd.arg("run");
+    let mut run_args: Vec<String> = Vec::new();
+    if let Ok(t) = std::env::var("CFORGE_TARGET") {
+        run_args.push("--target".to_string());
+        run_args.push(t);
+    }
+    if !run_args.is_empty() {
+        run_cmd.args(&run_args);
+    }
+    run_cmd.current_dir("./dist/rust");
+    let run = run_cmd.output().expect("Failed to execute cargo run");
 
     if run.status.success() {
         let stdout = String::from_utf8_lossy(&run.stdout);

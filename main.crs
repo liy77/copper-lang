@@ -10,6 +10,7 @@ func void hello_with_name(name: string) {
     println!("Hello {}",  name)
 }
 
+
 mut integer = 1
 integer++
 integer++

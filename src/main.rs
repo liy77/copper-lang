@@ -43,6 +43,12 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
             .long("version")
             .action(clap::ArgAction::SetTrue)
             .help("Show version information"))
+        .arg(Arg::new("target")
+            .long("target")
+            .num_args(1)
+            .value_name("TARGET")
+            .help("Cross-compile target (friendly names: windows, mac, linux or full rust triple)")
+        )
         .arg(Arg::new("verbose")
             .short('V')
             .long("verbose")
@@ -304,6 +310,19 @@ async fn main() {
     if commands.get_command("compile").unwrap().is_valid {
         let detected_dependencies = cforge::compile(files.clone(), input_dir.clone(), output_dir.clone());
         cforge::generate_toml(detected_dependencies).await;
+    }
+    // If the user provided --target, expose it to downstream build runner via environment variable
+    if let Some(t) = BASE_CMD.clone().get_matches().get_one::<String>("target") {
+        // Map friendly names to default triples if necessary
+        let target_triple = match t.as_str() {
+            "windows" => "x86_64-pc-windows-msvc",
+            "mac" | "darwin" => "x86_64-apple-darwin",
+            "mac-aarch64" | "m1" | "arm64" => "aarch64-apple-darwin",
+            "linux" => "x86_64-unknown-linux-gnu",
+            "linux-aarch64" | "arm64-linux" => "aarch64-unknown-linux-gnu",
+            other => other,
+        };
+        std::env::set_var("CFORGE_TARGET", target_triple);
     }
     
     // Handle run subcommand
