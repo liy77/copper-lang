@@ -6,13 +6,14 @@ echo     Copper Language Installer
 echo ========================================
 echo.
 
-:: Change to the script's directory
-cd /d "%~dp0"
+:: This script lives in scripts/. Hop up to the project root so all
+:: subsequent commands operate against Cargo.toml, src/, etc.
+cd /d "%~dp0\.."
 
 :: Check if Cargo.toml exists in current directory
 if not exist "Cargo.toml" (
-    echo [ERROR] Cargo.toml not found in current directory.
-    echo Please run this installer from the copper-lang project root directory.
+    echo [ERROR] Cargo.toml not found.
+    echo Please keep install.bat inside the scripts/ folder of the copper-lang project.
     pause
     exit /b 1
 )
@@ -71,6 +72,11 @@ if not exist "!BIN_DIR!" (
 )
 
 :: Build the project in release mode
+:: Force a fresh release build so embedded metadata (build date, version)
+:: is refreshed and any previous incremental cache cannot poison the install.
+echo [INFO] Cleaning previous release build artifacts...
+if exist "target\release\cforge.exe" del /f /q "target\release\cforge.exe"
+
 echo [INFO] Building Copper in release mode...
 cargo build --release
 if %errorLevel% neq 0 (
@@ -152,68 +158,20 @@ if %errorLevel% equ 0 (
     )
 )
 
-:: Create uninstaller
-echo [INFO] Creating uninstaller...
-(
-echo @echo off
-echo setlocal EnableDelayedExpansion
-echo.
-echo echo ========================================
-echo echo     Copper Language Uninstaller
-echo echo ========================================
-echo echo.
-echo.
-if "!INSTALL_TYPE!"=="global" (
-    echo net session ^^^>nul 2^^^>^^^&1
-    echo if %%%%errorLevel%%%% neq 0 ^^^(
-    echo     echo [ERROR] This uninstaller requires administrator privileges.
-    echo     echo Please run as administrator and try again.
-    echo     pause
-    echo     exit /b 1
-    echo ^^^)
+:: Install uninstaller
+:: We ship a hand-written uninstall.bat in scripts\ rather than generating one
+:: from echo lines — the previous generator's escape soup was extremely fragile
+:: and produced broken scripts ("0 was unexpected at this time"). The static
+:: script auto-detects install scope at runtime, so no patching is needed.
+echo [INFO] Installing uninstaller...
+if exist "scripts\uninstall.bat" (
+    copy /Y "scripts\uninstall.bat" "!INSTALL_DIR!\uninstall.bat" >nul
+    if !errorLevel! neq 0 (
+        echo [WARNING] Failed to install uninstaller. You can run it from scripts\uninstall.bat in the source tree.
+    )
+) else (
+    echo [WARNING] scripts\uninstall.bat not found in source tree; uninstaller not installed.
 )
-echo.
-echo echo [INFO] Removing installation directory...
-echo if exist "!INSTALL_DIR!" ^^^(
-echo     echo [INFO] Removing files...
-echo     if exist "!INSTALL_DIR!\Cargo.toml" del "!INSTALL_DIR!\Cargo.toml" /q
-echo     if exist "!INSTALL_DIR!\bin" rmdir /s /q "!INSTALL_DIR!\bin"
-echo     if exist "!INSTALL_DIR!\lson" rmdir /s /q "!INSTALL_DIR!\lson"
-echo     if exist "!INSTALL_DIR!\std" rmdir /s /q "!INSTALL_DIR!\std"
-echo     rmdir /q "!INSTALL_DIR!" 2^^^>nul
-echo     if ^^^^!errorLevel^^^^! neq 0 ^^^(
-echo         echo [WARNING] Some files may remain in !INSTALL_DIR!
-echo     ^^^) else ^^^(
-echo         echo [SUCCESS] Installation directory removed.
-echo     ^^^)
-echo ^^^) else ^^^(
-echo     echo [INFO] Installation directory not found.
-echo ^^^)
-echo.
-echo echo [INFO] Removing from PATH...
-echo for /f "tokens=2*" %%%%%%A in ^^^('reg query "!REG_KEY!" /v PATH 2^^^^^>nul'^^^) do set "CURRENT_PATH=%%%%%%B"
-echo set "NEW_PATH=^^^^!CURRENT_PATH:%%%%COPPER_PATH%%%%\bin;=^^^^!"
-echo set "NEW_PATH=^^^^!NEW_PATH:;%%%%COPPER_PATH%%%%\bin=^^^^!"
-echo set "NEW_PATH=^^^^!NEW_PATH:%%%%COPPER_PATH%%%%\bin=^^^^!"
-echo reg add "!REG_KEY!" /v PATH /t REG_EXPAND_SZ /d "^^^^!NEW_PATH^^^^!" /f ^^^^^>nul
-echo if ^^^^!errorLevel^^^^! neq 0 ^^^(
-echo     echo [ERROR] Failed to update PATH.
-echo ^^^) else ^^^(
-echo     echo [SUCCESS] Removed from PATH.
-echo ^^^)
-echo.
-echo echo [INFO] Removing COPPER_PATH environment variable...
-echo reg delete "!REG_KEY!" /v COPPER_PATH /f ^^^^^>nul 2^^^^^>^^^^^&1
-echo if ^^^^!errorLevel^^^^! neq 0 ^^^(
-echo     echo [WARNING] COPPER_PATH may not have been set or already removed.
-echo ^^^) else ^^^(
-echo     echo [SUCCESS] COPPER_PATH environment variable removed.
-echo ^^^)
-echo.
-echo echo [SUCCESS] Copper Language has been uninstalled.
-echo echo Please restart your command prompt to apply PATH changes.
-echo pause
-) > "!INSTALL_DIR!\uninstall.bat"
 
 echo.
 echo ========================================

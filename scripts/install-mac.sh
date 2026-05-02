@@ -6,14 +6,15 @@ echo "    Copper Language Installer"
 echo "========================================"
 echo
 
-# Change to the script's directory
+# This script lives in scripts/. Hop up to the project root so Cargo.toml,
+# src/, lson/ and std/ are all reachable with relative paths.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/.."
 
 # Check if Cargo.toml exists in current directory
 if [[ ! -f "Cargo.toml" ]]; then
-  echo "[ERROR] Cargo.toml not found in current directory."
-  echo "Please run this installer from the copper-lang project root directory."
+  echo "[ERROR] Cargo.toml not found."
+  echo "Please keep install-mac.sh inside the scripts/ folder of the copper-lang project."
   read -r -p "Press any key to exit..." -n 1 || true; echo
   exit 1
 fi

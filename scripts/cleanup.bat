@@ -4,34 +4,47 @@ echo      Copper Project Cleanup
 echo ========================================
 echo.
 
-echo [INFO] Cleaning up development files...
+:: Hop from scripts/ up to the project root.
+cd /d "%~dp0\.."
 
-:: Remove build artifacts
+echo [INFO] Cleaning up development artifacts in %CD%
+
+:: Remove Rust build output
 if exist "target" (
-    echo [INFO] Removing target directory...
+    echo [INFO] Removing target/ ...
     rmdir /s /q "target" 2>nul
-    echo [SUCCESS] Target directory removed
+    echo [SUCCESS] target/ removed
 )
 
-:: Keep only essential files for distribution
+:: Remove generated transpilation output
+if exist "dist" (
+    echo [INFO] Removing dist/ ...
+    rmdir /s /q "dist" 2>nul
+    echo [SUCCESS] dist/ removed
+)
+
+:: Remove tokenizer/parser debug logs left in the project root
+if exist "cforge_tokenizer_debug.log" (
+    del /f /q "cforge_tokenizer_debug.log"
+    echo [SUCCESS] cforge_tokenizer_debug.log removed
+)
+
 echo.
-echo [INFO] Essential files for distribution:
-echo - install.bat (Universal installer)
-echo - diagnose.bat (Diagnostic tool)
-echo - build.bat (Build script)
-echo - Cargo.toml (Project metadata)
-echo - src/ (Source code)
-echo - lson/ (LSON parser)
-echo - std/ (Standard library)
-echo - properties.kson (Project configuration)
-echo - main.crs (Example file)
-echo - *.crs (Copper source files)
+echo [INFO] Files retained for distribution:
+echo   - Cargo.toml, Cargo.lock, build.rs   ^(Rust project metadata^)
+echo   - src/                                ^(compiler source^)
+echo   - scripts/                            ^(install/build/diagnose tools^)
+echo   - docs/                               ^(installation guide^)
+echo   - lson/, std/                         ^(runtime assets^)
+echo   - properties.kson                     ^(project configuration^)
+echo   - examples/                           ^(.crs sample programs^)
+echo   - main.crs                            ^(default file for `cforge run`^)
 echo.
 
-echo [SUCCESS] Cleanup complete!
+echo [SUCCESS] Cleanup complete.
 echo.
 echo To create a distributable package:
-echo 1. Archive this directory
-echo 2. Users can extract and run install.bat
+echo   1. Archive this directory.
+echo   2. Users extract it and run scripts\install.bat.
 echo.
 pause

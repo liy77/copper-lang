@@ -1,3 +1,15 @@
+# Rust build output
 /target
+
+# CForge transpilation output
 /dist
+
+# Packaging staging area
 /packaging
+
+# Tokenizer / parser debug logs
+*.log
+cforge_tokenizer_debug.log
+
+# Local agent / IDE state
+/.claude

@@ -1,127 +1,95 @@
-# Copper Language - Installation
+# Installing Copper
 
-This repository contains a universal installer for the Copper language that allows you to use the `cforge` command globally on your system.
+The Copper compiler ships with a universal installer that exposes `cforge`
+globally on your system. Installers live in [`scripts/`](../scripts) at the
+project root.
 
 ## Prerequisites
 
-- Windows 10/11
-- Rust and Cargo installed ([Download here](https://rustup.rs/))
+- **Windows 10 / 11**, **macOS**, or **Linux**
+- Rust + Cargo — install from <https://rustup.rs/>
 
-## Quick Installation
+## Quick install
 
-```bash
-# Run the universal installer
-install.bat
-```
+From the project root:
 
-The installer automatically detects if you're running as administrator:
-- **As Administrator**: Installs globally in `C:\Program Files\Copper` (for all users)
-- **As Normal User**: Installs locally in `%USERPROFILE%\.copper` (for you only)
+| Platform | Command |
+| --- | --- |
+| Windows  | `scripts\install.bat` |
+| Linux    | `bash scripts/install.sh` |
+| macOS    | `bash scripts/install-mac.sh` |
+
+The installer auto-detects whether you launched it with admin / root
+privileges:
+
+| Privilege | Scope | Path |
+| --- | --- | --- |
+| Admin / root | Global (all users) | `C:\Program Files\Copper` *(Windows)*, `/usr/local/lib/copper` *(Unix)* |
+| Normal user | Local (current user) | `%USERPROFILE%\.copper` *(Windows)*, `$HOME/.copper` *(Unix)* |
+
+Restart your terminal after installation so the new `PATH` is picked up.
 
 ## Usage
 
-After installation, restart your terminal and use:
-
-```bash
+```sh
 # Compile and run
 cforge run main.crs
 
-# Run default file (main.crs)
+# Run the default file (main.crs in cwd)
 cforge run
 
 # Compile only
 cforge -c -i main.crs
 
+# Compile every .crs in a directory
+cforge -c -i src/
+
 # Show help
 cforge --help
+
+# Show version (with build date for pre-releases)
+cforge --version
 ```
 
-## Included Tools
+## Bundled scripts
 
-- **`install.bat`** - Universal installer
-- **`diagnose.bat`** - Installation diagnostics
-- **`build.bat`** - Manual project build
-- **`cleanup.bat`** - Development files cleanup
+All live in [`scripts/`](../scripts):
 
-## Command Examples
+| Script | Purpose |
+| --- | --- |
+| `install.bat` / `install.sh` / `install-mac.sh` | Build a release binary and install it system- or user-wide |
+| `uninstall.bat` | Remove the installation, the `COPPER_PATH` env var, and `bin` from `PATH` |
+| `build.bat` | Build a release binary into `target/release/` without installing |
+| `cleanup.bat` | Remove `target/`, `dist/`, and stray debug logs |
+| `diagnose.bat` | Print install diagnostics (Windows) |
 
-```bash
-# Run main file
-cforge run main.crs
+## Examples
 
-# Run without specifying file (uses main.crs by default)
-cforge run
+The repo ships sample programs in [`examples/`](../examples):
 
-# Compile only
-cforge -c -i src/main.crs
-
-# Compile with cleanup
-cforge --clean -c -i main.crs
-
-# Verbose mode
-cforge run main.crs --verbose
-
-# Custom output directory
-cforge run myproject.crs -o custom_output
+```sh
+cforge run examples/loops.crs
+cforge run examples/interpolation.crs
+cforge run examples/collections.crs
+cforge run examples/matching.crs
+cforge run examples/optional.crs
+cforge run examples/ternary.crs
 ```
 
-## Uninstallation
+## Uninstall
 
-Run the uninstaller created during installation:
+| Install scope | How to uninstall |
+| --- | --- |
+| Local (Windows) | `"%USERPROFILE%\.copper\uninstall.bat"` |
+| Global (Windows) | Run `"C:\Program Files\Copper\uninstall.bat"` **as Administrator** |
 
-**Global Installation:**
-```bash
-# Run as administrator
-"C:\Program Files\Copper\uninstall.bat"
-```
+Either uninstaller auto-detects scope from your privilege level. You can also
+run `scripts\uninstall.bat` directly from the source tree if the installed
+copy is missing or broken — it works the same way.
 
-**Local Installation:**
-```bash
-# Run normally
-"%USERPROFILE%\.copper\uninstall.bat"
-```
+## Project configuration
 
-## File Structure
-
-After installation, the following files will be available:
-
-```
-Copper/
-├── bin/
-│   └── cforge.exe          # Main executable
-├── lson/                   # LSON parser
-│   ├── win32/
-│   └── linux/
-├── std/                    # Standard library
-│   └── import.crs
-├── Cargo.toml              # Project metadata
-└── uninstall.bat          # Uninstaller script
-```
-
-## Troubleshooting
-
-### The `cforge` command is not recognized
-1. Check if the installation completed successfully
-2. Restart your command prompt/PowerShell
-3. Check if PATH was configured correctly:
-   ```bash
-   echo %PATH%
-   ```
-
-### Permission error
-- For global installation: Run prompt as administrator
-- For local installation: Use normal user privileges
-
-### Dependency issues
-Check if Rust is installed:
-```bash
-cargo --version
-rustc --version
-```
-
-## Project Configuration
-
-Copper uses a `properties.kson` file for project configuration:
+Copper projects use `properties.kson` at their root:
 
 ```kson
 name = "MyProject"
@@ -130,19 +98,38 @@ edition = 2021
 
 [dependencies]
 serde_json = "1.0.120"
-regex = "1.10.5"
-ai_copper = { git = "https://github.com/CopperRS/ai_copper.git" }
+regex      = "1.10.5"
+ai_copper  = { git = "https://github.com/CopperRS/ai_copper.git" }
 ```
+
+## Troubleshooting
+
+### `cforge` is not recognized
+
+1. Open a **new** terminal (the running one cached the old `PATH`).
+2. Confirm the install location is in `PATH`:
+   - Windows: `echo %PATH%` should contain `%COPPER_PATH%\bin`.
+   - Unix: `echo $PATH` should contain `$HOME/.copper/bin` or `/usr/local/lib/copper/bin`.
+3. In PowerShell, `where` is `Where-Object` (a cmdlet), not the PATH search
+   utility. Use `where.exe cforge` or `Get-Command cforge -All`.
+
+### Permission errors
+
+- Global install requires admin / root. Re-launch with elevation.
+- Local install needs no privileges; install into your home directory instead.
+
+### Rust missing
+
+```sh
+cargo --version
+rustc --version
+```
+
+If either is missing, install via <https://rustup.rs/>.
 
 ## Contributing
 
-To contribute to the project:
-
-1. Fork the repository
-2. Create a branch for your feature
-3. Commit your changes
-4. Open a Pull Request
-
-## License
-
-[Insert license information here]
+1. Fork the repository.
+2. Create a topic branch.
+3. Commit your changes with a clear message.
+4. Open a pull request.
