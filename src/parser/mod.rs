@@ -1998,10 +1998,10 @@ impl Parser {
                     TokenKind::ParenthesesEnd
                     | TokenKind::ParametersEnd
                     | TokenKind::BracketEnd
-                    | TokenKind::BraceEnd => {
-                        if self.chain_delim_depth > 0 {
-                            self.chain_delim_depth -= 1;
-                        }
+                    | TokenKind::BraceEnd
+                        if self.chain_delim_depth > 0 =>
+                    {
+                        self.chain_delim_depth -= 1;
                     }
                     _ => {}
                 }

@@ -973,8 +973,7 @@ impl Tokenizer {
     pub fn last_token(&self) -> Option<&Token> {
         self.tokens
             .iter()
-            .filter(|t| t.kind != TokenKind::Whitespace)
-            .next_back()
+            .rfind(|t| t.kind != TokenKind::Whitespace)
     }
 
     pub fn token(&mut self, kind: TokenKind, value: String) -> &mut Token {

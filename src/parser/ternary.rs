@@ -97,10 +97,8 @@ fn find_matching_colon(tokens: &[Token], q_pos: usize) -> Option<usize> {
                 }
                 depth -= 1;
             }
-            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Comma => {
-                if depth == 0 {
-                    return None;
-                }
+            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Comma if depth == 0 => {
+                return None;
             }
             TokenKind::Operator if depth == 0 => {
                 if tok.value == "?" {
@@ -142,10 +140,8 @@ fn find_condition_start(tokens: &[Token], q_pos: usize) -> usize {
                 }
                 depth -= 1;
             }
-            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Comma => {
-                if depth == 0 {
-                    return j + 1;
-                }
+            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Comma if depth == 0 => {
+                return j + 1;
             }
             TokenKind::Operator if depth == 0 => {
                 if matches!(
@@ -183,10 +179,8 @@ fn find_else_end(tokens: &[Token], colon_pos: usize) -> usize {
                 }
                 depth -= 1;
             }
-            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Comma => {
-                if depth == 0 {
-                    return j.saturating_sub(1).max(last);
-                }
+            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Comma if depth == 0 => {
+                return j.saturating_sub(1).max(last);
             }
             _ => {}
         }
