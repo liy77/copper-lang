@@ -311,6 +311,27 @@ clippy categories that come from untouched legacy code (interior-mutable
 those allows, drop the relevant entry — anything outside the allow-list
 fails the build.
 
+### Toolchain pin
+
+`rust-toolchain.toml` pins the channel to `stable` and auto-installs
+`rustfmt` + `clippy`. Cargo respects it the moment anyone enters the
+directory, so the rustc and clippy used locally always match what
+`dtolnay/rust-toolchain@stable` installs in CI.
+
+If a fresh clippy lint lands in a newer `stable` and starts breaking
+CI, two options:
+
+1. Fix the lint (preferred — the CI is honest about what's flagged).
+2. Freeze: change `channel = "stable"` to `channel = "1.95.0"` (or
+   whatever is current) so updates become deliberate. Don't do this
+   without a comment explaining what regression triggered the freeze.
+
+After a `rustup update` that bumps stable, run `cargo clean` once —
+proc-macro DLLs (tokio-macros, serde_derive, clap_derive, ...) are
+ABI-tied to the rustc that built them and refuse to load with a new
+compiler. The pin doesn't help here because the pin floats with stable;
+freezing to a specific version is the only way to avoid this entirely.
+
 ### Pre-commit / pre-push hooks
 
 `.githooks/pre-commit` runs `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings`.

@@ -1,0 +1,16 @@
+# Pin the toolchain so every clone (and CI) compiles against the same Rust
+# release. `channel = "stable"` tracks rustup's latest stable, matching what
+# `dtolnay/rust-toolchain@stable` installs in .github/workflows/ci.yml — so
+# the lints clippy enforces locally are exactly the lints CI enforces.
+#
+# The `components` list is auto-installed by rustup the first time anyone
+# enters this directory, so `cargo fmt` and `cargo clippy` work without a
+# manual `rustup component add` after cloning.
+#
+# To freeze on a specific build (e.g. when CI starts breaking because of a
+# new clippy lint), swap `channel = "stable"` for `channel = "1.95.0"` and
+# bump it deliberately.
+
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
