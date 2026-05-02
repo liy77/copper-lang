@@ -160,7 +160,7 @@ fn read_ident(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
 fn read_braced_expression(chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
     let mut out = String::new();
     let mut depth: usize = 1;
-    while let Some(c) = chars.next() {
+    for c in chars.by_ref() {
         match c {
             '{' => {
                 depth += 1;

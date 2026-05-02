@@ -42,7 +42,7 @@ fn strip_block_comments(source: &str) -> String {
                           // Skip until matching `*/`, preserving any newlines so token
                           // location data stays aligned with the source file.
             let mut prev = '\0';
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 if prev == '*' && next == '/' {
                     break;
                 }
@@ -76,17 +76,16 @@ impl EndToken {
     }
 }
 
-pub(self) const TRAILING_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+$").unwrap());
-pub(self) const COMPOUND_SIGNS: [&'static str; 9] =
-    ["::", "-=", "+=", "/=", "*=", "%=", "&=", "^=", "|="];
-pub(self) const COMPARE_SIGNS: [&'static str; 6] = ["==", "!=", "<=", ">=", ">", "<"];
-pub(self) const ARITHMETIC_SIGNS: [&'static str; 5] = ["+", "-", "*", "/", "%"];
-pub(self) const RANGE_SIGNS: [&'static str; 2] = ["..", "..="];
-pub(self) const OPERATORS: [&'static str; 9] = ["!", "&", "|", "^", "~", ":", "?", ".", "="];
-pub(self) const COMMA_SEPARATORS: [&'static str; 2] = [",", ";"];
-pub(self) const BOOL: [&'static str; 2] = ["true", "false"];
-pub(self) const BOM: u32 = 65279;
-pub(self) const RUST_KEYWORDS: &[&'static str] = &[
+const TRAILING_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+$").unwrap());
+const COMPOUND_SIGNS: [&str; 9] = ["::", "-=", "+=", "/=", "*=", "%=", "&=", "^=", "|="];
+const COMPARE_SIGNS: [&str; 6] = ["==", "!=", "<=", ">=", ">", "<"];
+const ARITHMETIC_SIGNS: [&str; 5] = ["+", "-", "*", "/", "%"];
+const RANGE_SIGNS: [&str; 2] = ["..", "..="];
+const OPERATORS: [&str; 9] = ["!", "&", "|", "^", "~", ":", "?", ".", "="];
+const COMMA_SEPARATORS: [&str; 2] = [",", ";"];
+const BOOL: [&str; 2] = ["true", "false"];
+const BOM: u32 = 65279;
+const RUST_KEYWORDS: &[&str] = &[
     // Control Flow Keywords
     "if",
     "else",
@@ -183,7 +182,7 @@ pub(self) const RUST_KEYWORDS: &[&'static str] = &[
     "try",
 ];
 
-pub(self) const COPPER_KEYWORDS: &[&'static str] = &[
+const COPPER_KEYWORDS: &[&str] = &[
     // Function Definition and Implementation Keywords
     "func", "$init", "$child", // Module Handling Keywords
     "import", "from", // Class Keywords
@@ -288,7 +287,7 @@ impl Tokenizer {
             self.index = line_end;
         }
 
-        if self.ends.len() > 0 {
+        if !self.ends.is_empty() {
             let last = self.ends.last().unwrap();
             let location = last.origin.as_ref().unwrap().location_data.clone().unwrap();
 
@@ -383,7 +382,7 @@ impl Tokenizer {
                     .starts_with(sign)
                 {
                     if *sign == ":" && self.kind() == Some(TokenKind::Param) {
-                        value.push_str(":");
+                        value.push(':');
                         consumed += sign.len() + 1;
                         self.chunk_column += sign.len() + 1;
                         kind = TokenKind::Colon;
@@ -557,7 +556,7 @@ impl Tokenizer {
                             self.seen_import = false;
                         }
 
-                        value.push_str("\n");
+                        value.push('\n');
 
                         TokenKind::Newline
                     } else {
@@ -762,13 +761,11 @@ impl Tokenizer {
             } else if self.seen_import {
                 if self.value(true) == Some("from".to_string()) {
                     kind = TokenKind::ModulePath;
+                } else if self.value(true) != Some(" ".to_string()) {
+                    self.add_to_value(&value);
+                    return Consumed::Consumed(consumed);
                 } else {
-                    if self.value(true) != Some(" ".to_string()) {
-                        self.add_to_value(&value);
-                        return Consumed::Consumed(consumed);
-                    } else {
-                        kind = TokenKind::ModuleVar;
-                    }
+                    kind = TokenKind::ModuleVar;
                 }
             } else {
                 match self.last_token() {
@@ -951,9 +948,7 @@ impl Tokenizer {
     pub fn value(&self, use_origin: bool) -> Option<String> {
         let token = self.tokens.last();
 
-        if token.is_none() {
-            return None;
-        }
+        token?;
 
         let token = token.unwrap();
         let value = token.value.clone();
@@ -979,7 +974,7 @@ impl Tokenizer {
         self.tokens
             .iter()
             .filter(|t| t.kind != TokenKind::Whitespace)
-            .last()
+            .next_back()
     }
 
     pub fn token(&mut self, kind: TokenKind, value: String) -> &mut Token {
@@ -987,7 +982,7 @@ impl Tokenizer {
 
         // If the length is 0, we want to modify the last token
         if length == 0 {
-            if self.tokens.len() == 0 {
+            if self.tokens.is_empty() {
                 return self.token(TokenKind::Unknown, " ".to_string());
             }
 
@@ -1012,7 +1007,7 @@ impl Tokenizer {
     }
 
     pub fn skip_end(&mut self) {
-        if self.ends.len() == 0 {
+        if self.ends.is_empty() {
             return;
         }
 
@@ -1203,22 +1198,24 @@ impl Tokenizer {
         let mut thus_far = 0;
         let mut source = &self.source;
 
-        if source.len() > 0 && source.chars().nth(0).unwrap() as u32 == BOM {
+        if !source.is_empty() && source.chars().nth(0).unwrap() as u32 == BOM {
             self.source = source.chars().skip(1).collect::<String>();
             source = &self.source;
             self.location_data_compensations[0] = 1;
             thus_far += 1;
         }
 
-        if TRAILING_SPACES.is_match(&source) {
-            self.source = TRAILING_SPACES.replace_all(&source, "").to_string();
+        if TRAILING_SPACES.is_match(source) {
+            self.source = TRAILING_SPACES.replace_all(source, "").to_string();
             source = &self.source;
             self.chunk_line -= 1;
-            self.location_data_compensations
-                .insert(0, self.location_data_compensations.get(0).unwrap_or(&1) - 1);
+            self.location_data_compensations.insert(
+                0,
+                self.location_data_compensations.first().unwrap_or(&1) - 1,
+            );
         }
 
-        for (_, mat) in re.find_iter(&source).enumerate() {
+        for mat in re.find_iter(source) {
             let offset = mat.start();
 
             while self.location_data_compensations.len() < (thus_far + offset) + 1 {
@@ -1229,7 +1226,7 @@ impl Tokenizer {
             thus_far += offset;
         }
 
-        self.source = re.replace_all(&source, "").to_string();
+        self.source = re.replace_all(source, "").to_string();
     }
 
     fn current_char(&self) -> char {

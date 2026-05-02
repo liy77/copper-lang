@@ -49,14 +49,14 @@ fn parse(text: &str) -> Value {
         let cmd = cmd.unwrap();
         let mut stdout = String::from_utf8_lossy(&cmd.stdout);
 
-        if stdout.lines().nth(0).unwrap().starts_with("warning ") {
+        if stdout.lines().next().unwrap().starts_with("warning ") {
             stdout = stdout.lines().skip(1).collect();
         }
 
         let json = stdout.to_string();
         let parsed_json: Value = serde_json::from_str(&json).expect("Invalid KSON file");
 
-        return parsed_json;
+        parsed_json
     } else {
         let cmd = cmd;
         if cmd.is_err() {

@@ -110,7 +110,7 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
                 continue;
             }
 
-            let (valid, v) = check_version_exists(&name, &version, None)
+            let (valid, v) = check_version_exists(name, &version, None)
                 .await
                 .unwrap_or((false, version.clone()));
             if !valid {
@@ -187,7 +187,7 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
                 println!("✅ {} {} {}", name.green(), "=>".yellow(), git_url.black());
             } else if let Some(version) = dep_obj.get("version").and_then(|v| v.as_str()) {
                 // Regular dependency with version and possibly features
-                let (valid, v) = check_version_exists(&name, &version, None)
+                let (valid, v) = check_version_exists(name, version, None)
                     .await
                     .unwrap_or((false, version.to_string()));
 
@@ -222,6 +222,12 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
                 );
             }
         }
+    }
+}
+
+impl<'a> Default for Properties<'a> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

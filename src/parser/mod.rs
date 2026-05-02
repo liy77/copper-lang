@@ -107,7 +107,7 @@ impl Parser {
     }
 
     pub fn peek_kind(&self) -> Option<TokenKind> {
-        self.peek().map(|t| t.kind.clone())
+        self.peek().map(|t| t.kind)
     }
 
     pub fn peek_value(&self) -> Option<String> {
@@ -149,7 +149,7 @@ impl Parser {
     }
 
     pub fn kind(&self) -> TokenKind {
-        self.current().map_or(TokenKind::Eof, |t| t.kind.clone())
+        self.current().map_or(TokenKind::Eof, |t| t.kind)
     }
 
     pub fn parse_mut(&mut self) -> Consumed {
@@ -717,24 +717,26 @@ impl Parser {
             self.append(&self.value(), AppendMode::Append);
             consumed += 1;
         }
-        if self.value() == "}" && self.kind() == TokenKind::BraceEnd {
-            if !self.seen_import && !self.is_inside_class {
-                self.append(&self.value(), AppendMode::Append);
-                if self.result.is_inside_function {
-                    if self.function_brace_depth > 1 {
-                        // Closing an inner block — stay inside the function.
-                        self.function_brace_depth -= 1;
-                    } else {
-                        // The matching outer `}` of the function body.
-                        self.function_brace_depth = 0;
-                        self.append("\n", AppendMode::AppendWithSpace);
-                        self.result.is_inside_function = false;
-                    }
+        if self.value() == "}"
+            && self.kind() == TokenKind::BraceEnd
+            && !self.seen_import
+            && !self.is_inside_class
+        {
+            self.append(&self.value(), AppendMode::Append);
+            if self.result.is_inside_function {
+                if self.function_brace_depth > 1 {
+                    // Closing an inner block — stay inside the function.
+                    self.function_brace_depth -= 1;
                 } else {
+                    // The matching outer `}` of the function body.
+                    self.function_brace_depth = 0;
                     self.append("\n", AppendMode::AppendWithSpace);
+                    self.result.is_inside_function = false;
                 }
-                consumed += 1;
+            } else {
+                self.append("\n", AppendMode::AppendWithSpace);
             }
+            consumed += 1;
         }
         Consumed::consume(consumed)
     }
@@ -779,14 +781,14 @@ impl Parser {
                 self.append(&self.value(), AppendMode::Append);
                 if !self.current_import_vars.is_empty() {
                     if self.is_import_list {
-                        self.append(&"::".to_string(), AppendMode::Append);
-                        self.append(&"{".to_string(), AppendMode::Append);
+                        self.append("::", AppendMode::Append);
+                        self.append("{", AppendMode::Append);
                         self.append(&self.current_import_vars.join(", "), AppendMode::Append);
-                        self.append(&"}".to_string(), AppendMode::Append);
+                        self.append("}", AppendMode::Append);
                         self.is_import_list = false;
                     } else {
                         let var = self.current_import_vars[0].clone();
-                        self.append(&" as".to_string(), AppendMode::AppendWithSpace);
+                        self.append(" as", AppendMode::AppendWithSpace);
                         self.append(&var, AppendMode::Append);
                     }
                     self.current_import_vars.clear();

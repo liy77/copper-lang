@@ -17,6 +17,12 @@ pub struct Result {
     pub(crate) uses_toml: bool,
 }
 
+impl Default for Result {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Result {
     pub fn new() -> Self {
         Self {
@@ -72,7 +78,7 @@ impl Result {
 
     pub fn enter_function(&mut self) {
         self.is_function = true;
-        self.append(&"fn ".to_owned(), false);
+        self.append("fn ", false);
     }
 
     pub fn enter_class(&mut self, name: &str) {
@@ -82,7 +88,7 @@ impl Result {
 
     pub fn exit_class(&mut self) {
         self.is_class = false;
-        self.append(&"}".to_owned(), false);
+        self.append("}", false);
     }
 
     pub fn exit_function(&mut self) {

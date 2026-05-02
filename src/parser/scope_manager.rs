@@ -6,6 +6,12 @@ pub struct Scopes {
     current: usize,
 }
 
+impl Default for Scopes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scopes {
     pub fn new() -> Self {
         Self {

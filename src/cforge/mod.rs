@@ -144,7 +144,7 @@ pub fn get_toml_package_name() -> String {
         .split("\"")
         .collect::<Vec<&str>>()[0];
 
-    return name.to_string();
+    name.to_string()
 }
 
 pub fn get_toml_package_version() -> String {
@@ -155,7 +155,7 @@ pub fn get_toml_package_version() -> String {
         .split("\"")
         .collect::<Vec<&str>>()[0];
 
-    return version.to_string();
+    version.to_string()
 }
 
 pub fn run() {

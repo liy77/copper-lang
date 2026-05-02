@@ -46,11 +46,10 @@ jobs:
             ~/.cargo/git
             target
           key: clippy-${{ hashFiles('**/Cargo.lock') }}
-      # Informational: there is a known backlog of pre-existing warnings
-      # while the full parser is still being restored. We keep the lint
-      # report visible without blocking CI on it. Tighten back to
-      # `-- -D warnings` once the backlog is cleared.
-      - run: cargo clippy --all-targets
+      # Crate-level `#![allow(...)]` in src/main.rs silences a small set
+      # of stylistic categories that come from untouched legacy code.
+      # Anything outside that allow-list is a hard fail.
+      - run: cargo clippy --all-targets -- -D warnings
 
   check:
     name: Check

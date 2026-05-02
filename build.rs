@@ -32,7 +32,7 @@ fn main() {
     let src_cargo = Path::new("Cargo.toml");
 
     // Copy Cargo.toml
-    match fs::copy(&src_cargo, &dest_cargo) {
+    match fs::copy(src_cargo, &dest_cargo) {
         Ok(_) => println!("Cargo.toml successfully copied to {:?}", dest_cargo),
         Err(e) => eprintln!("Error copying Cargo.toml: {}", e),
     }
@@ -42,7 +42,7 @@ fn main() {
     let dest_lson = target_dir.join("lson");
 
     if src_lson.exists() {
-        if let Err(e) = copy_dir_all(&src_lson, &dest_lson) {
+        if let Err(e) = copy_dir_all(src_lson, &dest_lson) {
             eprintln!("Error copying lson directory: {}", e);
         } else {
             println!("lson directory successfully copied to {:?}", dest_lson);
