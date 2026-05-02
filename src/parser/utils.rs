@@ -1,4 +1,4 @@
-const COPPER_TYPES : [(&str, &str); 18] = [
+const COPPER_TYPES: [(&str, &str); 18] = [
     ("int", "i64"),
     ("float", "f64"),
     ("uint", "u64"),
@@ -55,7 +55,7 @@ pub fn convert_type_with_marking(value: &str) -> (String, Option<String>) {
     for (copper, rust) in COPPER_TYPES.iter() {
         if kind == *copper {
             kind = rust.to_string();
-            
+
             // Mark which data type is being used
             match *copper {
                 "json" => data_type_used = Some("json".to_string()),

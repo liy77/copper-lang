@@ -1,7 +1,7 @@
-use std::path::Path;
-use std::{env, fs};
-use std::process::{exit, Command};
 use serde_json::Value;
+use std::path::Path;
+use std::process::{exit, Command};
+use std::{env, fs};
 
 use crate::cforge::COPPER_PATH;
 
@@ -10,16 +10,28 @@ fn parse(text: &str) -> Value {
     let binding = COPPER_PATH;
     let cop_path = Path::new(binding.as_str());
     let path = if cfg!(target_os = "windows") {
-        exe_dir.join(cop_path.join(format!("lson{}win32{}lson.exe", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)))
+        exe_dir.join(cop_path.join(format!(
+            "lson{}win32{}lson.exe",
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        )))
     } else {
-        exe_dir.join(cop_path.join(format!("lson{}linux{}lson", std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR)))
+        exe_dir.join(cop_path.join(format!(
+            "lson{}linux{}lson",
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        )))
     };
 
     let path = path.as_os_str();
 
     let dir_binding = env::current_exe().unwrap();
     let current_dir = dir_binding.parent().unwrap();
-    let current_dir = if current_dir.to_str().unwrap().contains(&format!("target{}debug", std::path::MAIN_SEPARATOR)) {
+    let current_dir = if current_dir
+        .to_str()
+        .unwrap()
+        .contains(&format!("target{}debug", std::path::MAIN_SEPARATOR))
+    {
         current_dir.join("../../")
     } else {
         current_dir.to_path_buf()
@@ -61,7 +73,7 @@ fn parse(text: &str) -> Value {
 
 /// Read properties from a KSON or TOML file.
 /// If both files exist, KSON takes precedence.
-/// 
+///
 /// Returns (is_toml, Value)
 pub fn read_properties(file: &str) -> (bool, Value) {
     let mut file = file.to_string();

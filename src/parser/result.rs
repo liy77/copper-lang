@@ -1,4 +1,7 @@
-use std::{io::Write, process::{Command, Stdio}};
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 
 #[derive(Debug, Clone)]
 pub struct Result {
@@ -35,11 +38,15 @@ impl Result {
             return;
         }
 
-        self.force_append(&("\n\nfn main() {\n".to_owned() + &self.main_function_code.replace("\n\n", "") + "}"), false);
+        self.force_append(
+            &("\n\nfn main() {\n".to_owned() + &self.main_function_code.replace("\n\n", "") + "}"),
+            false,
+        );
     }
 
     pub fn append_to_main_function(&mut self, value: &str, space: bool) {
-        self.main_function_code.push_str(&(value.to_owned() + (if space { " " } else { "" })));
+        self.main_function_code
+            .push_str(&(value.to_owned() + (if space { " " } else { "" })));
     }
 
     pub fn append(&mut self, value: &str, space: bool) {
@@ -51,7 +58,8 @@ impl Result {
     }
 
     pub fn force_append(&mut self, value: &str, space: bool) {
-        self.value.push_str(&(value.to_owned() + (if space { " " } else { "" })));
+        self.value
+            .push_str(&(value.to_owned() + (if space { " " } else { "" })));
     }
 
     pub fn ff_append(&mut self, value: &str, space: bool) {
@@ -86,7 +94,14 @@ impl Result {
     }
 
     pub fn add_required_import(&mut self, value: &str) {
-        self.value = "use ".to_owned() + value + " as " + "__" + value + "__" + "; // Imported by CForge for implementations\n" + &self.value;
+        self.value = "use ".to_owned()
+            + value
+            + " as "
+            + "__"
+            + value
+            + "__"
+            + "; // Imported by CForge for implementations\n"
+            + &self.value;
     }
 
     pub fn add_data_type_aliases(&mut self) {
@@ -108,7 +123,10 @@ impl Result {
         }
 
         if !aliases.is_empty() {
-            let full_aliases = format!("// Native data type aliases for Copper\n{}\n{}\n", imports, aliases);
+            let full_aliases = format!(
+                "// Native data type aliases for Copper\n{}\n{}\n",
+                imports, aliases
+            );
             self.value = full_aliases + &self.value;
         }
     }
@@ -127,22 +145,23 @@ impl Result {
 
     pub fn get_required_dependencies(&self) -> Vec<String> {
         let mut deps = Vec::new();
-        
+
         if self.uses_json {
             deps.push("serde_json".to_string());
         }
-        
+
         if self.uses_toml {
             deps.push("toml".to_string());
         }
-        
+
         // XML não precisa de dependência externa por enquanto (usa String)
-        
+
         deps
     }
 
     pub fn has_required_import(&self, value: &str) -> bool {
-        self.value.contains(&("use ".to_owned() + value + " as " + "__" + value + "__" + ";\n"))
+        self.value
+            .contains(&("use ".to_owned() + value + " as " + "__" + value + "__" + ";\n"))
     }
 
     pub fn get(&mut self) -> std::result::Result<String, Box<dyn std::error::Error>> {
@@ -155,10 +174,14 @@ impl Result {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;
-        
+
         // Escreve o código na entrada padrão do processo rustfmt
         {
-            let stdin = process.stdin.as_mut().ok_or("Failed to open stdin").unwrap();
+            let stdin = process
+                .stdin
+                .as_mut()
+                .ok_or("Failed to open stdin")
+                .unwrap();
             stdin.write_all(self.value.as_bytes())?;
         }
 

@@ -3,9 +3,9 @@ use std::process::exit;
 use crate::{tokenizer::tokens::*, ConsumedTrait};
 
 use super::{kind::TokenKind, tokens::Token};
+use crate::utils::Consumed;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use crate::utils::Consumed;
 
 /// Remove `/* ... */` block comments from `source`, leaving everything else
 /// (including embedded newlines) intact so subsequent tokenization keeps the
@@ -39,8 +39,8 @@ fn strip_block_comments(source: &str) -> String {
 
         if c == '/' && chars.peek() == Some(&'*') {
             chars.next(); // consume `*`
-            // Skip until matching `*/`, preserving any newlines so token
-            // location data stays aligned with the source file.
+                          // Skip until matching `*/`, preserving any newlines so token
+                          // location data stays aligned with the source file.
             let mut prev = '\0';
             while let Some(next) = chars.next() {
                 if prev == '*' && next == '/' {
@@ -77,7 +77,8 @@ impl EndToken {
 }
 
 pub(self) const TRAILING_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+$").unwrap());
-pub(self) const COMPOUND_SIGNS: [&'static str; 9] = ["::", "-=", "+=", "/=", "*=", "%=", "&=", "^=", "|="];
+pub(self) const COMPOUND_SIGNS: [&'static str; 9] =
+    ["::", "-=", "+=", "/=", "*=", "%=", "&=", "^=", "|="];
 pub(self) const COMPARE_SIGNS: [&'static str; 6] = ["==", "!=", "<=", ">=", ">", "<"];
 pub(self) const ARITHMETIC_SIGNS: [&'static str; 5] = ["+", "-", "*", "/", "%"];
 pub(self) const RANGE_SIGNS: [&'static str; 2] = ["..", "..="];
@@ -86,60 +87,108 @@ pub(self) const COMMA_SEPARATORS: [&'static str; 2] = [",", ";"];
 pub(self) const BOOL: [&'static str; 2] = ["true", "false"];
 pub(self) const BOM: u32 = 65279;
 pub(self) const RUST_KEYWORDS: &[&'static str] = &[
-        // Control Flow Keywords
-        "if", "else", "match", "loop", "while", "for", "break", "continue", "return",
-
-        // Visibility and Access Modifiers
-        "pub", "crate", "self", "super", "mod",
-    
-        // Declaration Keywords
-        "let", "const", "static", "mut",
-    
-        // Types and Traits Keywords
-        "struct", "enum", "union", "trait", "impl", "type",
-    
-        // Memory and Safety Control Keywords
-        "unsafe", "async", "await", "move", "dyn",
-    
-        // Module Handling Keywords
-        "extern", "use",
-    
-        // Function Definition and Implementation Keywords
-        "fn", "self", "Self",
-    
-        // Data Manipulation Keywords
-        "ref", "match", "in", "as", "Box",
-    
-        // Reliability and Testing Control Keywords
-        "where", "macro", "macro_rules", "proc",
-    
-        // Result and Error Handling Keywords
-        "Result", "Option", "Some", "None", "Ok", "Err",
-    
-        // Standard Data and System Types Keywords
-        "bool", "char", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "isize", "usize", "f32", "f64", "str",
-    
-        // Property and Pattern Keywords
-        "true", "false",
-    
-        // Contextual Keywords
-        "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof", "unsized", "virtual", "yield", "try",
+    // Control Flow Keywords
+    "if",
+    "else",
+    "match",
+    "loop",
+    "while",
+    "for",
+    "break",
+    "continue",
+    "return",
+    // Visibility and Access Modifiers
+    "pub",
+    "crate",
+    "self",
+    "super",
+    "mod",
+    // Declaration Keywords
+    "let",
+    "const",
+    "static",
+    "mut",
+    // Types and Traits Keywords
+    "struct",
+    "enum",
+    "union",
+    "trait",
+    "impl",
+    "type",
+    // Memory and Safety Control Keywords
+    "unsafe",
+    "async",
+    "await",
+    "move",
+    "dyn",
+    // Module Handling Keywords
+    "extern",
+    "use",
+    // Function Definition and Implementation Keywords
+    "fn",
+    "self",
+    "Self",
+    // Data Manipulation Keywords
+    "ref",
+    "match",
+    "in",
+    "as",
+    "Box",
+    // Reliability and Testing Control Keywords
+    "where",
+    "macro",
+    "macro_rules",
+    "proc",
+    // Result and Error Handling Keywords
+    "Result",
+    "Option",
+    "Some",
+    "None",
+    "Ok",
+    "Err",
+    // Standard Data and System Types Keywords
+    "bool",
+    "char",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "i128",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "u128",
+    "isize",
+    "usize",
+    "f32",
+    "f64",
+    "str",
+    // Property and Pattern Keywords
+    "true",
+    "false",
+    // Contextual Keywords
+    "abstract",
+    "become",
+    "box",
+    "do",
+    "final",
+    "macro",
+    "override",
+    "priv",
+    "typeof",
+    "unsized",
+    "virtual",
+    "yield",
+    "try",
 ];
 
 pub(self) const COPPER_KEYWORDS: &[&'static str] = &[
     // Function Definition and Implementation Keywords
-    "func", "$init", "$child",
-
-    // Module Handling Keywords
-    "import", "from",
-
-    // Class Keywords
-    "class", "extends",
-
-    // Struct and Impl Keywords
-    "struct", "impl", "trait", "for",
-
-    // Data Format Types
+    "func", "$init", "$child", // Module Handling Keywords
+    "import", "from", // Class Keywords
+    "class", "extends", // Struct and Impl Keywords
+    "struct", "impl", "trait", "for", // Data Format Types
     "json", "xml", "toml",
 ];
 
@@ -208,17 +257,19 @@ impl Tokenizer {
     pub fn tokenize(&mut self) -> Vec<Token> {
         while self.index < self.source.len() {
             // Find the end of current line
-            let line_end = self.source[self.index..].find('\n')
+            let line_end = self.source[self.index..]
+                .find('\n')
                 .map(|pos| self.index + pos + 1)
                 .unwrap_or(self.source.len());
-            
+
             self.chunk = self.source[self.index..line_end].to_string();
             self.chunk_line += 1;
             self.chunk_column = 0;
             self.chunk_offset = self.index;
 
             while self.chunk_column < self.chunk.len() {
-                let consumed = self.identifier_token()
+                let consumed = self
+                    .identifier_token()
                     .or(|| self.number_token())
                     .or(|| self.string_token())
                     .or(|| self.comment_token())
@@ -232,16 +283,19 @@ impl Tokenizer {
                     self.next_char();
                 }
             }
-            
+
             // Move to next line
             self.index = line_end;
         }
-        
+
         if self.ends.len() > 0 {
             let last = self.ends.last().unwrap();
             let location = last.origin.as_ref().unwrap().location_data.clone().unwrap();
 
-            self.error(&format!("Unterminated token {}\nOrigin: {}:{}", last.value, location.last_line, location.last_column));
+            self.error(&format!(
+                "Unterminated token {}\nOrigin: {}:{}",
+                last.value, location.last_line, location.last_column
+            ));
         }
 
         if self.kind() != Some(TokenKind::Newline) {
@@ -258,7 +312,12 @@ impl Tokenizer {
         let mut kind = TokenKind::Operator;
 
         for sign in COMPOUND_SIGNS.iter() {
-            if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
+            if self
+                .chunk
+                .get(self.chunk_column..)
+                .unwrap_or_default()
+                .starts_with(sign)
+            {
                 value.push_str(sign);
                 consumed += sign.len();
                 self.chunk_column += sign.len();
@@ -268,7 +327,12 @@ impl Tokenizer {
 
         if consumed == 0 {
             for sign in COMPARE_SIGNS.iter() {
-                if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
+                if self
+                    .chunk
+                    .get(self.chunk_column..)
+                    .unwrap_or_default()
+                    .starts_with(sign)
+                {
                     value.push_str(sign);
                     consumed += sign.len();
                     self.chunk_column += sign.len();
@@ -279,7 +343,12 @@ impl Tokenizer {
 
         if consumed == 0 {
             for sign in ARITHMETIC_SIGNS.iter() {
-                if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
+                if self
+                    .chunk
+                    .get(self.chunk_column..)
+                    .unwrap_or_default()
+                    .starts_with(sign)
+                {
                     value.push_str(sign);
                     consumed += sign.len();
                     self.chunk_column += sign.len();
@@ -290,7 +359,12 @@ impl Tokenizer {
 
         if consumed == 0 {
             for sign in RANGE_SIGNS.iter().rev() {
-                if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
+                if self
+                    .chunk
+                    .get(self.chunk_column..)
+                    .unwrap_or_default()
+                    .starts_with(sign)
+                {
                     value.push_str(sign);
                     consumed += sign.len();
                     self.chunk_column += sign.len();
@@ -302,7 +376,12 @@ impl Tokenizer {
 
         if consumed == 0 {
             for sign in OPERATORS.iter() {
-                if self.chunk.get(self.chunk_column..).unwrap_or_default().starts_with(sign) {
+                if self
+                    .chunk
+                    .get(self.chunk_column..)
+                    .unwrap_or_default()
+                    .starts_with(sign)
+                {
                     if *sign == ":" && self.kind() == Some(TokenKind::Param) {
                         value.push_str(":");
                         consumed += sign.len() + 1;
@@ -371,7 +450,7 @@ impl Tokenizer {
             kind = match value.as_str() {
                 "<" => TokenKind::AngleStart,
                 ">" => TokenKind::AngleEnd,
-                _ => TokenKind::Symbol
+                _ => TokenKind::Symbol,
             };
         } else if self.current_char() == '(' || self.current_char() == ')' {
             value.push(self.current_char());
@@ -390,7 +469,7 @@ impl Tokenizer {
                         self.end(TokenKind::ParenthesesEnd, ")".to_string());
                         TokenKind::ParenthesesStart
                     }
-                },
+                }
                 ")" => {
                     if self.expect_match_brace && self.match_paren_depth > 0 {
                         self.match_paren_depth -= 1;
@@ -402,8 +481,8 @@ impl Tokenizer {
                         self.skip_end();
                         TokenKind::ParenthesesEnd
                     }
-                },
-                _ => TokenKind::Symbol
+                }
+                _ => TokenKind::Symbol,
             };
         } else if self.current_char() == '[' || self.current_char() == ']' {
             value.push(self.current_char());
@@ -417,15 +496,15 @@ impl Tokenizer {
                     }
                     self.end(TokenKind::BracketEnd, "]".to_string());
                     TokenKind::BracketStart
-                },
+                }
                 "]" => {
                     if self.expect_match_brace && self.match_paren_depth > 0 {
                         self.match_paren_depth -= 1;
                     }
                     self.skip_end();
                     TokenKind::BracketEnd
-                },
-                _ => TokenKind::Symbol
+                }
+                _ => TokenKind::Symbol,
             };
         } else if self.current_char() == '{' || self.current_char() == '}' {
             value.push(self.current_char());
@@ -441,8 +520,7 @@ impl Tokenizer {
                     // Track whether this `{` opens the body of a `match`.
                     // Only count when we're not inside the matched
                     // expression's parens (paren depth 0).
-                    let opens_match_body =
-                        self.expect_match_brace && self.match_paren_depth == 0;
+                    let opens_match_body = self.expect_match_brace && self.match_paren_depth == 0;
                     self.brace_is_match.push(opens_match_body);
                     if opens_match_body {
                         self.expect_match_brace = false;
@@ -450,7 +528,7 @@ impl Tokenizer {
 
                     self.end(TokenKind::BraceEnd, "}".to_string());
                     TokenKind::BraceStart
-                },
+                }
                 "}" => {
                     if self.import_specifier_list {
                         self.import_specifier_list = false;
@@ -459,8 +537,8 @@ impl Tokenizer {
 
                     self.skip_end();
                     TokenKind::BraceEnd
-                },
-                _ => TokenKind::Symbol
+                }
+                _ => TokenKind::Symbol,
             };
         } else if COMMA_SEPARATORS.contains(&self.current_char().to_string().as_str()) {
             value.push(self.current_char());
@@ -473,7 +551,7 @@ impl Tokenizer {
                     if self.peek() == '\n' {
                         self.next_char();
                         consumed += 1;
-                        
+
                         if self.seen_import {
                             self.set_kind(TokenKind::ModulePath);
                             self.seen_import = false;
@@ -484,10 +562,9 @@ impl Tokenizer {
                         TokenKind::Newline
                     } else {
                         TokenKind::Semicolon
-
                     }
-                },
-                _ => TokenKind::Symbol
+                }
+                _ => TokenKind::Symbol,
             };
         } else if self.current_char() == '.' {
             value.push(self.current_char());
@@ -578,9 +655,8 @@ impl Tokenizer {
         }
 
         self.token(kind, value);
-        
-        Consumed::consume(consumed)
 
+        Consumed::consume(consumed)
     }
 
     pub fn identifier_token(&mut self) -> Consumed {
@@ -615,43 +691,43 @@ impl Tokenizer {
                     "import" => {
                         self.seen_import = true;
                         kind = TokenKind::Import;
-                    },
+                    }
                     "from" => {
                         kind = TokenKind::From;
-                    },
+                    }
                     "as" => {
                         kind = TokenKind::As;
-                    },
+                    }
                     "public" => {
                         self.seen_public = true;
                         kind = TokenKind::Public;
-                    },
+                    }
                     "for" => {
                         self.seen_for = true;
                         kind = TokenKind::For;
-                    },
+                    }
                     "struct" => {
                         kind = TokenKind::Struct;
-                    },
+                    }
                     "impl" => {
                         kind = TokenKind::Impl;
-                    },
+                    }
                     "trait" => {
                         kind = TokenKind::Trait;
-                    },
+                    }
                     "json" => {
                         kind = TokenKind::Json;
-                    },
+                    }
                     "xml" => {
                         kind = TokenKind::Xml;
-                    },
+                    }
                     "toml" => {
                         kind = TokenKind::Toml;
-                    },
+                    }
                     "func" => {
                         self.seen_func = true;
                         kind = TokenKind::Keyword;
-                    },
+                    }
                     _ => {
                         kind = TokenKind::Keyword;
                     }
@@ -668,12 +744,12 @@ impl Tokenizer {
                 // them through the keyword-spacing path without re-checking
                 // strings.
                 kind = match value.as_str() {
-                    "loop"     => TokenKind::Loop,
-                    "while"    => TokenKind::While,
-                    "break"    => TokenKind::Break,
+                    "loop" => TokenKind::Loop,
+                    "while" => TokenKind::While,
+                    "break" => TokenKind::Break,
                     "continue" => TokenKind::Continue,
-                    "in"       => TokenKind::In,
-                    _          => TokenKind::Keyword,
+                    "in" => TokenKind::In,
+                    _ => TokenKind::Keyword,
                 };
                 if value == "match" {
                     // Arm the brace tracker: the next `{` we open while not
@@ -696,9 +772,7 @@ impl Tokenizer {
                 }
             } else {
                 match self.last_token() {
-                    Some(token) if token.value == "func" => {
-                        kind = TokenKind::ReturnType
-                    },
+                    Some(token) if token.value == "func" => kind = TokenKind::ReturnType,
                     Some(_) if self.end_kind() == Some(TokenKind::ParametersEnd) => {
                         if self.value(true) == Some(":".to_string()) {
                             if self.current_char() == '?' {
@@ -710,10 +784,8 @@ impl Tokenizer {
                         } else {
                             kind = TokenKind::Param
                         }
-                    },
-                    _ => {
-                        kind = TokenKind::Identifier
                     }
+                    _ => kind = TokenKind::Identifier,
                 }
             }
         }
@@ -721,9 +793,8 @@ impl Tokenizer {
         if consumed > 0 {
             self.token(kind, value);
         }
-        
-        Consumed::consume(consumed)
 
+        Consumed::consume(consumed)
     }
 
     pub fn whitespace_token(&mut self) -> Consumed {
@@ -787,7 +858,7 @@ impl Tokenizer {
                 self.set_kind(TokenKind::ModulePath);
             }
         } else if self.current_char() == '\n' {
-            value.push(self.current_char()); 
+            value.push(self.current_char());
             self.next_char();
             consumed += 1;
         }
@@ -822,30 +893,30 @@ impl Tokenizer {
 
         Consumed::consume(consumed)
     }
-    
+
     pub fn regex_token(&mut self) -> Consumed {
         let mut consumed = 0;
         let mut value = String::new();
         let kind = TokenKind::Regex;
-        
+
         // Only consider regex if it starts with '/'
         if self.current_char() != '/' {
             return Consumed::consume(0);
         }
-        
+
         // Check if it's not a comment (//)
         if self.peek() == '/' {
             return Consumed::consume(0);
         }
-        
+
         // Process only from current position in chunk
         let remaining_chunk = &self.chunk[self.chunk_column..];
-        
+
         // Check again in chunk if it's a comment
         if remaining_chunk.starts_with("//") {
             return Consumed::consume(0);
         }
-        
+
         let r = Regex::new(r"^(/)([^/]+)(/)?").unwrap(); // Added ^ for string start
 
         if let Some(cap) = r.captures(remaining_chunk) {
@@ -859,7 +930,7 @@ impl Tokenizer {
             let end = end_cap.unwrap().end();
             value.push_str(&remaining_chunk[start..end]);
             consumed = end - start;
-            
+
             // Advance chunk_column instead of draining
             for _ in 0..consumed {
                 self.next_char();
@@ -887,11 +958,11 @@ impl Tokenizer {
         let token = token.unwrap();
         let value = token.value.clone();
         let origin = token.origin.clone();
-    
+
         if use_origin && origin.is_some() {
             return Some(origin.unwrap().value.clone());
         }
-    
+
         Some(value)
     }
 
@@ -905,8 +976,11 @@ impl Tokenizer {
     }
 
     pub fn last_token(&self) -> Option<&Token> {
-        self.tokens.iter().filter(|t| t.kind != TokenKind::Whitespace).last()
-    } 
+        self.tokens
+            .iter()
+            .filter(|t| t.kind != TokenKind::Whitespace)
+            .last()
+    }
 
     pub fn token(&mut self, kind: TokenKind, value: String) -> &mut Token {
         let length = value.len();
@@ -924,13 +998,13 @@ impl Tokenizer {
         token.set_location_data(self.create_location_data(self.chunk_offset, length));
 
         match kind {
-            TokenKind::BraceStart      | 
-            TokenKind::BracketStart    | 
-            TokenKind::ParametersStart | 
-            TokenKind::ParenthesesStart => {
+            TokenKind::BraceStart
+            | TokenKind::BracketStart
+            | TokenKind::ParametersStart
+            | TokenKind::ParenthesesStart => {
                 self.last_end().unwrap().set_origin(token.clone());
             }
-            _ => {}            
+            _ => {}
         }
 
         self.tokens.push(token.clone());
@@ -950,7 +1024,12 @@ impl Tokenizer {
     }
 
     pub fn end(&mut self, kind: TokenKind, value: String) -> &mut EndToken {
-        self.ends.push(EndToken::new_end(kind, value.clone(), value.len(), Data::None));
+        self.ends.push(EndToken::new_end(
+            kind,
+            value.clone(),
+            value.len(),
+            Data::None,
+        ));
 
         self.ends.last_mut().unwrap()
     }
@@ -984,23 +1063,27 @@ impl Tokenizer {
     }
 
     pub fn create_location_data(&self, offset_in_chunk: usize, length: usize) -> LocationData {
-        let last_char = if length > 0 {
-            length - 1
-        } else {
-            0
-        };
+        let last_char = if length > 0 { length - 1 } else { 0 };
 
         let (first_line, first_column, range_start) = self.get_line_and_column(offset_in_chunk);
-        let (last_line, last_column, end_offset) = self.get_line_and_column(offset_in_chunk + last_char);
+        let (last_line, last_column, end_offset) =
+            self.get_line_and_column(offset_in_chunk + last_char);
 
-        let range = (range_start, if length > 0 { end_offset + 1 } else { end_offset });
+        let range = (
+            range_start,
+            if length > 0 {
+                end_offset + 1
+            } else {
+                end_offset
+            },
+        );
 
         LocationData {
             first_line,
             first_column,
             last_line,
             last_column,
-            range
+            range,
         }
     }
 
@@ -1012,13 +1095,13 @@ impl Tokenizer {
 
         while start >= end && iterations < 1000 {
             iterations += 1;
-            
+
             if current == end && start != initial_end {
                 break;
             }
 
             let compensation = self.location_data_compensations.get(current);
-            
+
             if compensation.is_some() {
                 let compensation = compensation.unwrap();
                 total_compensation += compensation;
@@ -1026,7 +1109,7 @@ impl Tokenizer {
             }
 
             current += 1;
-            
+
             // Additional safety condition
             if current >= self.source.len() + 1000 {
                 break;
@@ -1038,7 +1121,8 @@ impl Tokenizer {
 
     #[allow(unused_assignments)]
     pub fn get_line_and_column(&self, offset: usize) -> (isize, usize, usize) {
-        let compensation = self.get_location_data_compensation(self.chunk_offset, self.chunk_offset + offset);
+        let compensation =
+            self.get_location_data_compensation(self.chunk_offset, self.chunk_offset + offset);
         let mut s = String::new();
         let mut line_count: usize = 0;
         let mut column = 0;
@@ -1046,7 +1130,11 @@ impl Tokenizer {
         let mut column_compensation = 0;
 
         if offset == 0 {
-            return (self.chunk_line, self.chunk_column + compensation, self.chunk_offset + compensation);
+            return (
+                self.chunk_line,
+                self.chunk_column + compensation,
+                self.chunk_offset + compensation,
+            );
         }
 
         if offset >= self.chunk.len() {
@@ -1054,10 +1142,14 @@ impl Tokenizer {
         } else {
             let end = match offset {
                 o if o > 0 => o,
-                _ => self.chunk.len()
+                _ => self.chunk.len(),
             };
 
-            s = self.chunk.get(0..end.min(self.chunk.len())).unwrap().to_owned();
+            s = self
+                .chunk
+                .get(0..end.min(self.chunk.len()))
+                .unwrap()
+                .to_owned();
         }
 
         line_count = self.count_occurrences(&s, "\n");
@@ -1066,15 +1158,25 @@ impl Tokenizer {
         if line_count > 0 {
             let r = s.split("\n").collect::<Vec<&str>>();
             column = r.last().unwrap().len();
-            previous_lines_compensation = self.get_location_data_compensation(self.chunk_offset, self.chunk_offset + offset - column);
-            
-            column_compensation = self.get_location_data_compensation(self.chunk_offset + offset - previous_lines_compensation - column, self.chunk_offset + offset + previous_lines_compensation);
+            previous_lines_compensation = self.get_location_data_compensation(
+                self.chunk_offset,
+                self.chunk_offset + offset - column,
+            );
+
+            column_compensation = self.get_location_data_compensation(
+                self.chunk_offset + offset - previous_lines_compensation - column,
+                self.chunk_offset + offset + previous_lines_compensation,
+            );
         } else {
             column += s.len();
             column_compensation = compensation;
         }
 
-        (self.chunk_line + line_count as isize, column + column_compensation, self.chunk_offset + offset + compensation)
+        (
+            self.chunk_line + line_count as isize,
+            column + column_compensation,
+            self.chunk_offset + offset + compensation,
+        )
     }
 
     pub fn count_occurrences(&self, string: &str, substr: &str) -> usize {
@@ -1083,15 +1185,15 @@ impl Tokenizer {
         }
         let mut num = 0;
         let mut pos = 0;
-        
+
         while let Some(p) = string[pos..].find(substr) {
             num += 1;
             pos += p + 1; // Increment position to continue search
         }
-        
+
         num
     }
-    
+
     // pub fn next_chunk(&self) -> String {
     //     self.source.get(self.index..).unwrap_or_default().to_owned()
     // }
@@ -1100,19 +1202,20 @@ impl Tokenizer {
         let re = Regex::new(r"\r").unwrap();
         let mut thus_far = 0;
         let mut source = &self.source;
-    
+
         if source.len() > 0 && source.chars().nth(0).unwrap() as u32 == BOM {
             self.source = source.chars().skip(1).collect::<String>();
             source = &self.source;
             self.location_data_compensations[0] = 1;
             thus_far += 1;
         }
-        
+
         if TRAILING_SPACES.is_match(&source) {
             self.source = TRAILING_SPACES.replace_all(&source, "").to_string();
             source = &self.source;
             self.chunk_line -= 1;
-            self.location_data_compensations.insert(0, self.location_data_compensations.get(0).unwrap_or(&1) - 1);
+            self.location_data_compensations
+                .insert(0, self.location_data_compensations.get(0).unwrap_or(&1) - 1);
         }
 
         for (_, mat) in re.find_iter(&source).enumerate() {
@@ -1131,7 +1234,11 @@ impl Tokenizer {
 
     fn current_char(&self) -> char {
         // Use proper UTF-8 indexing
-        if let Some((_, ch)) = self.chunk.char_indices().find(|(pos, _)| *pos == self.chunk_column) {
+        if let Some((_, ch)) = self
+            .chunk
+            .char_indices()
+            .find(|(pos, _)| *pos == self.chunk_column)
+        {
             ch
         } else {
             // Fallback for misaligned positions
@@ -1141,7 +1248,11 @@ impl Tokenizer {
 
     fn next_char(&mut self) {
         // Find the next character boundary
-        if let Some((next_pos, _)) = self.chunk.char_indices().find(|(pos, _)| *pos > self.chunk_column) {
+        if let Some((next_pos, _)) = self
+            .chunk
+            .char_indices()
+            .find(|(pos, _)| *pos > self.chunk_column)
+        {
             self.chunk_column = next_pos;
         } else {
             // End of string
@@ -1150,6 +1261,9 @@ impl Tokenizer {
     }
 
     fn peek(&self) -> char {
-        self.chunk.chars().nth(self.chunk_column + 1).unwrap_or_default()
+        self.chunk
+            .chars()
+            .nth(self.chunk_column + 1)
+            .unwrap_or_default()
     }
 }

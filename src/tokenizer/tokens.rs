@@ -9,7 +9,10 @@ pub enum Data {
     /// expressions, in order, that fill them. The token's `value` carries the
     /// fully wrapped `format!(...)` form for default emission, while these
     /// fields let the parser unwrap into raw macro-arg form when appropriate.
-    Interpolation { placeholder: String, args: Vec<String> },
+    Interpolation {
+        placeholder: String,
+        args: Vec<String>,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -18,7 +21,7 @@ pub struct LocationData {
     pub(crate) first_column: usize,
     pub(crate) last_line: isize,
     pub(crate) last_column: usize,
-    pub(crate) range: (usize, usize)
+    pub(crate) range: (usize, usize),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -27,7 +30,7 @@ pub struct Token {
     pub(crate) value: String,
     pub(crate) length: usize,
     pub(crate) data: Data,
-    pub (crate) generated: bool,
+    pub(crate) generated: bool,
     pub(crate) origin: Option<Box<Token>>,
     pub(crate) location_data: Option<LocationData>,
 }

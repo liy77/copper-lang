@@ -1,20 +1,20 @@
-use std::{error::Error, process::Command};
 use colored::Colorize;
 use serde_json::Value;
+use std::{error::Error, process::Command};
 
 const CRATES_IO_URL: &str = "https://crates.io";
 
 fn is_local_network_connected() -> bool {
     let mut output = Command::new("ping");
-        
-        if cfg!(target_os = "windows") {
-            output.arg("-n").arg("1");
-        } else {
-            output.arg("-c").arg("1");
-        }
 
-        output.arg("8.8.8.8");
-        
+    if cfg!(target_os = "windows") {
+        output.arg("-n").arg("1");
+    } else {
+        output.arg("-c").arg("1");
+    }
+
+    output.arg("8.8.8.8");
+
     let output = output.output();
 
     match output {
@@ -24,33 +24,51 @@ fn is_local_network_connected() -> bool {
 }
 
 // Check if a version exists in the registry and if is yanked
-pub async fn check_version_exists(crate_name: &str, mut version: &str, registry: Option<&str>) -> Result<(bool, String), Box<dyn Error>> {
+pub async fn check_version_exists(
+    crate_name: &str,
+    mut version: &str,
+    registry: Option<&str>,
+) -> Result<(bool, String), Box<dyn Error>> {
     if !is_local_network_connected() {
         println!("🛜 Could not connect to the internet. Skipping version check.");
         return Ok((false, version.to_string()));
     }
 
-
-    let url = format!("{}/api/v1/crates/{}/versions", registry.unwrap_or(CRATES_IO_URL), crate_name);
+    let url = format!(
+        "{}/api/v1/crates/{}/versions",
+        registry.unwrap_or(CRATES_IO_URL),
+        crate_name
+    );
     let client = reqwest::Client::new();
-    let response = client.get(&url)
+    let response = client
+        .get(&url)
         .header("User-Agent", "CForge/0.1.0")
-        .send().await?
-        .text().await?;
+        .send()
+        .await?
+        .text()
+        .await?;
     let json: Value = serde_json::from_str(&response)?;
     let modified_version = version.replace('"', "");
     version = &modified_version;
 
     if let Some(versions) = json["versions"].as_array() {
         if matches!(version, "latest" | "*") {
-            if let Some(latest_version) = versions.iter().max_by_key(|v| v["num"].as_str().unwrap_or("")) {
+            if let Some(latest_version) = versions
+                .iter()
+                .max_by_key(|v| v["num"].as_str().unwrap_or(""))
+            {
                 let latest = latest_version["num"].as_str();
                 if latest.is_some() {
                     let is_deprecated = latest_version["yanked"].as_bool().unwrap_or(false);
                     let version = latest.unwrap().to_string();
 
                     if is_deprecated {
-                        println!("💀 Yanked dependency: {} {} {}", crate_name.red(), "=>".yellow(), version.black());
+                        println!(
+                            "💀 Yanked dependency: {} {} {}",
+                            crate_name.red(),
+                            "=>".yellow(),
+                            version.black()
+                        );
                     }
 
                     return Ok((true, version));
@@ -64,7 +82,12 @@ pub async fn check_version_exists(crate_name: &str, mut version: &str, registry:
                     let is_deprecated = v["yanked"].as_bool().unwrap_or(false);
 
                     if is_deprecated {
-                        println!("💀 Yanked dependency: {} {} {}", crate_name.red(), "=>".yellow(), v_num.black());
+                        println!(
+                            "💀 Yanked dependency: {} {} {}",
+                            crate_name.red(),
+                            "=>".yellow(),
+                            v_num.black()
+                        );
                     }
 
                     return Ok((true, v_num.to_string()));
@@ -72,6 +95,6 @@ pub async fn check_version_exists(crate_name: &str, mut version: &str, registry:
             }
         }
     }
-    
+
     Ok((false, version.to_string()))
 }
