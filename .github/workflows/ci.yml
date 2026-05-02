@@ -88,13 +88,12 @@ jobs:
 
       # Smoke test: confirm the produced binary launches and reports a
       # version. Keeps `build.rs` date-stamping honest (the date should
-      # match the current UTC day on the runner).
-      - name: Version smoke test (Unix)
-        if: runner.os != 'Windows'
-        run: ./target/debug/cforge --version
-      - name: Version smoke test (Windows)
-        if: runner.os == 'Windows'
-        run: .\target\debug\cforge.exe --version
+      # match the current UTC day on the runner). Use `cargo run` so the
+      # binary is built deterministically — `cargo test` alone may not
+      # leave a usable artifact at `target/debug/cforge` depending on
+      # the runner's incremental cache.
+      - name: Version smoke test
+        run: cargo run --quiet -- --version
 
   build-dev:
     name: Development Build
