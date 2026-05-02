@@ -60,24 +60,25 @@ cforge run ./main.crs
 ### Classes
 
 ```crs
-class Person {
+class Greeter {
     name: String
-    name2: String
-    inttest: i32
 
-    Person(name: String, name2: String) {
+    Greeter(name: String) {
         self.name = name
-        self.name2 = "Carlos".to_string()
-        self.inttest = 32
     }
 
-    void test(self) {
-        println!("{} {}", self.name, self.name2)
+    void hello(self) {
+        println!("Hello, {}!", self.name)
     }
 }
 
-Person::new("Liy".to_string(), "Jones".to_string()).test()
+Greeter::new("Brian".to_string()).hello()
 ```
+
+The class lowers to a Rust `struct` + `impl`. The constructor (same name
+as the class) becomes `pub fn new(...) -> Self`, and methods declared as
+`void name(self)` become `pub fn name(&self)`. Use `cforge run main.crs`
+to see it print `Hello, Brian!`.
 
 ### Loops, match, optional chaining, ternary
 
