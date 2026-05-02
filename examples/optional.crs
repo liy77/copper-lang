@@ -1,0 +1,29 @@
+// Optional chaining: `?.` safely accesses fields/methods on Option<T>.
+// Each `obj?.x` rewrites to `obj.as_ref().map(|c| c.x)`, returning Option.
+
+struct User {
+    name: String,
+    age: i32,
+}
+
+mut user: Option<User> = Some(User {
+    name: "Brian".to_string(),
+    age: 30,
+})
+
+// Safe field access — returns Option<&i32>
+mut age = user?.age
+println!("age = {:?}", age)
+
+// Safe method call — returns Option<usize>
+mut name_len = user?.name.len()
+println!("name_len = {:?}", name_len)
+
+// None case — short-circuits to None, no panic
+mut missing: Option<User> = None
+mut missing_age = missing?.age
+println!("missing_age = {:?}", missing_age)
+
+// Chained access still works through the same closure
+mut greeting_len = user?.name.chars().count()
+println!("greeting_len = {:?}", greeting_len)

@@ -1,9 +1,10 @@
 use std::vec;
-use crate::tokenizer::{kind::TokenKind, tokens::Token};
+use crate::tokenizer::{interpolation, kind::TokenKind, tokens::{Data, Token}};
 pub mod result;
 pub mod utils;
 pub mod scope;
 pub mod scope_manager;
+mod ternary;
 
 use crate::utils::Consumed;
 use crate::{ConsumeVar, ConsumedTrait};
@@ -47,14 +48,36 @@ pub struct Parser {
     current_struct: Option<String>,
     current_impl_target: Option<String>,
     uses_data_types: bool,
+    /// Brace nesting *inside the current function body*, counted from the
+    /// `{` that opened it. Used so `parse_function_body` only treats the
+    /// matching outer `}` as the end of the function — inner blocks
+    /// (`match`, `if`, nested scopes) no longer trip an early exit.
+    function_brace_depth: usize,
+    /// Paren / bracket depth used to scope optional chaining (`?.`). The
+    /// parser opens a chain at the depth where `?.` appears and closes it
+    /// (emits the matching `)`) when the depth drops back below that or a
+    /// chain-breaking token is hit at the same depth.
+    chain_delim_depth: usize,
+    /// One entry per currently-open optional chain, holding the
+    /// `chain_delim_depth` at which it was opened. Pushed on `?.`, popped
+    /// when the chain closes.
+    optional_chain_depths: Vec<usize>,
+    /// Counter feeding the synthetic closure variable name (`__copt0`,
+    /// `__copt1`, ...) so nested chains don't collide.
+    optional_chain_counter: usize,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
+        let filtered: Vec<Token> = tokens
+            .into_iter()
+            .filter(|t| t.kind != TokenKind::Whitespace && t.kind != TokenKind::Comment)
+            .collect();
+        // Lower `cond ? then : else` ternaries into `if cond { then } else { else }`
+        // before the main parser dispatch sees them.
+        let lowered = ternary::rewrite(filtered);
         Self {
-            tokens: tokens.into_iter()
-                .filter(|t| t.kind != TokenKind::Whitespace && t.kind != TokenKind::Comment)
-                .collect(),
+            tokens: lowered,
             current: 0,
             result: Result::new(),
             eof: false,
@@ -69,6 +92,10 @@ impl Parser {
             current_struct: None,
             current_impl_target: None,
             uses_data_types: false,
+            function_brace_depth: 0,
+            chain_delim_depth: 0,
+            optional_chain_depths: vec![],
+            optional_chain_counter: 0,
         }
     }
 
@@ -139,6 +166,24 @@ impl Parser {
 
     pub fn parse_var(&mut self) -> Consumed {
         let mut consumed = 0;
+        // Bail out for the wildcard pattern `_` (used in match arms,
+        // destructuring, `let _ = ...` discards): the parser cannot tell that
+        // `_ =>` is a match arm without seeing the `=>` ahead, so we just
+        // refuse to treat `_ = anything` as a regular assignment. The
+        // catch-all `_ = expr` discard is rare in practice and Copper users
+        // would write `_ = expr` only inside Rust-shaped match contexts.
+        if self.value() == "_" {
+            return Consumed::consume(0);
+        }
+        // Bail out for `name =>` — that's a fat-arrow in a match arm, not
+        // an assignment to `name`.
+        if self.peek_value() == Some("=".to_string()) {
+            if let Some(after_eq) = self.select(self.current + 2) {
+                if after_eq.kind == TokenKind::Operator && after_eq.value == ">" {
+                    return Consumed::consume(0);
+                }
+            }
+        }
         if self.kind() == TokenKind::Identifier && self.peek_value() == Some("=".to_string()) {
             if let Some(var_value) = self.select(self.current + 2) {
                 if var_value.value != "=" {
@@ -358,9 +403,9 @@ impl Parser {
 
     pub fn parse_any(&mut self) -> Consumed {
         let token_value = self.value();
-        
+
         // Skip invalid tokens or tokens that shouldn't be in output
-        if token_value.is_empty() || 
+        if token_value.is_empty() ||
            token_value.contains("Como parâmetros de função") ||
            token_value.contains("rocessaJSON") ||
            token_value.starts_with("//") ||
@@ -368,7 +413,7 @@ impl Parser {
            self.kind() == TokenKind::Unknown {
             return Consumed::consume(1);
         }
-        
+
         for (copper, rust) in RUST_MACROS.iter() {
             if token_value == *copper {
                 // Check if next token is already !, if so, don't add another one
@@ -384,9 +429,192 @@ impl Parser {
                 return Consumed::consume(1);
             }
         }
-        
+
+        // Control-flow keywords need spaces on both sides so they don't fuse
+        // with neighbours: without the trailing space `while n` becomes
+        // `whilen`; without the leading space `n if x > 0 =>` becomes
+        // `nif x > 0 =>` (the `n` from a match-arm pattern fuses with the
+        // guard's `if`). Pad with a leading space too — at statement starts
+        // the extra space is harmless whitespace before indentation.
+        if matches!(
+            token_value.as_str(),
+            "if" | "else" | "loop" | "while" | "for" | "in" | "match"
+                | "return" | "break" | "continue" | "as" | "let" | "mut"
+                | "pub" | "ref" | "move" | "yield"
+        ) {
+            self.append(&format!(" {}", token_value), AppendMode::AppendWithSpace);
+            return Consumed::consume(1);
+        }
+
         self.append(&token_value, AppendMode::Append);
         Consumed::consume(1)
+    }
+
+    /// Emit a `TokenKind::InterpolatedString` with the right shape for its
+    /// surrounding context.
+    ///
+    /// * Inside a `name!(...)` macro call (detected by walking back to the
+    ///   enclosing `(` and checking for a preceding `!`), the literal becomes
+    ///   the macro's format string and arguments — `"Hi {}", name` — so
+    ///   things like `println!("Hi $name")` compile to
+    ///   `println!("Hi {}", name)` directly.
+    /// * Anywhere else (assignments, return values, function args, …) we
+    ///   fall back to the `format!(...)` wrapper that the tokenizer baked
+    ///   into the token's `value`, since that's a plain `String` expression
+    ///   and works in every position.
+    pub fn parse_interpolated_string(&mut self) -> Consumed {
+        if self.kind() != TokenKind::InterpolatedString {
+            return Consumed::consume(0);
+        }
+
+        let rendered = if self.is_inside_macro_call() {
+            if let Some(token) = self.current() {
+                if let Data::Interpolation { placeholder, args } = &token.data {
+                    let interp = interpolation::Interpolated {
+                        placeholder: placeholder.clone(),
+                        args: args.clone(),
+                    };
+                    interpolation::render_macro_args(&interp)
+                } else {
+                    self.value()
+                }
+            } else {
+                self.value()
+            }
+        } else {
+            self.value()
+        };
+
+        self.append(&rendered, AppendMode::Append);
+        Consumed::consume(1)
+    }
+
+    /// Emit the prefix that opens an optional-chaining expression. Pushes
+    /// the current `chain_delim_depth` onto the stack so we know where the
+    /// chain ends, and writes `.as_ref().map(|__copt<n>| __copt<n>.` — the
+    /// trailing `.` consumes the dot of `?.` (which the tokenizer folded
+    /// into the OptionalChain token), and the closing `)` is appended later
+    /// by [`maybe_close_optional_chains_for`].
+    pub fn parse_optional_chain(&mut self) -> Consumed {
+        if self.kind() != TokenKind::OptionalChain {
+            return Consumed::consume(0);
+        }
+        self.optional_chain_counter += 1;
+        let var = format!("__copt{}", self.optional_chain_counter);
+        self.optional_chain_depths.push(self.chain_delim_depth);
+        self.append(
+            &format!(".as_ref().map(|{var}| {var}.", var = var),
+            AppendMode::Append,
+        );
+        Consumed::consume(1)
+    }
+
+    /// Close any optional chains whose start depth equals the current
+    /// `chain_delim_depth` if the upcoming token would end the chain at
+    /// that depth (binary operator, separator, block boundary, or a
+    /// matching closing delimiter that's about to leave our scope).
+    fn maybe_close_optional_chains_for(&mut self, kind: TokenKind, value: &str) {
+        while let Some(&chain_depth) = self.optional_chain_depths.last() {
+            if self.chain_delim_depth != chain_depth {
+                // Chain is still inside a deeper sub-expression; leave it
+                // open until we come back out.
+                break;
+            }
+            if !is_chain_breaker(kind, value) {
+                break;
+            }
+            self.append(")", AppendMode::Append);
+            self.optional_chain_depths.pop();
+        }
+    }
+
+    /// Decide whether a `[` opens a list literal (`[1, 2, 3]` → `vec![1, 2, 3]`)
+    /// or an index/slice access (`arr[0]`, `arr[1..3]`). The discriminator is
+    /// the previous significant token: an identifier, closing paren, closing
+    /// bracket, or `self`/keyword that produces a value means we're indexing
+    /// something. Anything else (operators, commas, statement starts, opening
+    /// delimiters) is a literal.
+    pub fn parse_bracket(&mut self) -> Consumed {
+        if self.kind() != TokenKind::BracketStart {
+            return Consumed::consume(0);
+        }
+
+        let is_indexing = matches!(
+            self.previous_significant_kind(),
+            Some(TokenKind::Identifier)
+                | Some(TokenKind::ParametersEnd)
+                | Some(TokenKind::ParenthesesEnd)
+                | Some(TokenKind::BracketEnd)
+        );
+        // A `[` immediately after `!` is the body of a macro invocation
+        // (`vec![...]`, `assert![...]`, ...) — never a literal. Don't add a
+        // second `vec!` prefix.
+        let is_macro_body = matches!(
+            self.previous_significant(),
+            Some(t) if t.kind == TokenKind::Operator && t.value == "!"
+        );
+
+        if is_indexing || is_macro_body {
+            self.append("[", AppendMode::Append);
+        } else {
+            self.append("vec![", AppendMode::Append);
+        }
+        // The dispatch loop advances `current` via `consume_var` based on
+        // the returned count — calling `self.next()` here would double-step
+        // and swallow the first element of the literal.
+        Consumed::consume(1)
+    }
+
+    /// Return the kind of the most recently seen non-Newline / non-Comment
+    /// token before the current position, or `None` at the start of input.
+    fn previous_significant_kind(&self) -> Option<TokenKind> {
+        self.previous_significant().map(|t| t.kind)
+    }
+
+    fn previous_significant(&self) -> Option<&Token> {
+        if self.current == 0 {
+            return None;
+        }
+        let mut i = self.current;
+        while i > 0 {
+            i -= 1;
+            if !matches!(self.tokens[i].kind, TokenKind::Newline | TokenKind::Comment) {
+                return Some(&self.tokens[i]);
+            }
+        }
+        None
+    }
+
+    /// Walk back from the current position, balancing parentheses, to find
+    /// the `(` that opens the call we're inside (if any). If that `(` is
+    /// preceded by an `!` operator, we're inside a Rust macro call and
+    /// interpolated strings should expand to raw `"fmt", args` form.
+    fn is_inside_macro_call(&self) -> bool {
+        let mut depth: usize = 0;
+        let mut i = self.current;
+        while i > 0 {
+            i -= 1;
+            let tok = &self.tokens[i];
+            match tok.kind {
+                TokenKind::ParametersEnd | TokenKind::ParenthesesEnd => {
+                    depth += 1;
+                }
+                TokenKind::ParametersStart | TokenKind::ParenthesesStart => {
+                    if depth == 0 {
+                        // Found the enclosing open paren. Look at the token
+                        // immediately before it for a `!` operator.
+                        if i == 0 {
+                            return false;
+                        }
+                        let prev = &self.tokens[i - 1];
+                        return prev.kind == TokenKind::Operator && prev.value == "!";
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     pub fn parse_function(&mut self) -> Consumed {
@@ -435,14 +663,31 @@ impl Parser {
     pub fn parse_function_body(&mut self) -> Consumed {
         let mut consumed = 0;
         if self.value() == "{" && self.kind() == TokenKind::BraceStart {
+            // Inner blocks (match arms, if/else, nested scopes) just deepen
+            // the count — only the matching outer `}` should exit the
+            // function.
+            if self.result.is_inside_function {
+                self.function_brace_depth += 1;
+            }
             self.append(&self.value(), AppendMode::Append);
             consumed += 1;
         }
         if self.value() == "}" && self.kind() == TokenKind::BraceEnd {
             if !self.seen_import && !self.is_inside_class {
                 self.append(&self.value(), AppendMode::Append);
-                self.append("\n", AppendMode::AppendWithSpace);
-                self.result.is_inside_function = false;
+                if self.result.is_inside_function {
+                    if self.function_brace_depth > 1 {
+                        // Closing an inner block — stay inside the function.
+                        self.function_brace_depth -= 1;
+                    } else {
+                        // The matching outer `}` of the function body.
+                        self.function_brace_depth = 0;
+                        self.append("\n", AppendMode::AppendWithSpace);
+                        self.result.is_inside_function = false;
+                    }
+                } else {
+                    self.append("\n", AppendMode::AppendWithSpace);
+                }
                 consumed += 1;
             }
         }
@@ -1444,12 +1689,41 @@ impl Parser {
                 break self.result.get().expect("Format Error");
             }
     
-            if let Some(token) = self.current() {
-                match token.kind {
+            let token_info = self.current().map(|t| (t.kind, t.value.clone()));
+            if let Some((dispatched_kind, dispatched_value)) = token_info {
+                // Optional-chaining bookkeeping. Done before dispatch so the
+                // closing `)` of any open chain is emitted *before* the token
+                // that ends the chain (operator, separator, or a closing
+                // delimiter that's about to leave our depth).
+                self.maybe_close_optional_chains_for(dispatched_kind, &dispatched_value);
+
+                match dispatched_kind {
                     TokenKind::Eof => {
                         self.eof = true;
                     },
-                    TokenKind::Identifier | TokenKind::Keyword => {
+                    TokenKind::In => {
+                        // `in` sits between an identifier (e.g. the loop
+                        // variable) and an expression, so it needs spaces on
+                        // both sides regardless of what came before.
+                        self.append(" in ", AppendMode::Append);
+                        self.next();
+                    },
+                    TokenKind::OptionalChain => {
+                        self.parse_optional_chain()
+                            .consume_var(&mut self.current);
+                    },
+                    TokenKind::InterpolatedString => {
+                        self.parse_interpolated_string()
+                            .or(|| self.parse_any())
+                            .consume_var(&mut self.current);
+                    },
+                    TokenKind::Identifier
+                    | TokenKind::Keyword
+                    | TokenKind::For
+                    | TokenKind::Loop
+                    | TokenKind::While
+                    | TokenKind::Break
+                    | TokenKind::Continue => {
                         self.parse_mut()
                             .or(|| self.parse_var())
                             .or(|| self.parse_type_declaration())
@@ -1464,6 +1738,10 @@ impl Parser {
                         self.parse_function_params()
                             .consume_var(&mut self.current);
                     },
+                    TokenKind::BracketStart => {
+                        self.parse_bracket()
+                            .consume_var(&mut self.current);
+                    },
                     TokenKind::ParamType => {
                         self.append(&convert_type(&self.value()), AppendMode::Append);
                         self.next();
@@ -1475,8 +1753,55 @@ impl Parser {
                         self.next();
                     },
                     TokenKind::ReturnType => {
-                        self.result.return_type(convert_type(&self.value()));
-                        self.next();
+                        // Capture the full return type, including any generic
+                        // arguments that immediately follow (e.g.
+                        // `Result<i32, ParseIntError>`). Without this the
+                        // parser would only take the bare name and let the
+                        // `<...>` leak into the function signature.
+                        //
+                        // Generic brackets are tokenized as `Operator("<")` /
+                        // `Operator(">")` (the comparison-sign rule fires
+                        // before the angle-bracket rule), not `AngleStart` /
+                        // `AngleEnd`, so we discriminate by value here.
+                        let mut full = convert_type(&self.value());
+                        let mut consumed = 1;
+
+                        let next_is_open_generic = matches!(
+                            self.select(self.current + consumed),
+                            Some(t)
+                                if (t.kind == TokenKind::AngleStart)
+                                    || (t.kind == TokenKind::Operator && t.value == "<")
+                        );
+
+                        if next_is_open_generic {
+                            full.push('<');
+                            consumed += 1;
+                            let mut depth: usize = 1;
+                            while let Some(t) = self.select(self.current + consumed) {
+                                consumed += 1;
+                                let is_open = (t.kind == TokenKind::AngleStart)
+                                    || (t.kind == TokenKind::Operator && t.value == "<");
+                                let is_close = (t.kind == TokenKind::AngleEnd)
+                                    || (t.kind == TokenKind::Operator && t.value == ">");
+                                if is_open {
+                                    depth += 1;
+                                    full.push('<');
+                                } else if is_close {
+                                    depth -= 1;
+                                    full.push('>');
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                } else {
+                                    full.push_str(&t.value);
+                                }
+                            }
+                        }
+
+                        self.result.return_type(full);
+                        for _ in 0..consumed {
+                            self.next();
+                        }
                     },
                     TokenKind::BraceStart | TokenKind::BraceEnd => {
                         self.parse_import()
@@ -1519,11 +1844,31 @@ impl Parser {
                         self.next();
                     }
                 }
+
+                // After dispatch, update the chain-tracking depth based on
+                // the kind we just processed. Opens go up, closes go down.
+                match dispatched_kind {
+                    TokenKind::ParenthesesStart
+                    | TokenKind::ParametersStart
+                    | TokenKind::BracketStart
+                    | TokenKind::BraceStart => {
+                        self.chain_delim_depth += 1;
+                    }
+                    TokenKind::ParenthesesEnd
+                    | TokenKind::ParametersEnd
+                    | TokenKind::BracketEnd
+                    | TokenKind::BraceEnd => {
+                        if self.chain_delim_depth > 0 {
+                            self.chain_delim_depth -= 1;
+                        }
+                    }
+                    _ => {}
+                }
             } else {
                 self.result.write_main_function();
                 break self.result.get().expect("Format Error");
             }
-    
+
             self.check_eof();
         }
     }
@@ -1532,4 +1877,51 @@ impl Parser {
 pub fn parse(tokens: Vec<Token>) -> String {
     let mut parser = Parser::new(tokens);
     parser.parse()
+}
+
+/// True when seeing this token (at the same depth as an open optional chain)
+/// should close that chain. The chain is closed *before* the breaker is
+/// emitted, so e.g. `obj?.foo + 1` becomes `obj.as_ref().map(|c| c.foo) + 1`.
+///
+/// Rules:
+/// * `.` / `?.` / `(` / `[` keep the chain open — they're how method-call,
+///   field-access, indexing, and nested optional-chaining continue.
+/// * Closing delimiters at chain depth mean we're leaving the enclosing
+///   scope, so the chain ends here.
+/// * Statement separators and `{` (block start) end the chain.
+/// * Any other operator ends the chain (it's the start of a binary op, the
+///   try operator `?`, etc.).
+fn is_chain_breaker(kind: TokenKind, value: &str) -> bool {
+    match kind {
+        TokenKind::Dot => false,
+        TokenKind::OptionalChain => false,
+        TokenKind::ParenthesesStart
+        | TokenKind::ParametersStart
+        | TokenKind::BracketStart => false,
+        // Identifiers/literals can follow `.method`, so they continue.
+        TokenKind::Identifier
+        | TokenKind::Number
+        | TokenKind::String
+        | TokenKind::InterpolatedString
+        | TokenKind::Keyword
+        | TokenKind::Param
+        | TokenKind::ParamType => false,
+        // Closing delimiters at chain depth: chain ends before depth drops.
+        TokenKind::ParenthesesEnd
+        | TokenKind::ParametersEnd
+        | TokenKind::BracketEnd
+        | TokenKind::BraceEnd => true,
+        // Block start, separators.
+        TokenKind::BraceStart
+        | TokenKind::Comma
+        | TokenKind::Semicolon
+        | TokenKind::Newline
+        | TokenKind::Eof => true,
+        // Comparison angles.
+        TokenKind::AngleStart | TokenKind::AngleEnd | TokenKind::Range => true,
+        // Operators: `.` is already filtered above; everything else (`+`,
+        // `-`, `=`, `==`, `?` try, …) ends the chain.
+        TokenKind::Operator => value != ".",
+        _ => false,
+    }
 }

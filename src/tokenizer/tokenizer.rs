@@ -7,6 +7,59 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use crate::utils::Consumed;
 
+/// Remove `/* ... */` block comments from `source`, leaving everything else
+/// (including embedded newlines) intact so subsequent tokenization keeps the
+/// same line numbers. Block comments inside string literals are preserved.
+/// Block comments do not nest in Copper, mirroring Rust's older rules — the
+/// first `*/` ends the comment.
+fn strip_block_comments(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut escape = false;
+
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            continue;
+        }
+
+        if c == '/' && chars.peek() == Some(&'*') {
+            chars.next(); // consume `*`
+            // Skip until matching `*/`, preserving any newlines so token
+            // location data stays aligned with the source file.
+            let mut prev = '\0';
+            while let Some(next) = chars.next() {
+                if prev == '*' && next == '/' {
+                    break;
+                }
+                if next == '\n' {
+                    out.push('\n');
+                }
+                prev = next;
+            }
+            continue;
+        }
+
+        out.push(c);
+    }
+
+    out
+}
+
 pub(super) type EndToken = Token;
 
 impl EndToken {
@@ -100,14 +153,33 @@ pub(crate) struct Tokenizer {
     tokens: Vec<Token>,
     ends: Vec<EndToken>,
     seen_for: bool,
+    seen_func: bool,
     seen_import: bool,
     seen_public: bool,
     import_specifier_list: bool,
+    /// Tracks whether each currently-open `{` is the body of a `match`
+    /// expression. Used by line_break_token to pick the right separator
+    /// (`,` for match arms, `;` for everything else).
+    brace_is_match: Vec<bool>,
+    /// We saw a `match` keyword and are still scanning its head expression;
+    /// the next `{` (at paren depth 0) opens the match body.
+    expect_match_brace: bool,
+    /// Parenthesis / bracket depth since `expect_match_brace` was set, so
+    /// `match foo({}) { ... }` doesn't mistake the inner `{}` for the match
+    /// body.
+    match_paren_depth: i32,
     location_data_compensations: Vec<usize>,
 }
 
 impl Tokenizer {
     pub fn new(source: String) -> Self {
+        // Strip `/* ... */` block comments before chunked tokenization.
+        // The line-by-line scanner can't see across newlines, so the
+        // simplest correct treatment is to remove block comments up front
+        // while preserving each newline they contained — that keeps later
+        // line/column reporting honest.
+        let source = strip_block_comments(&source);
+
         let mut s = Self {
             source,
             index: 0,
@@ -118,9 +190,13 @@ impl Tokenizer {
             tokens: Vec::new(),
             ends: Vec::new(),
             seen_for: false,
+            seen_func: false,
             seen_import: false,
             seen_public: false,
             import_specifier_list: false,
+            brace_is_match: vec![],
+            expect_match_brace: false,
+            match_paren_depth: 0,
             location_data_compensations: vec![],
         };
 
@@ -233,6 +309,20 @@ impl Tokenizer {
                         self.chunk_column += sign.len() + 1;
                         kind = TokenKind::Colon;
                         break;
+                    } else if *sign == "?" {
+                        // Optional chaining: `?.` is an atomic operator that
+                        // means "if the LHS is Some, run the chain on its
+                        // inner value; otherwise short-circuit to None". A
+                        // bare `?` (no following `.`) stays the Rust try
+                        // operator.
+                        let rest = self.chunk.get(self.chunk_column..).unwrap_or_default();
+                        if rest.starts_with("?.") {
+                            value.push_str("?.");
+                            consumed += 2;
+                            self.chunk_column += 2;
+                            kind = TokenKind::OptionalChain;
+                            break;
+                        }
                     } else if *sign == "." {
                         kind = TokenKind::Dot;
 
@@ -241,7 +331,7 @@ impl Tokenizer {
                             consumed += sign.len();
                             self.chunk_column += sign.len();
                             self.add_to_value(sign);
-                            
+
                             return Consumed::Consumed(consumed as isize);
                         }
                     }
@@ -273,9 +363,7 @@ impl Tokenizer {
             consumed += 1;
 
             kind = TokenKind::CurrencySign;
-        }
-
-        if self.current_char() == '<' || self.current_char() == '>' {
+        } else if self.current_char() == '<' || self.current_char() == '>' {
             value.push(self.current_char());
             self.next_char();
             consumed += 1;
@@ -285,15 +373,16 @@ impl Tokenizer {
                 ">" => TokenKind::AngleEnd,
                 _ => TokenKind::Symbol
             };
-        }
-
-        if self.current_char() == '(' || self.current_char() == ')' {
+        } else if self.current_char() == '(' || self.current_char() == ')' {
             value.push(self.current_char());
             self.next_char();
             consumed += 1;
 
             kind = match value.as_str() {
                 "(" => {
+                    if self.expect_match_brace {
+                        self.match_paren_depth += 1;
+                    }
                     if self.kind() == Some(TokenKind::Identifier) {
                         self.end(TokenKind::ParametersEnd, ")".to_string());
                         TokenKind::ParenthesesStart
@@ -303,6 +392,9 @@ impl Tokenizer {
                     }
                 },
                 ")" => {
+                    if self.expect_match_brace && self.match_paren_depth > 0 {
+                        self.match_paren_depth -= 1;
+                    }
                     if self.end_kind() == Some(TokenKind::ParametersEnd) {
                         self.skip_end();
                         TokenKind::ParametersEnd
@@ -313,27 +405,29 @@ impl Tokenizer {
                 },
                 _ => TokenKind::Symbol
             };
-        }
-
-        if self.current_char() == '[' || self.current_char() == ']' {
+        } else if self.current_char() == '[' || self.current_char() == ']' {
             value.push(self.current_char());
             self.next_char();
             consumed += 1;
 
             kind = match value.as_str() {
                 "[" => {
+                    if self.expect_match_brace {
+                        self.match_paren_depth += 1;
+                    }
                     self.end(TokenKind::BracketEnd, "]".to_string());
                     TokenKind::BracketStart
                 },
                 "]" => {
+                    if self.expect_match_brace && self.match_paren_depth > 0 {
+                        self.match_paren_depth -= 1;
+                    }
                     self.skip_end();
                     TokenKind::BracketEnd
                 },
                 _ => TokenKind::Symbol
             };
-        }
-
-        if self.current_char() == '{' || self.current_char() == '}' {
+        } else if self.current_char() == '{' || self.current_char() == '}' {
             value.push(self.current_char());
             self.next_char();
             consumed += 1;
@@ -344,6 +438,16 @@ impl Tokenizer {
                         self.import_specifier_list = true;
                     }
 
+                    // Track whether this `{` opens the body of a `match`.
+                    // Only count when we're not inside the matched
+                    // expression's parens (paren depth 0).
+                    let opens_match_body =
+                        self.expect_match_brace && self.match_paren_depth == 0;
+                    self.brace_is_match.push(opens_match_body);
+                    if opens_match_body {
+                        self.expect_match_brace = false;
+                    }
+
                     self.end(TokenKind::BraceEnd, "}".to_string());
                     TokenKind::BraceStart
                 },
@@ -351,15 +455,14 @@ impl Tokenizer {
                     if self.import_specifier_list {
                         self.import_specifier_list = false;
                     }
-                    
+                    self.brace_is_match.pop();
+
                     self.skip_end();
                     TokenKind::BraceEnd
                 },
                 _ => TokenKind::Symbol
             };
-        }
-
-        if COMMA_SEPARATORS.contains(&self.current_char().to_string().as_str()) {
+        } else if COMMA_SEPARATORS.contains(&self.current_char().to_string().as_str()) {
             value.push(self.current_char());
             self.next_char();
             consumed += 1;
@@ -386,9 +489,7 @@ impl Tokenizer {
                 },
                 _ => TokenKind::Symbol
             };
-        }
-
-        if self.current_char() == '.' {
+        } else if self.current_char() == '.' {
             value.push(self.current_char());
             self.next_char();
             consumed += 1;
@@ -429,7 +530,20 @@ impl Tokenizer {
             consumed += 1;
         }
 
-        self.token(kind, value);
+        // Detect `$ident` / `${expr}` interpolation. If present, swap the
+        // token's kind/value/data so downstream code can render either as a
+        // `format!(...)` expression or as raw macro args, depending on
+        // context.
+        if let Some(interp) = super::interpolation::parse(&value) {
+            let rendered = super::interpolation::render_format_call(&interp);
+            let token = self.token(TokenKind::InterpolatedString, rendered);
+            token.data = Data::Interpolation {
+                placeholder: interp.placeholder,
+                args: interp.args,
+            };
+        } else {
+            self.token(kind, value);
+        }
 
         Consumed::consume(consumed)
     }
@@ -535,14 +649,38 @@ impl Tokenizer {
                         kind = TokenKind::Toml;
                     },
                     "func" => {
+                        self.seen_func = true;
                         kind = TokenKind::Keyword;
                     },
                     _ => {
                         kind = TokenKind::Keyword;
                     }
                 }
+            } else if self.seen_func {
+                // First identifier-like token after `func` is the declared
+                // return type. Win against RUST_KEYWORDS so things like
+                // `func Result<T, E> name(...)` route the whole `Result<...>`
+                // to the parser's ReturnType handler.
+                self.seen_func = false;
+                kind = TokenKind::ReturnType;
             } else if RUST_KEYWORDS.contains(&value.as_str()) {
-                kind = TokenKind::Keyword;
+                // Specialise loop-related keywords so the parser can route
+                // them through the keyword-spacing path without re-checking
+                // strings.
+                kind = match value.as_str() {
+                    "loop"     => TokenKind::Loop,
+                    "while"    => TokenKind::While,
+                    "break"    => TokenKind::Break,
+                    "continue" => TokenKind::Continue,
+                    "in"       => TokenKind::In,
+                    _          => TokenKind::Keyword,
+                };
+                if value == "match" {
+                    // Arm the brace tracker: the next `{` we open while not
+                    // inside parens belongs to this match expression.
+                    self.expect_match_brace = true;
+                    self.match_paren_depth = 0;
+                }
             } else if self.import_specifier_list {
                 kind = TokenKind::ModuleVar;
             } else if self.seen_import {
@@ -621,11 +759,24 @@ impl Tokenizer {
                 Some(TokenKind::BracketStart) |
                 Some(TokenKind::ParenthesesStart) |
                 Some(TokenKind::ParametersStart) |
-                Some(TokenKind::BraceEnd) => {
-                    value.push(self.current_char()); 
+                Some(TokenKind::BraceEnd) |
+                // `,` already separates items (function args, match arms,
+                // collection literals); appending a `;` would produce `,;`
+                // which Rust rejects inside match blocks.
+                Some(TokenKind::Comma) => {
+                    value.push(self.current_char());
                 },
                 _ => {
-                    value.push_str(&(";".to_owned() + self.current_char().to_string().as_str())); 
+                    // Inside a `match` body, line endings between arms must
+                    // be `,` not `;` — `_ => 2;` is a parse error in Rust,
+                    // while `_ => 2,` is correct (and a trailing comma is
+                    // fine right before `}`).
+                    let separator = if matches!(self.brace_is_match.last(), Some(&true)) {
+                        ","
+                    } else {
+                        ";"
+                    };
+                    value.push_str(&format!("{}{}", separator, self.current_char()));
                 }
             }
             self.next_char();

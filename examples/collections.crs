@@ -1,0 +1,24 @@
+// Vec literals, the `?` operator, and closures.
+
+// Vec literals
+mut nums = [1, 2, 3, 4, 5]
+mut first = nums[0]
+println!("first = $first")
+
+// Closure + iterator chain
+mut doubled: Vec<i32> = nums.iter().map(|x| x * 2).collect()
+println!("doubled = {:?}", doubled)
+
+// Closure capturing
+mut threshold = 3
+mut big: Vec<i32> = nums.iter().filter(|&&x| x > threshold).copied().collect()
+println!("big = {:?}", big)
+
+// `?` operator on Result
+func Result<i32, std::num::ParseIntError> parse_positive(s: &str) {
+    mut n = s.parse::<i32>()?
+    return Ok(n.abs())
+}
+
+mut value = parse_positive("42").unwrap()
+println!("parsed = $value")

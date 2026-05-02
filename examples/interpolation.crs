@@ -1,0 +1,23 @@
+// Demonstrates string interpolation.
+//
+// Two forms:
+//   $name        — bare identifier
+//   ${expr}      — full Rust expression, brace-balanced
+//
+// Inside a `name!(...)` macro call (println!, format!, write!...) the
+// interpolated literal expands directly into the macro's format-string +
+// args. Anywhere else it expands to a `format!(...)` call producing a
+// String, so it works in assignments and any expression position.
+
+mut name = "Brian"
+mut count = 3
+
+println!("Hello $name!")
+println!("You have $count messages, doubled = ${count * 2}")
+
+mut greeting = "Hi $name, welcome back."
+println!("{}", greeting)
+
+for i in 0..3 {
+    println!("Iteration ${i + 1} of $count")
+}

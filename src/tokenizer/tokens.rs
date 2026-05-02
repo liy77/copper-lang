@@ -4,6 +4,12 @@ use super::kind::TokenKind;
 pub enum Data {
     None,
     String(String),
+    /// String literal that contained `$ident` or `${expr}` placeholders.
+    /// `placeholder` is the format string with `{}` markers; `args` are the
+    /// expressions, in order, that fill them. The token's `value` carries the
+    /// fully wrapped `format!(...)` form for default emission, while these
+    /// fields let the parser unwrap into raw macro-arg form when appropriate.
+    Interpolation { placeholder: String, args: Vec<String> },
 }
 
 #[derive(Debug, PartialEq, Clone)]

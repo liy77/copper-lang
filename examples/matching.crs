@@ -1,0 +1,32 @@
+/* Multi-line block comment.
+   Verifies the tokenizer skips block comments while preserving line numbers. */
+
+// Line comments still work too.
+
+func i32 describe(n: i32) {
+    /* arms cover the small, the medium, and everything else */
+    return match n {
+        0 => 0,
+        1 | 2 | 3 => 1,
+        n if n < 0 => -1,
+        _ => 2
+    }
+}
+
+mut maybe: Option<i32> = Some(7)
+
+if let Some(value) = maybe {
+    println!("got value $value")
+} else {
+    println!("nothing")
+}
+
+mut iter = vec![10, 20, 30].into_iter()
+while let Some(n) = iter.next() {
+    println!("next = $n")
+}
+
+println!("describe(0) = ${describe(0)}")
+println!("describe(2) = ${describe(2)}")
+println!("describe(-5) = ${describe(-5)}")
+println!("describe(99) = ${describe(99)}")

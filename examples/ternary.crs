@@ -1,0 +1,23 @@
+// Ternary expressions: `cond ? a : b` lowers to `if cond { a } else { b }`.
+
+mut x = 7
+
+// Simple ternary in assignment
+mut sign = x > 0 ? "positive" : "non-positive"
+println!("sign = $sign")
+
+// Ternary in function call argument
+mut greeting = x > 5 ? "big" : "small"
+println!("x is $greeting")
+
+// Ternary used as a value first, then interpolated
+mut parity = x % 2 == 0 ? "even" : "odd"
+println!("parity = $parity")
+
+// Nested ternaries with parens (inner first)
+mut grade = x >= 9 ? "A" : (x >= 7 ? "B" : "C")
+println!("grade = $grade")
+
+// Ternary returning different numeric values
+mut abs = x < 0 ? -x : x
+println!("abs = $abs")
