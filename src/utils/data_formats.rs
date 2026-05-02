@@ -1,6 +1,6 @@
 /// Native JSON functions for Copper language
 pub mod json {
-    use serde_json::{Value, Result};
+    use serde_json::{Result, Value};
 
     /// Parse JSON string into a JSON value
     pub fn parse(json_str: &str) -> Result<Value> {
@@ -55,7 +55,7 @@ pub mod json {
 
 /// Native TOML functions for Copper language
 pub mod toml_utils {
-    use toml::{Value, from_str, to_string};
+    use toml::{from_str, to_string, Value};
 
     /// Parse TOML string into a TOML value
     pub fn parse(toml_str: &str) -> Result<Value, toml::de::Error> {
@@ -107,7 +107,9 @@ pub mod toml_utils {
 /// Native XML functions for Copper language
 pub mod xml {
     use quick_xml::{
-        escape::{escape, unescape}, events::Event, Reader
+        escape::{escape, unescape},
+        events::Event,
+        Reader,
     };
     use std::collections::HashMap;
 
@@ -207,8 +209,8 @@ pub mod xml {
 
                 Ok(Event::Text(e)) => {
                     if let Some(ref mut element) = current_element {
-                        let raw = str::from_utf8(e.as_ref())?;           // BytesText -> &str
-                        let text = unescape(raw)?.into_owned();           // Now it works
+                        let raw = str::from_utf8(e.as_ref())?; // BytesText -> &str
+                        let text = unescape(raw)?.into_owned(); // Now it works
                         element.text.push_str(&text);
                     }
                 }
@@ -220,7 +222,10 @@ pub mod xml {
                     }
                 }
 
-                Ok(Event::Comment(_)) | Ok(Event::Decl(_)) | Ok(Event::PI(_)) | Ok(Event::DocType(_)) => {
+                Ok(Event::Comment(_))
+                | Ok(Event::Decl(_))
+                | Ok(Event::PI(_))
+                | Ok(Event::DocType(_)) => {
                     // Ignored
                 }
                 Ok(Event::GeneralRef(_)) => {

@@ -1,8 +1,8 @@
-mod null;
 mod consumed;
 mod crate_extractor;
-pub(crate) mod parsed_command;
 pub mod data_formats;
+mod null;
+pub(crate) mod parsed_command;
 
 pub mod cargo {
     // Internal use only
@@ -11,5 +11,5 @@ pub mod cargo {
 
     use super::crate_extractor;
 }
-pub use null::*;
 pub use consumed::*;
+pub use null::*;

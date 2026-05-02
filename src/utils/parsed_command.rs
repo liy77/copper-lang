@@ -9,7 +9,13 @@ pub struct ParsedCommand {
 
 impl ParsedCommand {
     pub fn new(name: String, args: Vec<String>) -> Self {
-        Self { name, args, is_file: false, is_dir: false, is_valid: true }
+        Self {
+            name,
+            args,
+            is_file: false,
+            is_dir: false,
+            is_valid: true,
+        }
     }
 
     pub fn set_file(&mut self, is_file: bool) {
@@ -31,7 +37,9 @@ pub struct ParsedCommands {
 
 impl ParsedCommands {
     pub fn new() -> Self {
-        Self { commands: Vec::new() }
+        Self {
+            commands: Vec::new(),
+        }
     }
 
     pub fn add_command(&mut self, command: ParsedCommand) {
@@ -41,9 +49,13 @@ impl ParsedCommands {
     pub fn get_command(&self, name: &str) -> Option<&ParsedCommand> {
         self.commands.iter().find(|cmd| cmd.name == name)
     }
-    
+
     pub fn update_or_add_command(&mut self, command: ParsedCommand) {
-        if let Some(pos) = self.commands.iter().position(|cmd| cmd.name == command.name) {
+        if let Some(pos) = self
+            .commands
+            .iter()
+            .position(|cmd| cmd.name == command.name)
+        {
             self.commands[pos] = command;
         } else {
             self.commands.push(command);
