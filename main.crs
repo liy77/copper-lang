@@ -1,13 +1,12 @@
 import test_alias from std
 import { io } from std
-import ai from ai_copper
 
 func void hello() {
     println!("Hello World!")
 }
 
 func void hello_with_name(name: string) {
-    println!("Hello {}",  name)
+    println!("Hello $name")
 }
 
 
@@ -17,8 +16,6 @@ integer++
 integer--
 constantvalue = 4
 
-a = ai::Tensor::rand(2,3)
-a.print()
 println!("{}", constantvalue)
 println!("{}", integer)
 hello()
@@ -89,4 +86,24 @@ func void process(input: json) {
 
 testjson = {
     "teste": "ao"
+}
+
+mut count = 0
+loop {
+    count++
+    if count == 3 {
+        break
+    }
+}
+
+mut n = 5
+while n > 0 {
+    n--
+    if n == 2 {
+        continue
+    }
+}
+
+for i in 0..5 {
+    println!("i = {}", i)
 }
