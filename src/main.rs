@@ -70,6 +70,20 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
         )
 });
 
+/// Build date stamped in by `build.rs` at compile time (UTC, `YYYY-MM-DD`).
+const BUILD_DATE: &str = env!("COPPER_BUILD_DATE");
+
+/// Append the build date to a version string when it is a pre-release
+/// (contains `alpha`, `beta`, or `rc`). Stable versions are returned as-is.
+fn with_build_date(version: &str) -> String {
+    let v = version.to_ascii_lowercase();
+    if v.contains("alpha") || v.contains("beta") || v.contains("rc") {
+        format!("{} (build {})", version, BUILD_DATE)
+    } else {
+        version.to_string()
+    }
+}
+
 fn is_command_available(command: &str) -> bool {
     ProcessCommand::new(command)
         .arg("--version")
@@ -255,8 +269,10 @@ async fn main() {
     let commands = parse_commands();
 
     if commands.get_command("version").unwrap().is_valid {
-        println!("CForge v{}", env::var("CFORGE_VERSION").unwrap());
-        println!("Copper v{}", env::var("COPPER_VERSION").unwrap());
+        let cforge_version = env::var("CFORGE_VERSION").unwrap();
+        let copper_version = env::var("COPPER_VERSION").unwrap();
+        println!("CForge v{}", with_build_date(&cforge_version));
+        println!("Copper v{}", with_build_date(&copper_version));
         return;
     }
 
