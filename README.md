@@ -136,3 +136,19 @@ cforge run examples/ternary.crs         # `cond ? a : b`
 
 Pull requests are welcome. Please open an issue first for non-trivial changes
 so we can discuss the approach.
+
+After cloning, activate the repo's git hooks once so commits and pushes
+run the same lint gates CI does:
+
+| Platform | Command |
+| --- | --- |
+| Windows  | `scripts\install-hooks.bat` |
+| Unix     | `bash scripts/install-hooks.sh` |
+
+This sets `core.hooksPath` to `.githooks/`. From then on:
+
+- `pre-commit` runs `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`
+- `pre-push` runs `cargo test`
+
+Bypass with `--no-verify` only when you have to (the same checks fail in CI
+afterwards).

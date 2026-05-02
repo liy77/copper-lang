@@ -1,0 +1,28 @@
+#!/usr/bin/env sh
+# Pre-commit hook for copper-lang. Runs the same style/lint gates that CI
+# runs, so a clean local commit means CI will not bounce you back for
+# rustfmt or clippy issues.
+#
+# Skipped here (run by CI):
+#   * cargo test  — slow on cold caches
+#   * cargo build --release — heavy, only matters at install time
+#
+# To bypass in an emergency: `git commit --no-verify`. Please don't make
+# it a habit; CI will fail and you'll have to fix it anyway.
+
+set -e
+
+# Make Git Bash on Windows pick up cargo from PATH normally; nothing else
+# needed for Linux/macOS.
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "[pre-commit] ERROR: cargo not found in PATH"
+    exit 1
+fi
+
+echo "▶ cargo fmt --check"
+cargo fmt --check
+
+echo "▶ cargo clippy --all-targets -- -D warnings"
+cargo clippy --all-targets -- -D warnings
+
+echo "✅ pre-commit checks passed"

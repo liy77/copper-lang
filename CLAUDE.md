@@ -302,9 +302,32 @@ scripts\install.bat      # then open a NEW terminal
 ```
 
 CI matrix (`.github/workflows/ci.yml`): fmt / clippy (`-D warnings`) /
-check / test / build on Linux, Windows, macOS. Pre-existing clippy warns
-in `cforge/mod.rs`, `main.rs`, `parser/mod.rs` are tolerated by CI but
-ideally not added to.
+check / test / build on Linux, Windows, macOS.
+
+`src/main.rs` carries a crate-level `#![allow(...)]` for ~11 stylistic
+clippy categories that come from untouched legacy code (interior-mutable
+`Lazy<T>` consts, `module_inception` for `tokenizer/tokenizer.rs`,
+`to_string_trait_impl`, etc.). When you rewrite a module covered by
+those allows, drop the relevant entry — anything outside the allow-list
+fails the build.
+
+### Pre-commit / pre-push hooks
+
+`.githooks/pre-commit` runs `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings`.
+`.githooks/pre-push` runs `cargo test`.
+
+Activate once per clone with `scripts\install-hooks.bat` (Windows) or
+`bash scripts/install-hooks.sh` (Unix). The setup script just runs
+`git config core.hooksPath .githooks`.
+
+When working on changes:
+
+- Don't disable the hooks — they catch the lint surface that has bitten
+  the repo (e.g. clippy 1.95 introducing `collapsible_match` /
+  `filter_next` errors that the older local clippy missed).
+- If a hook reports a real bug in your change, fix it. If the lint is a
+  legitimate false positive in untouched legacy code, add it to the
+  crate-level allow-list with a comment explaining why.
 
 ## Language features currently supported
 

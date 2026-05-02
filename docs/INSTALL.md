@@ -131,5 +131,16 @@ If either is missing, install via <https://rustup.rs/>.
 
 1. Fork the repository.
 2. Create a topic branch.
-3. Commit your changes with a clear message.
-4. Open a pull request.
+3. Activate the repo's git hooks once so your commits/pushes run the
+   same lint gates CI does:
+   - Windows: `scripts\install-hooks.bat`
+   - Unix:    `bash scripts/install-hooks.sh`
+4. Commit your changes with a clear message.
+5. Open a pull request.
+
+Hooks installed by step 3:
+
+- **`pre-commit`** — `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`
+- **`pre-push`** — `cargo test`
+
+Bypass with `--no-verify` only in emergencies; the same checks block in CI.
