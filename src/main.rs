@@ -18,9 +18,16 @@
 )]
 
 pub mod cforge;
-pub mod parser;
-pub mod tokenizer;
 pub mod utils;
+
+// Re-export the tokenizer module from copper-syntax so existing paths
+// (`crate::tokenizer::tokens::Token`, etc.) keep resolving. cforge drives
+// the same tokenizer the parser and LSP consume.
+pub use copper_syntax::tokenizer;
+
+// The parser now lives in its own crate (`copper-parser`). Re-export it at
+// the crate root so `crate::parser::Parser` keeps resolving in cforge.
+pub use copper_parser::parser;
 
 use clap::{Arg, Command as ClapCommand};
 use std::process::Command as ProcessCommand;
@@ -56,6 +63,11 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
             .long("release")
             .action(clap::ArgAction::SetTrue)
             .help("Compile in release mode"))
+        .arg(Arg::new("bundle")
+            .short('b')
+            .long("bundle")
+            .action(clap::ArgAction::SetTrue)
+            .help("Embed the app.bundle (assets + config) into the executable for a self-contained binary (.mui only)"))
         .arg(Arg::new("version")
             .short('v')
             .long("version")
@@ -85,6 +97,17 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
                     .long("output")
                     .help("Output directory for compiled files"),
             ])
+        )
+        .subcommand(ClapCommand::new("init")
+            .about("Scaffold a new Copper project (properties.kson, main.crs, .gitignore)")
+        )
+        .subcommand(ClapCommand::new("install")
+            .about("Install dependencies. With no NAME, resolves + downloads every dependency in properties.kson and writes properties.lock. With a NAME, adds/pins that one.")
+            .arg(Arg::new("package")
+                .help("Crate to install, optionally pinned: name or name@version. Omit to install everything in properties.kson.")
+                .value_name("NAME[@VERSION]")
+                .required(false)
+                .index(1))
         )
 });
 
@@ -116,7 +139,9 @@ fn parse_commands() -> ParsedCommands {
     let mut parsed_args = ParsedCommands::new();
 
     // Handle flags (boolean arguments)
-    for flag in ["version", "verbose", "clean", "compile", "release"] {
+    for flag in [
+        "version", "verbose", "clean", "compile", "release", "bundle",
+    ] {
         if let Some(value) = matches.get_one::<bool>(flag) {
             let mut cmd = ParsedCommand::new(flag.to_string(), vec![]);
             cmd.set_valid(*value);
@@ -272,6 +297,27 @@ fn parse_commands() -> ParsedCommands {
 
 #[tokio::main]
 async fn main() {
+    // Project-management subcommands run before the toolchain checks below:
+    // `init` only writes files, and `install` only talks to crates.io —
+    // neither needs cargo/rustc present.
+    match BASE_CMD.clone().get_matches().subcommand() {
+        Some(("init", _)) => {
+            cforge::commands::init();
+            return;
+        }
+        Some(("install", install_matches)) => {
+            match install_matches.get_one::<String>("package") {
+                // `cforge install <name>` — add/pin a single dependency.
+                Some(package) => cforge::commands::install(package).await,
+                // `cforge install` — resolve + download everything in
+                // properties.kson and write properties.lock.
+                None => cforge::commands::install_all().await,
+            }
+            return;
+        }
+        _ => {}
+    }
+
     if !is_command_available("cargo") {
         println!("🦀 Cargo is not installed. Please install it to continue.");
         return;
@@ -353,27 +399,61 @@ async fn main() {
         }
     }
 
+    let is_release = commands.get_command("release").unwrap().is_valid;
+    let embed_bundle = commands
+        .get_command("bundle")
+        .map(|c| c.is_valid)
+        .unwrap_or(false);
+
+    // Resolve --target early so both the compile and run paths can see it.
+    let target_triple: Option<&'static str> = BASE_CMD
+        .clone()
+        .get_matches()
+        .get_one::<String>("target")
+        .map(|t| cforge::resolve_target(t));
+
+    if let Some(triple) = target_triple {
+        env::set_var("CFORGE_TARGET", triple);
+    }
+    if is_release {
+        env::set_var("CFORGE_RELEASE", "1");
+    }
+
     if commands.get_command("compile").unwrap().is_valid {
+        // A single `.mui` / `.crm` is a mocida UI: "compiling" it means lowering
+        // the component AST to Rust (mui-codegen) rather than the Copper→Rust
+        // transpile. Same `-c` entry point, file extension picks the backend.
+        // `--release` additionally `cargo build`s the generated crate; `--bundle`
+        // embeds the app.bundle (assets + config) into the binary.
+        if input_dir.is_none() && files.len() == 1 && cforge::mui::is_mui_file(&files[0]) {
+            let code =
+                cforge::mui::compile(&files[0], output_dir.as_deref(), is_release, embed_bundle);
+            println!();
+            std::process::exit(code);
+        }
+
         let detected_dependencies =
             cforge::compile(files.clone(), input_dir.clone(), output_dir.clone());
         cforge::generate_toml(detected_dependencies).await;
-    }
-    // If the user provided --target, expose it to downstream build runner via environment variable
-    if let Some(t) = BASE_CMD.clone().get_matches().get_one::<String>("target") {
-        // Map friendly names to default triples if necessary
-        let target_triple = match t.as_str() {
-            "windows" => "x86_64-pc-windows-msvc",
-            "mac" | "darwin" => "x86_64-apple-darwin",
-            "mac-aarch64" | "m1" | "arm64" => "aarch64-apple-darwin",
-            "linux" => "x86_64-unknown-linux-gnu",
-            "linux-aarch64" | "arm64-linux" => "aarch64-unknown-linux-gnu",
-            other => other,
-        };
-        std::env::set_var("CFORGE_TARGET", target_triple);
+
+        // When --target is set, also cargo-build for that target and copy the
+        // binary to dist/. Without --target, -c stops at the Rust source.
+        if let Some(triple) = target_triple {
+            cforge::build_for_target(triple, is_release);
+        }
     }
 
     // Handle run subcommand
     if commands.get_command("run").is_some() && commands.get_command("run").unwrap().is_valid {
+        // A single `.mui` / `.crm` file is a mocida UI: render it live via the
+        // mui-dev host instead of going through the Copper→Rust→cargo pipeline.
+        // (Transpiling `.crm` to a native binary is the M5 release path.)
+        if input_dir.is_none() && files.len() == 1 && cforge::mui::is_mui_file(&files[0]) {
+            let code = cforge::mui::run(&files[0]);
+            println!();
+            std::process::exit(code);
+        }
+
         let detected_dependencies = cforge::compile(files, input_dir, output_dir.clone());
         cforge::generate_toml(detected_dependencies).await;
         cforge::run();

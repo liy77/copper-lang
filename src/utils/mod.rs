@@ -1,4 +1,3 @@
-mod consumed;
 mod crate_extractor;
 pub mod data_formats;
 mod null;
@@ -11,5 +10,8 @@ pub mod cargo {
 
     use super::crate_extractor;
 }
-pub use consumed::*;
+
+// Re-export from copper-syntax so existing `crate::ConsumedTrait`,
+// `crate::utils::Consumed`, etc. paths in the parser keep resolving.
+pub use copper_syntax::utils::*;
 pub use null::*;

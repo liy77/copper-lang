@@ -1,11 +1,26 @@
-import { Library, library_filename, Symbol } from libloading
+// std/import.crs — dynamic library loading, built on the `libloading` crate.
+//
+// Opens a shared library (.dll / .so / .dylib) at runtime so a Copper program
+// can call into native plugins. This is also a worked example of Copper ↔ Rust
+// interop: `import { Library } from libloading` lowers to `use libloading::...`
+// and cforge adds `libloading` to the generated Cargo.toml.
+//
+// Generic symbol resolution (`func T import<T>(...)`) needs type parameters on
+// functions, which Copper doesn't have yet — so this returns the opened
+// `Library` and you resolve symbols from it on the Rust side.
 
-@copper_std("import")
-/// Dynamic import
-public unsafe <T> func T import(library: string) {
+import { Library } from libloading
+
+/// Open a shared library by path, e.g. `open_library("./plugin.dll")`.
+/// Unsafe: loading and running arbitrary native code can't be checked.
+public unsafe func Library open_library(path: string) {
+    return Library::new(path).unwrap()
+}
+
+/// True when the library at `path` can be opened. A safe, non-generic probe
+/// useful for feature detection.
+public func bool can_load(path: string) {
     unsafe {
-        lib = Library::new(library_filename(library)).unwrap()
-
-        
+        return Library::new(path).is_ok()
     }
 }

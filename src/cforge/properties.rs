@@ -416,10 +416,16 @@ name = "{name}"
 version = "{version}"
 edition = "{edition}"
 
+# Mark this manifest as its own workspace root so it doesn't get pulled
+# into the parent copper-lang workspace when cforge is built from inside
+# its own source tree.
+[workspace]
+
 [[bin]]
 name = "{name}"
 path = "src/main.rs"{dependencies_section}"#,
-            std::env::var("CFORGE_VERSION").unwrap(),
+            std::env::var("CFORGE_VERSION")
+                .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string()),
             name = self.name,
             version = self.version,
             edition = self.edition,

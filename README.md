@@ -18,16 +18,21 @@ println!("Your name is $name")
 
 ## Install
 
-See [`docs/INSTALL.md`](./docs/INSTALL.md) for the full guide. TL;DR:
+There's also a [GUI installer](./installer-gui) (Tauri, Windows-only for
+now) that wraps the script below in a clickable form.
 
-| Platform | Command |
-| --- | --- |
-| Windows  | `scripts\install.bat` |
-| Linux    | `bash scripts/install.sh` |
-| macOS    | `bash scripts/install-mac.sh` |
+### Script install
 
-The installer auto-detects admin / root and picks a global or per-user
-install accordingly.
+See [`docs/INSTALL.md`](./docs/INSTALL.md) for the full guide. TL;DR — one
+cross-platform Python installer (needs Python 3.7+):
+
+```sh
+python scripts/install.py
+```
+
+On Windows you can also double-click `scripts\install.bat`; on Unix run
+`bash scripts/install.sh`. Both just forward to `install.py`. The installer
+auto-detects admin / root and picks a global or per-user install accordingly.
 
 ## Compile a project
 
@@ -104,13 +109,46 @@ match n {
 
 See [`examples/`](./examples) for runnable demos of each feature.
 
+### Built-in `cstd` standard library
+
+Rust's standard library is powerful but verbose for everyday scripting tasks
+(reading a line of input, sleeping, getting the current time, running a shell
+command). Copper ships an embedded `cstd` module — import what you need and
+the compiler injects only the helpers you used:
+
+```copper
+import { input, read_int, sleep_ms, now_ms, run, exit, env, exists } from cstd
+
+name = input("Your name? ")
+age  = read_int("Age: ")
+println!("Hello $name ($age)")
+
+started = now_ms()
+sleep_ms(100)
+println!("slept ~{}ms", now_ms() - started)
+
+println!("HOME = {}", env("HOME"))
+println!("ls -> {}", run("ls"))
+```
+
+Available functions: `input`, `readln`, `read_int`, `read_float`, `to_int`,
+`to_float`, `trim`, `split`, `join`, `exit`, `die`, `panic_if`, `sleep_ms`,
+`now_ms`, `env`, `args`, `read_file`, `write_file`, `append_file`, `exists`,
+`is_file`, `is_dir`, `list_dir`, `run`, `rand_int`.
+
+The library lives in [`std/cstd.crs`](./std/cstd.crs) (Copper) plus
+[`std/cstd_native.rs`](./std/cstd_native.rs) for the few helpers Copper's
+transpiler can't yet express cleanly (multi-line method chains, `&[T]`
+slice types, `cfg!(target_os=...)`). Editing either file and rebuilding
+`cforge` ships the change.
+
 ## Project layout
 
 ```
 copper-lang/
 ├── src/                # Compiler source (Rust)
-├── examples/           # Runnable .crs sample programs
-├── scripts/            # install / build / cleanup / diagnose / uninstall
+├── examples/           # Runnable samples (copper/ → .crs, mui/ → .mui/.crm)
+├── scripts/            # Python tooling: install / build / cleanup / diagnose / uninstall / hooks
 ├── docs/               # INSTALL.md and other guides
 ├── std/                # Copper standard library (.crs)
 ├── lson/               # LSON parser binaries (per-OS)
@@ -125,12 +163,19 @@ copper-lang/
 ## Examples
 
 ```sh
-cforge run examples/loops.crs           # loop / while / for / break / continue
-cforge run examples/interpolation.crs   # "Hello $name", "${expr}"
-cforge run examples/collections.crs     # vec literals, closures, ?
-cforge run examples/matching.crs        # match arms, if let, while let
-cforge run examples/optional.crs        # `?.` optional chaining
-cforge run examples/ternary.crs         # `cond ? a : b`
+cforge run examples/copper/loops.crs           # loop / while / for / break / continue
+cforge run examples/copper/interpolation.crs   # "Hello $name", "${expr}"
+cforge run examples/copper/collections.crs     # vec literals, closures, ?
+cforge run examples/copper/matching.crs        # match arms, if let, while let
+cforge run examples/copper/optional.crs        # `?.` optional chaining
+cforge run examples/copper/ternary.crs         # `cond ? a : b`
+cforge run examples/copper/cstd.crs            # built-in stdlib (input, sleep, env, ...)
+cforge run examples/copper/unsafe.crs          # `unsafe func` and `unsafe { ... }` blocks
+
+# MUI examples (need mui-dev on PATH):
+cforge run examples/mui/hello/hello.mui
+cforge run examples/mui/counter/counter.mui
+cforge run examples/mui/app/app.mui
 ```
 
 ## Contributing
@@ -141,10 +186,9 @@ so we can discuss the approach.
 After cloning, activate the repo's git hooks once so commits and pushes
 run the same lint gates CI does:
 
-| Platform | Command |
-| --- | --- |
-| Windows  | `scripts\install-hooks.bat` |
-| Unix     | `bash scripts/install-hooks.sh` |
+```sh
+python scripts/hooks.py
+```
 
 This sets `core.hooksPath` to `.githooks/`. From then on:
 

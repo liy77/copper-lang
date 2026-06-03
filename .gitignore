@@ -13,3 +13,23 @@ cforge_tokenizer_debug.log
 
 # Local agent / IDE state
 /.claude
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# VSCode extension build artifacts (see scripts/install_extensions.py)
+/editors/**/node_modules/
+/editors/**/out/
+/editors/**/*.vsix
+# Explicit (belt-and-suspenders) — never track the extension's deps/build.
+/editors/vscode/node_modules/
+/editors/vscode/out/
+
+# Installer GUI — ignore ONLY build artifacts; the MUI installer SOURCE
+# (installer.mui, backend.rs, the copper-installer host crate) is committed.
+/installer-gui/dist/
+/installer-gui/copper-installer/target/
+/installer-gui/copper-installer/dist/
+/installer-gui/copper-installer/Cargo.lock
+/installer-gui/copper-installer/mocida.dll

@@ -1,0 +1,69 @@
+// Copper standard library — written in Copper itself.
+// Loaded automatically when a program does `import { ... } from cstd`.
+// The compiler wraps everything below in `pub mod cstd { ... }` and
+// rewrites every `fn` into `pub fn` so user `use cstd::{X};` resolves.
+//
+// Functions that Copper's transpiler cannot yet express cleanly (multi-line
+// method chains, raw `&[T]` slice types, `cfg!(target_os = ...)` macros)
+// live in `std/cstd_native.rs` and are bundled alongside this module.
+
+func String input(prompt: &str) {
+    print!("{}", prompt)
+    std::io::Write::flush(&mut std::io::stdout()).ok()
+    mut buf = String::new()
+    std::io::stdin().read_line(&mut buf).expect("failed to read stdin")
+    return buf.trim_end().to_string()
+}
+
+func String readln() {
+    mut buf = String::new()
+    std::io::stdin().read_line(&mut buf).expect("failed to read stdin")
+    return buf.trim_end().to_string()
+}
+
+func void exit(code: i32) {
+    std::process::exit(code)
+}
+
+func void die(msg: &str) {
+    eprintln!("{}", msg)
+    std::process::exit(1)
+}
+
+func void sleep_ms(ms: u64) {
+    std::thread::sleep(std::time::Duration::from_millis(ms))
+}
+
+func String env(name: &str) {
+    return std::env::var(name).unwrap_or_default()
+}
+
+func bool exists(path: &str) {
+    return std::path::Path::new(path).exists()
+}
+
+func bool is_file(path: &str) {
+    return std::path::Path::new(path).is_file()
+}
+
+func bool is_dir(path: &str) {
+    return std::path::Path::new(path).is_dir()
+}
+
+func String read_file(path: &str) {
+    return std::fs::read_to_string(path).expect("read_file failed")
+}
+
+func void write_file(path: &str, content: &str) {
+    std::fs::write(path, content).expect("write_file failed")
+}
+
+func String trim(s: &str) {
+    return s.trim().to_string()
+}
+
+func void panic_if(cond: bool, msg: &str) {
+    if cond {
+        panic!("{}", msg)
+    }
+}

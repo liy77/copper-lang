@@ -4,6 +4,32 @@ use std::{error::Error, process::Command};
 
 const CRATES_IO_URL: &str = "https://crates.io";
 
+/// Build a sortable key for a crates.io version entry so `max_by` selects the
+/// newest *usable* version. Ordering, highest-wins:
+///   1. non-yanked over yanked
+///   2. stable release over pre-release (`1.0.0` over `1.0.0-rc.1`)
+///   3. numeric semver (major, minor, patch) — never string comparison
+///
+/// Unparseable versions sort to the bottom of their yanked/pre tier.
+fn semver_sort_key(v: &Value) -> (bool, bool, u64, u64, u64) {
+    let yanked = v["yanked"].as_bool().unwrap_or(false);
+    let num = v["num"].as_str().unwrap_or("");
+
+    // Strip build metadata (`+...`) and detect/strip a pre-release (`-...`).
+    let core = num.split('+').next().unwrap_or(num);
+    let (main, is_release) = match core.split_once('-') {
+        Some((m, _)) => (m, false),
+        None => (core, true),
+    };
+
+    let mut parts = main.split('.');
+    let major = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+
+    (!yanked, is_release, major, minor, patch)
+}
+
 fn is_local_network_connected() -> bool {
     let mut output = Command::new("ping");
 
@@ -53,9 +79,13 @@ pub async fn check_version_exists(
 
     if let Some(versions) = json["versions"].as_array() {
         if matches!(version, "latest" | "*") {
+            // Pick the highest version by semver order, NOT lexicographically:
+            // a string `max` ranks "1.0.99" above "1.0.200" because '9' > '2'.
+            // Prefer non-yanked releases over pre-releases; only fall back to a
+            // pre-release when nothing stable is published.
             if let Some(latest_version) = versions
                 .iter()
-                .max_by_key(|v| v["num"].as_str().unwrap_or(""))
+                .max_by(|a, b| semver_sort_key(a).cmp(&semver_sort_key(b)))
             {
                 let latest = latest_version["num"].as_str();
                 if latest.is_some() {

@@ -21,6 +21,41 @@ Pipeline:
 `cforge run foo.crs` does the full pipeline plus a final `cargo run` inside
 `dist/rust/`.
 
+### MUI files (`.mui` / `.crm`)
+
+`cforge run foo.mui` (or `.crm`) does **not** transpile — it renders the file
+as a live mocida UI by shelling out to the `mui-dev` host (see
+`src/cforge/mui.rs` and `mocida/mui/ARCHITECTURE.md`). cforge stays portable:
+it never links the mocida C library or `mui-runtime` directly (that would break
+the Linux/macOS CI), it just locates and launches the `mui-dev` binary the same
+way `run()` launches `cargo`. Renderer resolution: `MUI_DEV_BIN` env →
+pre-built `mui-dev[.exe]` under a discovered `mocida-rs/target/` (DLLs staged
+beside it) → `cargo run -p mui-dev` in the workspace (found via `MOCIDA_RS_DIR`
+or by looking for a sibling `mocida/mocida-rs`). This is the **dev** path (M1:
+static render). The `mui-syntax` / `mui-runtime` / `mui-dev` crates live in
+copper-lang and the mocida-rs workspace respectively.
+
+`cforge -c -i foo.mui` (or `.crm`) is the **codegen path (M5)** — the same
+`-c`/`--compile` flag that transpiles `.crs`, with the file extension picking
+the backend. It lowers the component AST to readable **Rust source** (via the
+`mui-codegen` crate, `crates/mui-codegen`), writes a self-contained cargo
+project to `<output>/mui/` (a `main.rs` building the mocida tree + a
+`Cargo.toml` with a path dep on `mocida`), and prints the generated code. Plain
+`-c` stops there (like `-c foo.crs` writes the `.rs` without running it); add
+`-r`/`--release` to also `cargo build --release` it into a native binary (DLLs
+auto-staged by `mocida-sys`'s build script). A sibling `app.bundle` and the
+assets it lists are staged into `<output>/mui/` so the build finds them; add
+`-b`/`--bundle` to instead **embed** them into the executable (`include_bytes!`
+in `main.rs` + self-extract to a temp dir at startup via `EmbedSpec` in
+mui-codegen and `stage_bundle` in `src/cforge/mui.rs`) for a self-contained
+binary. `mui-codegen` is pure AST→text (no mocida dependency), so cforge stays
+portable; only the *generated* crate links mocida. Handlers + live reactivity
+are emitted as comments/placeholders for now (the M3/M4 evaluator work, ported
+into codegen later).
+
+So the two MUI verbs mirror the `.crs` ones: `cforge run foo.mui` = dev render
+(M1), `cforge -c [-r] foo.mui` = generate code [+ native build] (M5).
+
 ## Repository layout
 
 ```
@@ -45,22 +80,45 @@ copper-lang/
 │   │   ├── properties.rs   Cargo.toml generator
 │   │   ├── fetch.rs, vprint.rs
 │   └── utils/              Misc helpers (Consumed, ConsumedTrait, etc.)
-├── examples/               Runnable .crs samples — DO add new ones here
-│   ├── loops.crs           loop / while / for / break / continue
-│   ├── interpolation.crs   "$name" / "${expr}"
-│   ├── collections.crs     vec literals, closures, ?
-│   ├── matching.crs        match arms, if let, while let, multi-line comments
-│   ├── optional.crs        `?.` optional chaining
-│   └── ternary.crs         `cond ? a : b`
-├── scripts/                All install / build / cleanup tooling
-│   ├── install.bat         Windows; cd's to project root via "%~dp0\.."
-│   ├── install.sh          Linux
-│   ├── install-mac.sh      macOS
-│   ├── uninstall.bat       Static, scope-detecting (admin → global, else local)
-│   ├── build.bat, cleanup.bat, diagnose.bat
+├── examples/               Runnable samples — add new ones here
+│   ├── copper/             Copper (.crs) demos
+│   │   ├── loops.crs       loop / while / for / break / continue
+│   │   ├── interpolation.crs  "$name" / "${expr}"
+│   │   ├── collections.crs vec literals, closures, ?
+│   │   ├── matching.crs    match arms, if let, while let, multi-line comments
+│   │   ├── optional.crs    `?.` optional chaining
+│   │   ├── ternary.crs     `cond ? a : b`
+│   │   ├── cstd.crs        cstd stdlib usage
+│   │   ├── unsafe.crs      unsafe func / unsafe blocks
+│   │   └── rust-interop/   mixing .crs + .rs
+│   └── mui/                MUI (.mui / .crm) demos — each in its own subfolder
+│       ├── hello/          minimal view
+│       ├── counter/        reactive state + if/else
+│       ├── keyboard/       onKeyInput keyboard handling (event.key)
+│       ├── styled/         widget styling + anchors
+│       ├── app/            full App() block with bundle
+│       ├── card/           reusable component (view with params)
+│       ├── dashboard/      cross-file import (imports card/)
+│       ├── bundle-demo/    app.bundle + asset loading
+│       └── crm/            .crm (Copper + MUI in one file)
+├── scripts/                Cross-platform Python tooling (needs Python 3.7+)
+│   ├── _pretty.py          Shared copper-themed terminal styling (banner/ok/warn/…)
+│   ├── install.py          Build + install cforge; scope-detecting (admin → global, else local)
+│   ├── uninstall.py        Standalone (no _pretty import — gets copied to the install dir)
+│   ├── build.py, cleanup.py, diagnose.py, hooks.py
+│   └── install.bat/.sh, uninstall.bat   Thin shims that just forward to the .py
 ├── docs/
 │   └── INSTALL.md          User-facing install guide
-├── std/, lson/             Runtime assets that the installer copies
+├── std/                    Copper standard library
+│   ├── cstd.crs            Copper-written helpers (input, readln, exit, ...)
+│   ├── cstd_native.rs      Rust-only helpers Copper can't transpile yet
+│   └── import.crs          Old dynamic-import demo (unused)
+├── installer-gui/          MUI GUI installer (Windows-first). The UI is the
+│   ├── installer.mui      single source: a declarative MUI view (no web/Tauri).
+│   ├── backend.rs         Install logic (cargo build + copy + PATH); std-only.
+│   ├── copper-installer/  Native host crate (renders installer.mui + links backend.rs)
+│   └── README.md          `cforge run installer-gui/installer.mui`
+├── lson/                   Runtime assets that the installer copies
 ├── assets/                 Logos
 ├── main.crs                Default file used by `cforge run` with no arg
 ├── properties.kson         Project config used by `cforge generate_toml`
@@ -198,25 +256,34 @@ copper-lang/
 - `with_build_date(version)` in `main.rs` only stamps the date when the
   version string contains `alpha`, `beta`, or `rc`. Stable releases stay
   clean.
-- **`scripts/install.bat`** deletes `target/release/cforge.exe` before
+- **`scripts/install.py`** deletes `target/release/cforge(.exe)` before
   `cargo build --release` to force a fresh link, keeping the installed
   binary in sync with the latest build.
 
 ### Scripts
 
-- All scripts in `scripts/` operate from the project root. They start
-  with `cd /d "%~dp0\.."` (Windows) or `cd "$SCRIPT_DIR/.."` (Unix). If
-  you add a new script there, follow that pattern.
-- **`scripts/uninstall.bat` is the canonical, hand-written uninstaller.**
-  An earlier version was generated inline by `install.bat` via stacked
-  `echo` lines; the escape soup produced a broken `if ^ neq 0` and
-  variables like `^^^^!`. The current `install.bat` simply `copy`s the
-  static file. Don't reintroduce the inline generator.
-- `uninstall.bat` auto-detects scope by checking `net session` (admin →
-  global / `HKLM` / `Program Files`; else local / `HKCU` / `~/.copper`).
-  It uses a PowerShell one-liner to surgically remove `%COPPER_PATH%\bin`
-  from `PATH` because cmd's substring substitution mangles long PATHs
-  with parens / semicolons.
+- **All tooling in `scripts/` is cross-platform Python** (one `.py` per
+  task: `install`, `uninstall`, `build`, `cleanup`, `diagnose`, `hooks`).
+  The old per-OS `.bat`/`.sh` were collapsed into these. Each resolves the
+  project root via `Path(__file__).resolve().parent.parent` — no `cd`.
+  Shared output styling lives in `scripts/_pretty.py`; import from it for
+  any new script (`from _pretty import banner, head, ok, warn, fail, …`).
+- **`scripts/uninstall.py` must stay self-contained** — it is copied into
+  the install dir (away from `_pretty.py`), so it inlines its own tiny
+  styling helpers and must NOT `import _pretty`. The other scripts run
+  from `scripts/` and import it freely.
+- Thin shims (`install.bat`, `install.sh`, `uninstall.bat`) only locate a
+  Python 3 interpreter and forward args to the matching `.py`. Keep them
+  trivial — all real logic stays in Python. `install.py` ships the
+  uninstaller by copying `uninstall.py` (+ `uninstall.bat` on Windows).
+- `install.py` / `uninstall.py` auto-detect scope from privilege level
+  (Windows: `ctypes…IsUserAnAdmin`; Unix: `geteuid()==0`) → global
+  (`HKLM` / `Program Files` / `/usr/local/lib/copper` / `/etc/profile.d`)
+  or local (`HKCU` / `~/.copper` / shell rc block). On Windows the PATH
+  edit uses `winreg` (REG_EXPAND_SZ, filtering the literal
+  `%COPPER_PATH%\bin` marker) plus a `WM_SETTINGCHANGE` broadcast; on Unix
+  it manages a `>>> COPPER PATH >>>` block in `/etc/profile.d/copper.sh`
+  or the user's rc files. Override with `--local` / `--global`.
 
 ## How to add a new feature
 
@@ -233,7 +300,7 @@ The pattern that's worked well in this codebase:
    - Emit it in the tokenizer.
    - Add a dispatch arm in `parser/mod.rs` near the related arms.
    - Add it to `is_chain_breaker` if it should affect `?.` chains.
-   - Add an `examples/<feature>.crs` and confirm it compiles end-to-end.
+   - Add an `examples/copper/<feature>.crs` and confirm it compiles end-to-end.
 
 3. **For token rewrites (like `ternary.rs`):**
    - Operate on `Vec<Token>` → `Vec<Token>`.
@@ -243,11 +310,11 @@ The pattern that's worked well in this codebase:
    - Wire it into `Parser::new` after the whitespace filter and before
      the main loop.
 
-4. **Always confirm with the regression suite.** Run all `examples/*.crs`
+4. **Always confirm with the regression suite.** Run all `examples/copper/*.crs`
    after non-trivial changes:
 
    ```sh
-   for f in examples/*.crs; do ./target/debug/cforge.exe run "$f"; done
+   for f in examples/copper/*.crs; do ./target/debug/cforge.exe run "$f"; done
    ```
 
 5. **Preserve `cforge --version` output.** It should print `CForge v…`
@@ -258,7 +325,8 @@ The pattern that's worked well in this codebase:
 
 - `src/parser/`, `src/tokenizer/`, `src/cforge/` — main implementation.
   Make focused changes; document non-obvious invariants in comments.
-- `examples/` — add new `.crs` programs to demo features.
+- `examples/copper/` — add new `.crs` programs to demo features.
+- `examples/mui/` — add new `.mui`/`.crm` programs (each in its own subfolder).
 - `docs/INSTALL.md` and `README.md` — keep them in sync with reality.
 - `scripts/` — update install / build / diagnose tooling.
 - `properties.kson` — project metadata for the bundled demo.
@@ -278,7 +346,7 @@ The pattern that's worked well in this codebase:
 - **Don't change `cforge_tokenizer_debug.log` into a feature.** It was a
   one-off debug aid — keep it gitignored and out of the source tree.
 - **Don't push to remote, force-push, or open PRs without explicit user
-  ask.** This is a personal project and the user runs `install.bat` /
+  ask.** This is a personal project and the user runs `install.py` /
   `cforge run` interactively to verify changes.
 
 ## Testing & verification
@@ -286,7 +354,7 @@ The pattern that's worked well in this codebase:
 ```sh
 # Build the compiler
 cargo build              # debug
-cargo build --release    # release (also what install.bat runs)
+cargo build --release    # release (also what install.py runs)
 
 # Lint / format checks (CI runs these)
 cargo fmt -- --check
@@ -297,8 +365,8 @@ cargo test               # 6 tests in src/tokenizer/interpolation.rs
 # End-to-end: compile and run a Copper sample
 ./target/debug/cforge.exe run examples/loops.crs
 
-# Re-install after release-mode changes (Windows)
-scripts\install.bat      # then open a NEW terminal
+# Re-install after release-mode changes (any OS)
+python scripts/install.py   # then open a NEW terminal
 ```
 
 CI matrix (`.github/workflows/ci.yml`): fmt / clippy (`-D warnings`) /
@@ -337,9 +405,8 @@ freezing to a specific version is the only way to avoid this entirely.
 `.githooks/pre-commit` runs `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings`.
 `.githooks/pre-push` runs `cargo test`.
 
-Activate once per clone with `scripts\install-hooks.bat` (Windows) or
-`bash scripts/install-hooks.sh` (Unix). The setup script just runs
-`git config core.hooksPath .githooks`.
+Activate once per clone with `python scripts/hooks.py` (any OS). The setup
+script just runs `git config core.hooksPath .githooks`.
 
 When working on changes:
 
@@ -370,6 +437,78 @@ When working on changes:
 | Ternary | `cond ? a : b` | `if cond { a } else { b }` |
 | Multi-line comments | `/* … */` | stripped before tokenization |
 | Generic return types | `func Result<T, E> name()` | `fn name() -> Result<T, E>` |
+| Unsafe blocks | `unsafe { ... }` | identical to Rust |
+| Unsafe functions | `unsafe func i32 deref(p: *const i32)` | `unsafe fn deref(p: *const i32) -> i32` |
+| Rust files alongside Copper | a `.rs` file in the input | copied verbatim into the crate (see below) |
+
+## Mixing Rust files with Copper (`.rs` input)
+
+`cforge::compile` (`src/cforge/mod.rs`) classifies each input file by extension:
+`.crs` is transpiled as before; **`.rs` is linked in verbatim** (never tokenized
+as Copper); anything else is skipped (so a project dir may hold assets/kson/md
+without breaking the build).
+
+- **A lone `.rs`** (`cforge run foo.rs` / `cforge -c -i foo.rs`) is emitted as the
+  crate's `main.rs` — cforge builds/runs a plain Rust program.
+- **A `.rs` next to `.crs` files** (directory input) is copied to
+  `dist/rust/src/<stem>.rs` and a `pub mod <stem>;` line is prepended to the
+  generated `main.rs`. So a Copper file can `import { fib } from math` (→
+  `use math::{fib};`) to call into a sibling `math.rs`. Module name = sanitized
+  file stem (`rust_module_name`). See `examples/copper/rust-interop/`.
+
+This mirrors MUI's foreign imports (`import { x } from "./native.rs"` in a
+`.mui`), which materialize the same way via `src/cforge/mui.rs`.
+
+## The `cstd` standard library
+
+`import { input, exit, sleep_ms, ... } from cstd` triggers a special path:
+
+1. The parser sees `from cstd` and sets `result.cstd_used = true`.
+2. At end of `Parser::parse()`, if `cstd_used`, it calls
+   `Parser::transpile_cstd_module()` which:
+   - `include_str!`s `std/cstd.crs` (Copper source)
+   - Tokenizes + sub-parses it
+   - Strips the trailing `fn main() {}` the sub-parser emits unconditionally
+   - Promotes every line starting with `fn ` to `pub fn ` so `use cstd::{X}`
+     resolves
+   - Concatenates `std/cstd_native.rs` (raw Rust) for helpers Copper can't
+     express yet
+   - Wraps the lot in `#[allow(dead_code)] pub mod cstd { ... }`
+3. Prepends to `result.value`.
+
+### Adding a new cstd helper
+
+Prefer `std/cstd.crs` (Copper). Constraints to keep in mind:
+
+- **No multi-line method chains.** Copper's tokenizer ends statements at
+  newlines; chaining `.foo()` on the next line emits `;\n.foo()` and
+  breaks. Keep chains on one line, or use a temp var.
+- **No `&[T]` slice types in params.** `&[String]` is tokenized as a vec
+  literal and emits `&vec![String]`. Use `Vec<String>` or move the helper
+  to `std/cstd_native.rs`.
+- **No `cfg!(target_os = "windows")`.** `parse_var` injects `let` before
+  the `=`, breaking the macro. Move OS-conditional code to native.
+- **`pub func` doesn't work.** The `pub` leaks to the next statement. The
+  promotion to `pub fn` happens automatically on injection.
+
+If a helper hits these limitations, drop it into `std/cstd_native.rs` as
+plain Rust. Both files are bundled via `include_str!` in
+`src/parser/mod.rs`, so just rebuild cforge.
+
+## `unsafe` support
+
+- `unsafe { ... }` blocks transpile straight through (the keyword is in
+  the spaced-keyword list in `parse_any` so it doesn't fuse with `{`).
+- `unsafe func ...` is handled by a one-token lookahead in `parse_any`:
+  when `unsafe` is followed by `func`, the `unsafe` is swallowed and a
+  flag (`pending_unsafe_fn`) tells `parse_function` to call
+  `result.enter_unsafe_function()` (emits `unsafe fn `) instead of
+  `enter_function()` (emits `fn `). Without this swallow, the `unsafe`
+  would land in `main_function_code` and fuse with the following
+  statement (`unsafelet x = ...`).
+- Raw pointer types (`*const T`, `*mut T`) work because `const`, `static`,
+  `dyn`, `async`, `await`, `extern`, `where` are now in the spaced-
+  keyword list, so they don't fuse with neighbouring identifiers.
 
 ## Known limitations to be aware of
 
@@ -388,6 +527,11 @@ When working on changes:
   good reason and a covering example.
 - **`scope.rs` and `scope_manager.rs`** are present but mostly unused.
   Don't over-invest in them until a feature actually needs them.
+- **`parse_var` / `parse_mut` skip `let` injection** when the preceding
+  token is `&`, `&&`, or `*`. That's what makes `&mut y` (borrow) and
+  `*mptr = expr` (deref-assign) survive transpilation. New prefix
+  contexts (e.g. a future `move` capture in expression position) need
+  explicit handling there.
 
 ## Communication conventions
 

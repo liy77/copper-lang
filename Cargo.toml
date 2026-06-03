@@ -1,5 +1,13 @@
+[workspace]
+members = [".", "crates/copper-syntax", "crates/copper-parser", "crates/copper-lsp", "crates/mui-syntax", "crates/mui-codegen", "crates/mui-lsp"]
+# `dist/rust` is the output dir for cforge-transpiled programs; it has its
+# own Cargo.toml that must NOT be a workspace member. The installer-gui
+# is its own self-contained Tauri app — also kept out.
+exclude = ["dist", "installer-gui"]
+resolver = "2"
+
 [package]
-name = "copper-lang"
+name = "copper-cforge"
 version = "0.0.1-pre-alpha"
 edition = "2021"
 build = "build.rs"
@@ -10,6 +18,10 @@ name = "cforge"
 path = "src/main.rs"
 
 [dependencies]
+copper-syntax = { path = "crates/copper-syntax" }
+copper-parser = { path = "crates/copper-parser" }
+mui-syntax = { path = "crates/mui-syntax" }
+mui-codegen = { path = "crates/mui-codegen" }
 clap = "4.5.48"
 colored = "3.0.0"
 once_cell = "1.21.3"

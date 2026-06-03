@@ -7,17 +7,26 @@ project root.
 ## Prerequisites
 
 - **Windows 10 / 11**, **macOS**, or **Linux**
+- **Python 3.7+** — the tooling is a single cross-platform `install.py`
 - Rust + Cargo — install from <https://rustup.rs/>
 
 ## Quick install
 
-From the project root:
+From the project root, one command works everywhere:
+
+```sh
+python scripts/install.py
+```
+
+There are also thin shims if you prefer to double-click / not type `python`:
 
 | Platform | Command |
 | --- | --- |
 | Windows  | `scripts\install.bat` |
-| Linux    | `bash scripts/install.sh` |
-| macOS    | `bash scripts/install-mac.sh` |
+| Unix     | `bash scripts/install.sh` |
+
+Force a specific scope with `--local` (per-user) or `--global` (all users,
+needs admin/root).
 
 The installer auto-detects whether you launched it with admin / root
 privileges:
@@ -53,38 +62,46 @@ cforge --version
 
 ## Bundled scripts
 
-All live in [`scripts/`](../scripts):
+All live in [`scripts/`](../scripts) and are plain Python — one file per task,
+cross-platform (Windows / Linux / macOS). The `_pretty.py` module holds the
+shared copper-themed output styling.
 
 | Script | Purpose |
 | --- | --- |
-| `install.bat` / `install.sh` / `install-mac.sh` | Build a release binary and install it system- or user-wide |
-| `uninstall.bat` | Remove the installation, the `COPPER_PATH` env var, and `bin` from `PATH` |
-| `build.bat` | Build a release binary into `target/release/` without installing |
-| `cleanup.bat` | Remove `target/`, `dist/`, and stray debug logs |
-| `diagnose.bat` | Print install diagnostics (Windows) |
+| `install.py` | Build a release binary and install it system- or user-wide |
+| `uninstall.py` | Remove the installation, the `COPPER_PATH` env var, and `bin` from `PATH` |
+| `build.py` | Build a release binary into `target/release/` without installing |
+| `cleanup.py` | Remove `target/`, `dist/`, and stray debug logs |
+| `diagnose.py` | Print install diagnostics |
+| `hooks.py` | Activate the repo's pre-commit / pre-push git hooks |
+
+Run any of them with `python scripts/<name>.py` (add `--help` for options).
+`install.bat` / `install.sh` (and `uninstall.bat`) are thin shims that just
+forward to the matching `.py`.
 
 ## Examples
 
 The repo ships sample programs in [`examples/`](../examples):
 
 ```sh
-cforge run examples/loops.crs
-cforge run examples/interpolation.crs
-cforge run examples/collections.crs
-cforge run examples/matching.crs
-cforge run examples/optional.crs
-cforge run examples/ternary.crs
+cforge run examples/copper/loops.crs
+cforge run examples/copper/interpolation.crs
+cforge run examples/copper/collections.crs
+cforge run examples/copper/matching.crs
+cforge run examples/copper/optional.crs
+cforge run examples/copper/ternary.crs
 ```
 
 ## Uninstall
 
 | Install scope | How to uninstall |
 | --- | --- |
-| Local (Windows) | `"%USERPROFILE%\.copper\uninstall.bat"` |
-| Global (Windows) | Run `"C:\Program Files\Copper\uninstall.bat"` **as Administrator** |
+| Local (Windows) | `python "%USERPROFILE%\.copper\uninstall.py"` (or double-click `uninstall.bat`) |
+| Global (Windows) | Run `python "C:\Program Files\Copper\uninstall.py"` **as Administrator** |
+| Unix | `python ~/.copper/uninstall.py` (or `sudo python /usr/local/lib/copper/uninstall.py` for global) |
 
-Either uninstaller auto-detects scope from your privilege level. You can also
-run `scripts\uninstall.bat` directly from the source tree if the installed
+The uninstaller auto-detects scope from your privilege level. You can also run
+`python scripts/uninstall.py` directly from the source tree if the installed
 copy is missing or broken — it works the same way.
 
 ## Project configuration
@@ -133,8 +150,7 @@ If either is missing, install via <https://rustup.rs/>.
 2. Create a topic branch.
 3. Activate the repo's git hooks once so your commits/pushes run the
    same lint gates CI does:
-   - Windows: `scripts\install-hooks.bat`
-   - Unix:    `bash scripts/install-hooks.sh`
+   - Any OS: `python scripts/hooks.py`
 4. Commit your changes with a clear message.
 5. Open a pull request.
 
