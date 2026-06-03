@@ -18,8 +18,9 @@ println!("Your name is $name")
 
 ## Install
 
-There's also a [GUI installer](./installer-gui) (Tauri, Windows-only for
-now) that wraps the script below in a clickable form.
+There's also a [native installer](./installer-gui) — built with MUI
+(mocida's declarative UI; no web stack, no Tauri), Windows-only for now —
+that wraps the script below in a clickable form.
 
 ### Script install
 
@@ -205,7 +206,7 @@ Status of the toolchain. Checked = working today.
 - [ ] Folder-input autocomplete without losing focus on rebuild
 
 **Installer**
-- [x] MUI-based GUI installer (no Tauri), real `cforge` install (PATH, scope, dedupe)
+- [x] MUI-based native installer (no Tauri/web), real `cforge` install (PATH, scope, dedupe)
 - [x] `lson` as a git submodule, auto-built on first run
 - [ ] Signed installer artifact + CI release packaging
 
