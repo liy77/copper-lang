@@ -1,0 +1,9 @@
+[package]
+name = "mui-codegen"
+version = "0.0.1-pre-alpha"
+edition = "2021"
+description = "Release codegen for MUI (.mui / .crm): lowers the component AST to Rust source that builds a mocida widget tree via mocida-rs. Pure AST→text — no mocida/runtime dependency (see mocida/mui/ARCHITECTURE.md, M5)."
+
+[dependencies]
+mui-syntax = { path = "../mui-syntax" }
+copper-syntax = { path = "../copper-syntax" }

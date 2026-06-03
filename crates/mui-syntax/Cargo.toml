@@ -1,0 +1,8 @@
+[package]
+name = "mui-syntax"
+version = "0.0.1-pre-alpha"
+edition = "2021"
+description = "Parser + component AST for MUI (.mui / .crm), the mocida UI markup language. Embedded Copper expressions reuse copper-syntax."
+
+[dependencies]
+copper-syntax = { path = "../copper-syntax" }

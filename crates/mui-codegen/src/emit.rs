@@ -1,0 +1,54 @@
+//! Tiny source-emitting buffer: tracks indentation and hands out unique local
+//! variable names so the generated Rust is readable and never shadows.
+
+/// Accumulates lines of generated Rust at the current indentation level.
+pub struct Emitter {
+    buf: String,
+    depth: usize,
+    counter: usize,
+}
+
+impl Emitter {
+    pub fn new() -> Self {
+        Emitter {
+            buf: String::new(),
+            depth: 0,
+            counter: 0,
+        }
+    }
+
+    /// Write one line at the current indentation, followed by a newline.
+    pub fn line(&mut self, text: &str) {
+        for _ in 0..self.depth {
+            self.buf.push_str("    ");
+        }
+        self.buf.push_str(text);
+        self.buf.push('\n');
+    }
+
+    pub fn indent(&mut self) {
+        self.depth += 1;
+    }
+
+    pub fn dedent(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
+    /// A fresh, collision-free local name like `stack_0`, `stack_1`, …
+    pub fn fresh(&mut self, base: &str) -> String {
+        let n = self.counter;
+        self.counter += 1;
+        format!("__{base}_{n}")
+    }
+
+    /// Consume the emitter and return the accumulated source.
+    pub fn finish(self) -> String {
+        self.buf
+    }
+}
+
+impl Default for Emitter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
