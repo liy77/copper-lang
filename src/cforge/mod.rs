@@ -107,11 +107,41 @@ pub(crate) fn cargo_with_spinner(
 pub(crate) fn apply_mocida_env(cmd: &mut Command, mocida_rs: &path::Path) {
     // mocida-rs and the C lib `mocida/` sit side by side under the repo root.
     if let Some(root) = mocida_rs.parent() {
-        let inc = root.join("mocida").join("src").join("headers");
+        let mocida_c = root.join("mocida");
+        // Prefer a staged SDK (`mocida/release/stage`): its `lib/` ships the
+        // *dynamic* libmocida (+ SDL3) which self-resolves system frameworks,
+        // so the final link is clean. The raw `build/` tree often holds only a
+        // static `libmocida.a` that pulls in unresolved Cocoa/SDL symbols.
+        let stage = mocida_c.join("release").join("stage");
+        let staged_inc = stage.join("include");
+        let staged_lib = stage.join("lib");
+        let (inc, lib) = if staged_inc.join("uikit").is_dir() && dir_has_mocida_lib(&staged_lib) {
+            (staged_inc, Some(staged_lib))
+        } else {
+            (
+                mocida_c.join("src").join("headers"),
+                find_mocida_lib_dir(&mocida_c.join("build")),
+            )
+        };
         if inc.is_dir() {
             cmd.env("MOCIDA_INCLUDE_DIR", inc);
         }
-        if let Some(lib) = find_mocida_lib_dir(&root.join("mocida").join("build")) {
+        if let Some(lib) = lib {
+            // On macOS/Linux the dynamic libmocida is loaded via `@rpath`/soname
+            // but cargo bakes no rpath into the binary, so it fails at startup
+            // with "Library not loaded: @rpath/libmocida.dylib". Inject an rpath
+            // pointing at the lib dir via RUSTFLAGS (applies to every crate in
+            // the build, so mui-dev and the codegen binary both get it). Windows
+            // stages the DLLs beside the exe instead, so it's not needed there.
+            #[cfg(not(target_os = "windows"))]
+            if let Some(lib_str) = lib.to_str() {
+                let flag = format!("-C link-arg=-Wl,-rpath,{lib_str}");
+                let combined = match std::env::var("RUSTFLAGS") {
+                    Ok(existing) if !existing.is_empty() => format!("{existing} {flag}"),
+                    _ => flag,
+                };
+                cmd.env("RUSTFLAGS", combined);
+            }
             cmd.env("MOCIDA_LIB_DIR", lib);
         }
     }

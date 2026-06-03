@@ -679,9 +679,19 @@ fn emit_stack(
         emit_node(e, node, &child_env, &child_sigs, comps, &var);
     }
 
-    e.line(&format!(
-        "{sink}.add({var}.into_widget_sized(400.0, 400.0)?)?;"
-    ));
+    if key_handler(el).is_some() {
+        // Capture the Widget so an `onKeyInput` key-down handler can be wired
+        // onto it before it's added to the parent.
+        e.line(&format!(
+            "let __w = {var}.into_widget_sized(400.0, 400.0)?;"
+        ));
+        emit_key_handler(e, el, sigs, "__w");
+        e.line(&format!("{sink}.add(__w)?;"));
+    } else {
+        e.line(&format!(
+            "{sink}.add({var}.into_widget_sized(400.0, 400.0)?)?;"
+        ));
+    }
     e.dedent();
     e.line("}");
 }
@@ -1530,9 +1540,22 @@ fn cursor_lit(name: &str) -> &'static str {
 fn emit_font(e: &mut Emitter, var: &str, el: &Element) {
     let bits = style::font_style_bits(el);
     if bits != 0 {
-        e.line(&format!(
-            "{var} = {var}.font_style(FontStyle::from_bits({bits}));"
-        ));
+        // mocida's `FontStyle` has no `from_bits`; compose from the named
+        // consts (BOLD/ITALIC/UNDERLINE/STRIKETHROUGH), which share the same
+        // bit layout as `style::font_style_bits`.
+        let mut flags = Vec::new();
+        for (flag, name) in [
+            (1 << 0, "BOLD"),
+            (1 << 1, "ITALIC"),
+            (1 << 2, "UNDERLINE"),
+            (1 << 3, "STRIKETHROUGH"),
+        ] {
+            if bits & flag != 0 {
+                flags.push(format!("FontStyle::{name}"));
+            }
+        }
+        let expr = flags.join(" | ");
+        e.line(&format!("{var} = {var}.font_style({expr});"));
     }
     if let Some(fam) = style::font_family(el) {
         e.line(&format!(
@@ -1792,6 +1815,79 @@ fn handler_action(el: &Element, name: &str) -> Option<HandlerAction> {
         PropValue::Handler(h) => h.action(),
         _ => None,
     }
+}
+
+/// The `onKeyInput: { |event| ... }` handler, as `(param, raw_body)`. The body
+/// is the space-joined token text (e.g. `if event . key == "Up" { score += 1 }`).
+fn key_handler(el: &Element) -> Option<(String, String)> {
+    match &el.props.iter().find(|p| p.name == "onKeyInput")?.value {
+        PropValue::Handler(h) => {
+            let param = h.params.first().cloned().unwrap_or_else(|| "event".into());
+            Some((param, h.raw.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// Lower an `onKeyInput` body into Rust: the handler param's `.key` access
+/// (e.g. `event.key`) becomes the bound `__key: &str`. Signal names are left
+/// alone — the caller declares them as `let mut <name>` locals (loaded from the
+/// signal before the body, stored back after), so `score += 1` / `score = 0` /
+/// `if event.key == "Up" { ... }` all lower to valid Rust as-is.
+fn lower_key_body(raw: &str, param: &str) -> String {
+    let mut s = raw.to_string();
+    // The tokenizer may emit `event . key` (spaced) or `event.key`.
+    for pat in [format!("{param} . key"), format!("{param}.key")] {
+        s = s.replace(&pat, "__key");
+    }
+    s
+}
+
+/// If `el` carries an `onKeyInput` handler, emit
+/// `let <wvar> = <wvar>.on_key_down(move |__key, _mods| { ... });` translating
+/// the body into live signal mutations. The signal clones it captures are
+/// emitted into the *enclosing* scope first. Returns true when it emitted.
+fn emit_key_handler(e: &mut Emitter, el: &Element, sigs: &SignalScope, wvar: &str) -> bool {
+    let Some((param, raw)) = key_handler(el) else {
+        return false;
+    };
+    // Signals the body actually touches (whole-token match), so we don't fire
+    // spurious subscriptions for unrelated state.
+    let toks: Vec<&str> = raw.split_whitespace().collect();
+    let used: Vec<(String, String)> = sigs
+        .vars
+        .iter()
+        .filter(|(name, _)| toks.contains(&name.as_str()))
+        .map(|(n, v)| (n.clone(), v.clone()))
+        .collect();
+    let body = lower_key_body(&raw, &param);
+
+    // Capture an Rc clone of each touched signal in the enclosing scope (so the
+    // `move` closure — which on_key_down leaks for the program's life — owns it).
+    for (name, var) in &used {
+        e.line(&format!(
+            "let __kc_{} = {var}.clone();",
+            sanitize_ident(name)
+        ));
+    }
+    e.line(&format!(
+        "let {wvar} = {wvar}.on_key_down(move |__key: &str, _mods: i32| {{"
+    ));
+    e.indent();
+    for (name, _) in &used {
+        let id = sanitize_ident(name);
+        e.line(&format!("let mut {name} = __kc_{id}.borrow().get();"));
+    }
+    // The lowered body is valid Rust statements; emit verbatim (one line is fine,
+    // the generated crate is compiled, not formatted).
+    e.line(&body);
+    for (name, _) in &used {
+        let id = sanitize_ident(name);
+        e.line(&format!("let _ = __kc_{id}.borrow_mut().set({name});"));
+    }
+    e.dedent();
+    e.line("});");
+    true
 }
 
 /// The `onClick:` handler parsed into an action.

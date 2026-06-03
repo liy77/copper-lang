@@ -427,12 +427,24 @@ pub fn run(file: &str) -> i32 {
         if let Some(bin) = prebuilt_mui_dev(&ws) {
             return spawn_binary(&bin.to_string_lossy(), &abs);
         }
-        // 3) Build + run via cargo in the workspace.
+        // 3) Build + run the `mui-dev` host via cargo — but only if the
+        //    workspace actually ships it. When it doesn't (the common case:
+        //    the live M1 host was never built), fall back to the codegen
+        //    path (M5): generate Rust, native-build it, and run the binary.
+        if workspace_has_mui_dev(&ws) {
+            println!(
+                "{}",
+                "ℹ️  No pre-built mui-dev found; building it with cargo (first run only)..."
+                    .dimmed()
+            );
+            return cargo_run_mui_dev(&ws, &abs);
+        }
         println!(
             "{}",
-            "ℹ️  No pre-built mui-dev found; building it with cargo (first run only)...".dimmed()
+            "ℹ️  No mui-dev host in the workspace; using the codegen build+run path instead."
+                .dimmed()
         );
-        return cargo_run_mui_dev(&ws, &abs);
+        return codegen_build_and_run(file, &ws);
     }
 
     eprintln!(
@@ -554,6 +566,19 @@ fn cargo_run_mui_dev(workspace: &Path, file: &str) -> i32 {
     // Point mocida-sys at the C source headers + built lib (cross-platform), so
     // a first-time mui-dev build doesn't bind against a stale installed mocida.
     crate::cforge::apply_mocida_env(&mut cmd, workspace);
+    // On macOS/Linux the mui-dev binary links the *dynamic* libmocida via
+    // `@rpath`/soname but has no rpath baked in, so put the mocida lib dir on
+    // the OS loader path for the run (Windows stages DLLs beside the exe).
+    if let Some(lib) = mocida_runtime_lib_dir(workspace) {
+        let (var, sep) = runtime_lib_var();
+        let prev = std::env::var(var).unwrap_or_default();
+        let val = if prev.is_empty() {
+            lib.to_string_lossy().into_owned()
+        } else {
+            format!("{}{sep}{prev}", lib.display())
+        };
+        cmd.env(var, val);
+    }
     let status = cmd.status();
     match status {
         Ok(s) => s.code().unwrap_or(0),
@@ -561,6 +586,101 @@ fn cargo_run_mui_dev(workspace: &Path, file: &str) -> i32 {
             eprintln!("❌ Failed to run `cargo run -p mui-dev`: {e}");
             1
         }
+    }
+}
+
+/// True if the workspace actually contains a buildable `mui-dev` host crate
+/// (a `mui-dev/Cargo.toml` member). When false, `cforge run` can't render live
+/// and falls back to the codegen build+run path.
+fn workspace_has_mui_dev(workspace: &Path) -> bool {
+    workspace.join("mui-dev").join("Cargo.toml").is_file()
+}
+
+/// Fallback for `cforge run <file>.mui` when no live `mui-dev` host exists:
+/// run the codegen path (generate Rust → native release build) and then launch
+/// the produced binary, with the mocida shared lib on the OS loader path so the
+/// dynamic `libmocida` (+ SDL3) resolve at startup. Returns the binary's exit
+/// code (or the build's, on failure).
+fn codegen_build_and_run(file: &str, workspace: &Path) -> i32 {
+    let rc = compile(file, None, /*do_build=*/ true, /*embed=*/ false);
+    if rc != 0 {
+        return rc;
+    }
+    let out_crate = PathBuf::from("./dist").join("mui");
+    let name = crate_bin_name(&out_crate.join("Cargo.toml")).unwrap_or_else(|| "mui_app".into());
+    let exe = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.clone()
+    };
+    let binary = out_crate.join("target").join("release").join(&exe);
+    if !binary.is_file() {
+        eprintln!("❌ built binary not found: {}", binary.display());
+        return 1;
+    }
+    // Absolute paths: `current_dir` below changes the cwd, so a relative
+    // program path would be re-resolved against it and not be found.
+    let binary = std::fs::canonicalize(&binary).unwrap_or(binary);
+    let run_dir = std::fs::canonicalize(&out_crate).unwrap_or(out_crate);
+
+    let mut cmd = Command::new(&binary);
+    cmd.current_dir(&run_dir)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+    if let Some(lib) = mocida_runtime_lib_dir(workspace) {
+        let (var, sep) = runtime_lib_var();
+        let prev = std::env::var(var).unwrap_or_default();
+        let val = if prev.is_empty() {
+            lib.to_string_lossy().into_owned()
+        } else {
+            format!("{}{sep}{prev}", lib.display())
+        };
+        cmd.env(var, val);
+    }
+    println!("🚀 Running {}...", name.bold());
+    match cmd.status() {
+        Ok(s) => s.code().unwrap_or(0),
+        Err(e) => {
+            eprintln!("❌ failed to launch {}: {e}", binary.display());
+            1
+        }
+    }
+}
+
+/// Read the package `name = "…"` from a generated crate's Cargo.toml.
+fn crate_bin_name(cargo_toml: &Path) -> Option<String> {
+    let s = std::fs::read_to_string(cargo_toml).ok()?;
+    for line in s.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("name =") {
+            return Some(rest.trim().trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
+/// The mocida shared-lib directory to put on the OS loader path at run-time.
+/// Prefers the staged SDK (`mocida/release/stage/lib`), matching the dylib the
+/// codegen build linked against.
+fn mocida_runtime_lib_dir(workspace: &Path) -> Option<PathBuf> {
+    let lib = workspace
+        .parent()?
+        .join("mocida")
+        .join("release")
+        .join("stage")
+        .join("lib");
+    lib.is_dir().then_some(lib)
+}
+
+/// Env var + path separator the OS uses to find shared libs at run-time.
+fn runtime_lib_var() -> (&'static str, char) {
+    if cfg!(windows) {
+        ("PATH", ';')
+    } else if cfg!(target_os = "macos") {
+        ("DYLD_FALLBACK_LIBRARY_PATH", ':')
+    } else {
+        ("LD_LIBRARY_PATH", ':')
     }
 }
 
@@ -637,11 +757,14 @@ fn find_mocida_rs() -> Option<PathBuf> {
 }
 
 /// A directory looks like the mocida-rs workspace if it has a Cargo.toml that
-/// declares the `mui-dev` member.
+/// declares the `mocida-sys` member. (The codegen path only needs the `mocida`
+/// crate; the live-render path additionally wants `mui-dev`, but that member is
+/// not always present — validating on `mui-dev` wrongly rejected real
+/// workspaces and blocked `cforge -c` too.)
 fn is_mocida_rs(dir: &Path) -> bool {
     let manifest = dir.join("Cargo.toml");
     match std::fs::read_to_string(&manifest) {
-        Ok(s) => s.contains("mui-dev"),
+        Ok(s) => s.contains("mocida-sys"),
         Err(_) => false,
     }
 }
