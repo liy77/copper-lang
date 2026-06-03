@@ -175,8 +175,39 @@ cforge run examples/copper/unsafe.crs          # `unsafe func` and `unsafe { ...
 # MUI examples (need mui-dev on PATH):
 cforge run examples/mui/hello/hello.mui
 cforge run examples/mui/counter/counter.mui
+cforge run examples/mui/keyboard/keyboard.mui   # onKeyInput — keyboard events + println debug
 cforge run examples/mui/app/app.mui
 ```
+
+## Roadmap / TODO
+
+Status of the toolchain. Checked = working today.
+
+**Language (cforge)**
+- [x] Core transpile pipeline (`.crs` → Rust), `cforge run` / `-c`
+- [x] Variables, functions, classes/structs/impl, imports
+- [x] Loops, `match` (guards/`_`/`|`), `if let` / `while let`
+- [x] Optional chaining `?.`, ternary `?:`, string interpolation `"${expr}"`
+- [x] `unsafe` blocks + functions, raw pointers, generic return types
+- [x] `cstd` standard library, `.rs` interop
+- [x] CalVer versioning + git commit hash in `--version`
+- [ ] Generics in **parameters** (`func<T> name(arg: T)`, `struct S<T>`)
+- [ ] Fix `println(var)` / `println("${x}")` → valid Rust (needs a string-literal first arg)
+- [ ] `?:` ternary **inside** `${…}` interpolation (captured opaque before the rewrite)
+- [ ] `&[T]` slice params in `cstd` (tokenized as a vec literal)
+
+**MUI front-end (`.mui` / `.crm`)**
+- [x] `cforge run x.mui` dev render (via `mui-dev`)
+- [x] `cforge -c [-r] x.mui` codegen + native build (via `mui-codegen`)
+- [x] Component import/reuse, same-file components, `app { }` config + bundles
+- [x] `onKeyInput` keyboard handlers (`event.key`, `=`/`+=`/`-=`/`++`, `println!` debug)
+- [ ] Codegen **feature parity** with the runtime (string signals, conditional text/color, reactive `if`/`for`, native Stack styling)
+- [ ] Folder-input autocomplete without losing focus on rebuild
+
+**Installer**
+- [x] MUI-based GUI installer (no Tauri), real `cforge` install (PATH, scope, dedupe)
+- [x] `lson` as a git submodule, auto-built on first run
+- [ ] Signed installer artifact + CI release packaging
 
 ## Contributing
 
