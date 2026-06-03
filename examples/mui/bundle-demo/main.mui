@@ -1,0 +1,20 @@
+// Test that cforge/mui-dev reads a sibling app.bundle:
+//   - name/id come from app.bundle (the App() block below sets size only)
+//   - the Image loads via the `mocida://logo.png` asset declared in the bundle
+//
+//   cforge run editors/vscode-mui/examples/bundle-demo/main.mui
+
+App() {
+  width: 360
+  height: 240
+  background: #0f172a
+  mainContent: Home
+}
+
+view Home() {
+  Stack(orientation: vertical, gap: 12, padding: 24) {
+    Text("Bundle Demo", size: 24, color: #f8fafc)
+    Image("mocida://logo.png", width: 82, height: 82, fillMode: FillMode.Fit)
+    Text("Loaded from app.bundle", size: 13, color: #94a3b8)
+  }
+}

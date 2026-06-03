@@ -1,0 +1,45 @@
+// `unsafe` blocks and unsafe functions in Copper.
+//
+// `unsafe func ...`     -> `unsafe fn ...`
+// `unsafe { ... }`      -> Rust unsafe block, identical semantics
+// raw pointers (`*const T` / `*mut T`) survive transpilation untouched.
+
+unsafe func i32 deref(p: *const i32) {
+    return *p
+}
+
+x = 42
+ptr = &x as *const i32
+
+unsafe {
+    println!("deref through *const i32 = {}", deref(ptr))
+}
+
+unsafe func void shout(msg: &str) {
+    println!(">>> {} <<<", msg.to_uppercase())
+}
+
+unsafe {
+    shout("hello from an unsafe fn called inside an unsafe block")
+}
+
+mut y = 100
+mptr = &mut y as *mut i32
+unsafe {
+    *mptr = *mptr + 1
+}
+println!("y after unsafe write = {}", y)
+
+class Greeting {
+    name: String
+
+    Greeting(name: String) {
+        self.name = name
+    }
+
+    Sring greet() {
+        return "Hello, " + self.name + "!"
+    }
+}
+
+Greeting::new("Alice").greet()

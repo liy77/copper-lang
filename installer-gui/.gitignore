@@ -1,0 +1,6 @@
+# Build artifacts of the native host crate.
+copper-installer/target/
+copper-installer/dist/
+copper-installer/Cargo.lock
+# cforge codegen output (`cforge -c installer.mui` writes here).
+dist/

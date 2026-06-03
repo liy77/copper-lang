@@ -1,0 +1,13 @@
+// card.mui — a reusable component.
+//
+// A `view` is a component: export it by importing its name elsewhere. Params
+// are the component's inputs, bound at the call site (`Card(title: "Hi")`).
+
+view Card(title: string = "Card", subtitle: string = "") {
+  Rectangle(width: 680, height: 80, radius: 8, fill: #e6e6e6, shadow: "0 1px 3px rgba(0,0,0,0.1)") {
+      Stack(orientation: vertical, gap: 4, padding: 12) {
+        Text("${title}", size: 18, color: #0f172a)
+        Text("${subtitle}", size: 13, color: #64748b)
+      }
+   }
+}

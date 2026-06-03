@@ -26,6 +26,8 @@ while let Some(n) = iter.next() {
     println!("next = $n")
 }
 
+input("Enter a number")
+
 println!("describe(0) = ${describe(0)}")
 println!("describe(2) = ${describe(2)}")
 println!("describe(-5) = ${describe(-5)}")

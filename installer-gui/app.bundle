@@ -1,0 +1,7 @@
+{
+  "name": "Copper Installer",
+  "id": "net.liy77.copper-installer",
+  "assets": {
+    "icon-128.png": "assets/copper-128.png"
+  }
+}

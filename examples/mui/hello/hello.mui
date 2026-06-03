@@ -1,0 +1,15 @@
+// hello.mui — a minimal MUI view.
+//
+// Open this in the Extension Development Host (press F5 from the
+// editors/vscode-mui folder) to see:
+//   • syntax highlighting (view / Stack / Text / props / ${...})
+//   • color swatches next to the #hex values (click to edit)
+//   • hover bubbles on `view`, `Stack`, `Text`, `size`, `color`, `string`
+//   • autocomplete for widgets and props (Ctrl+Space)
+
+view Hello(name: string = "world") {
+  Stack(orientation: vertical, gap: 12, padding: 24) {
+    Text("Hello, ${name}!", size: 28, color: #0f172a, weight: bold)
+    Text("Built with mocida + copper.", size: 14, color: #64748b)
+  }
+}

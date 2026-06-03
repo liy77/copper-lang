@@ -1,0 +1,4 @@
+{
+  "copper.serverPath": "${workspaceFolder}/../target/debug/copper-lsp.exe",
+  "copper.trace.server": "messages"
+}

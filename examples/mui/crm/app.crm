@@ -1,0 +1,36 @@
+// app.crm — Copper + mocida in one file.
+//
+// `.crm` = copper-lang + mocida: real Copper declarations (struct / impl /
+// func — note: no `let`, and `func RetType name(args)`) live alongside the
+// `view`s that describe the UI. The grammar highlights both, and hover on a
+// Copper keyword shows the SAME text as the Copper (.crs) extension.
+
+struct Todo {
+  title: string
+  done: bool
+}
+
+impl Todo {
+  func string label(self) {
+    return self.title
+  }
+}
+
+func int add(a: int, b: int) {
+  return a + b
+}
+
+view App(title: string = "Todos") {
+  mut items = signal([])
+
+  Stack(orientation: vertical, gap: 12, padding: 24) {
+    Text("${title}", size: 28, color: #0f172a, fontStyle: FontStyle.Bold)
+
+    for item in items {
+      Text("${item}", size: 16, color: #334155)
+    }
+
+    TextField(value: "", placeholder: "Add a todo", onChange: { |v| items = v })
+    Button("Add", onClick: { items = items })
+  }
+}

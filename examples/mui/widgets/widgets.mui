@@ -1,0 +1,64 @@
+// Widget gallery — exercises the full styling surface added for widget parity:
+// font weight, label captions, per-part colors, and a same-file `Pill` view.
+app {
+  name: "Widget Gallery"
+  width: 760
+  height: 680
+  background: #0f172a
+  entry: Gallery
+}
+
+view Gallery() {
+  mut count = signal(0)
+
+  Stack(orientation: vertical, gap: 12, padding: 24) {
+    Text("Widget Gallery", size: 28, color: #e2e8f0, weight: bold)
+    Text("count = ${count}", size: 14, color: #94a3b8, fontStyle: italic)
+
+    // Same-file component reused twice (was rendering as `[Pill]` before).
+    Stack(orientation: horizontal, gap: 8) {
+      Pill(text: "ready")
+      Pill(text: "offline")
+    }
+
+    // Input == TextField, with the full color surface.
+    Input(
+      placeholder: "Type here...",
+      background: #1e293b,
+      color: #e2e8f0,
+      placeholderColor: #64748b,
+      caretColor: #38bdf8,
+      radius: 8,
+      padding: 10,
+      borderColor: #334155,
+      borderColorFocused: #38bdf8,
+    )
+
+    TextArea(
+      placeholder: "Notes",
+      background: #1e293b,
+      color: #e2e8f0,
+      radius: 8,
+      lineSpacing: 1.3,
+      height: 80,
+    )
+
+    // Labeled, fully-styled controls.
+    Checkbox(label: "Accept terms", value: true, checkColor: #22c55e, boxColor: #1e293b, textColor: #e2e8f0)
+    RadioButton(label: "Option A", selected: true, color: #38bdf8, textColor: #e2e8f0)
+    Switch(label: "Dark mode", value: true, onColor: #22c55e, knobColor: #f8fafc, textColor: #e2e8f0)
+
+    Slider(min: 0, max: 100, value: 40, fillColor: #38bdf8, knobColor: #f8fafc, trackColor: #334155)
+    ProgressBar(value: 0.6, animated: true, color: #38bdf8, trackColor: #334155, radius: 4)
+    Spinner(radius: 14, color: #38bdf8, thickness: 3)
+
+    Button("increment", background: #38bdf8, textColor: #0f172a, radius: 8, weight: bold, onClick: { count += 1 })
+  }
+}
+
+// A rounded status pill: a Box (Rectangle container) holding a label.
+view Pill(text: string = "") {
+  Box(radius: 14, padding: 8, background: #14532d) {
+    Text(text, size: 12, color: #4ade80)
+  }
+}

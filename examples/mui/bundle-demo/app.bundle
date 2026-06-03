@@ -1,0 +1,7 @@
+{
+  "name": "Bundle Demo",
+  "id": "net.test.bundledemo",
+  "assets": {
+    "logo.png": "assets/logo.png"
+  }
+}

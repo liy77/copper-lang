@@ -1,0 +1,35 @@
+// tuples.crs — creating, indexing, destructuring, and returning tuples.
+
+// Tuple literal + indexed access
+point = (3, 7)
+println!("x={} y={}", point.0, point.1)
+
+// Flat destructuring
+(a, b) = (10, 20)
+println!("a={} b={}", a, b)
+
+// Mutable destructuring — all bindings become mut
+mut (x, y) = (100, 200)
+x = x + y
+println!("x+y={}", x)
+
+// Inline mut per binding
+(mut p, q) = (5, 6)
+p = p * 2
+println!("p*2={} q={}", p, q)
+
+// Function returning a tuple
+func (int, int) minmax(a: int, b: int) {
+    if a < b {
+        return (a, b)
+    }
+    return (b, a)
+}
+
+(lo, hi) = minmax(9, 3)
+println!("lo={} hi={}", lo, hi)
+
+// Nested tuple (access only — destructuring nested tuples not yet supported)
+nested = ((1, 2), (3, 4))
+println!("inner0.0={}", nested.0.0)
+println!("inner1.1={}", nested.1.1)

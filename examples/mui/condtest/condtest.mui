@@ -1,0 +1,18 @@
+app { name: "Cond" width: 480 height: 320 background: #0f172a entry: Demo }
+
+view Demo() {
+  Stack(orientation: vertical, gap: 14, padding: 24) {
+    Text(if true { "TOPLEVEL_COND_OK" } else { "no" }, size: 20, color: #38bdf8)
+    Stack(orientation: horizontal, gap: 8) {
+      Pill(text: "ready", ok: true)
+      Pill(text: "offline", ok: false)
+    }
+  }
+}
+
+view Pill(text: string = "", ok: bool = true) {
+  Stack(orientation: horizontal, gap: 6, padding: 6, background: if ok { #1a2e1a } else { #2e1a1a }) {
+    Text(if ok { "[ok]" } else { "[x]" }, size: 14, color: if ok { #6cc28e } else { #d96868 })
+    Text(text, size: 14, color: if ok { #6cc28e } else { #d96868 })
+  }
+}

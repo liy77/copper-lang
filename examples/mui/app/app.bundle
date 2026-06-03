@@ -1,0 +1,7 @@
+{
+  "name": "Counter Pro",
+  "id": "net.liy77.counterpro",
+  "assets": {
+    "logo.png": "assets/logo.png"
+  }
+}

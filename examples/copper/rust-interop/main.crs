@@ -1,0 +1,8 @@
+// Mixing Rust + Copper. `import { fib } from math` resolves to the sibling
+// `math.rs`, which cforge links into the build.
+//
+//   cforge run examples/rust-interop
+import { fib } from math
+
+n = 10
+println!("fib($n) = ${fib(n)}")

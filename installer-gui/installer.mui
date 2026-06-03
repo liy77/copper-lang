@@ -1,0 +1,270 @@
+import { prereqs_quick, prereqs_check, install_copper } from "./backend.rs"
+
+App() {
+  name: "Copper Installer"
+  width: 720
+  height: 530
+  minWidth: 720
+  minHeight: 530
+  background: #1e1e1e
+  renderer: vulkan
+  mainContent: Installer
+  // `cforge run installer.mui` launches this native host (which links
+  // backend.rs) instead of the generic mui-dev, so prereqs + the real install
+  // work in the dev loop too.
+  host: "copper-installer"
+}
+
+// Orchestrador principal
+view Installer() {
+  mut phase        = signal("config")   // prereqs | config | installing | done
+  mut source_dir   = signal("")
+  mut install_dir  = signal("")
+  mut scope        = signal("local")    // local | global
+  mut cargo_ver    = signal("...")
+  mut has_cargo    = signal(false)
+  mut is_admin     = signal(false)
+  mut default_loc  = signal("")
+  mut default_glob = signal("")
+  mut log_lines    = signal([])
+  mut progress     = signal(0)
+  mut err          = signal("")
+  // Failure reason split into lines (Text renders one `\n` as a missing glyph,
+  // so the host fills this list and we render a line per entry).
+  mut err_lines    = signal([])
+  // Folder autocomplete: the native host fills these (debounced) from
+  // backend::list_dirs as you type a path.
+  mut src_suggest  = signal([])
+  mut dst_suggest  = signal([])
+
+  effect {
+      // Keep the installer window on top of other windows, so the user sees progress without hunting for it.
+      Screen.alwaysOnTop = trueupdate until the install finishes.
+  }
+
+  // Prerequisite detection + the actual install run on the native host
+  // (copper-installer), which links backend.rs and drives this view's signals
+  // (source_dir/has_cargo/… are seeded; clicking Install flips `phase`, and the
+  // host streams progress into `log_text` and finally sets `phase = "done"`).
+
+  Stack(orientation: vertical, align: center) {
+    Rectangle(
+      width: Window.width - 80,
+      height: 92,
+      background: #d6d6d6,
+      radius: 10,
+      align: center,
+      marginTop: 30,
+      borderColor: #333333,
+      borderWidth: 1,
+    ) {
+      // Header — justify:center centers the row horizontally in the bar,
+      // align:center centers each item vertically within the row.
+      Stack(id: header, orientation: horizontal, justify: center, align: center, gap: 12) {
+        Image("mocida://icon-128.png", width: 76, height: 76, fillMode: fit)
+        Stack(orientation: vertical, gap: 0, align: left, justify: center) {
+          Text("Copper", size: 38, color: #000000, weight: bold, align: left)
+          Text("Install cforge on this machine", size: 13, color: #0f0f0f, align: left)
+        }
+      }
+    }
+    // Tela: verificando pre-requisitos
+    if phase == "prereqs" {
+      Stack(orientation: vertical, gap: 16, padding: 40, align: center) {
+        Text("Checking prerequisites...", size: 15, color: #888888)
+        ProgressBar(animated: true, color: #d97757)
+      }
+
+    // Tela: configuracao
+    } else if phase == "config" {
+      Stack(orientation: vertical, gap: 20, padding: 32) {
+        // Pills de status
+        Stack(orientation: horizontal, gap: 8) {
+          Pill(text: cargo_ver, ok: has_cargo)
+          Pill(
+            text: if is_admin { "elevated" } else { "user" },
+            ok: true,
+          )
+          Pill(
+            text: if source_dir != "" { "source found" } else { "source not found" },
+            ok: source_dir != "",
+          )
+        }
+
+        // Pasta de origem
+        Stack(id: stack1, orientation: vertical, gap: 6) {
+          Text("Source folder", size: 13, color: #aaaaaa)
+          Input(
+            value: source_dir,
+            placeholder: "Path to copper-lang (containing Cargo.toml)",
+            background: #252525,
+            color: #e6e6e6,
+            radius: 6,
+            padding: 10,
+            onChange: { |v| source_dir = v },
+            width: Window.width - 200,
+            selectionColor: #d97757,
+            borderColor: #333333,
+            focusBorderColor: #d97757,
+          )
+          for s in src_suggest {
+            Button(s, size: 11, background: #1e1e1e, textColor: #9aa7b4, radius: 4, padding: 7, onClick: { source_dir = s })
+          }
+        }
+
+        // Escopo de instalacao
+        Stack(orientation: vertical, gap: 6) {
+          Text("Install scope", size: 13, color: #aaaaaa)
+          Stack(orientation: horizontal, gap: 8) {
+            RadioButton(
+              label: "Current user",
+              selected: scope == "local",
+              color: #d97757,
+              boxColor: #252525,
+              textColor: #e6e6e6,
+              onClick: { scope = "local"; install_dir = default_loc },
+            )
+            RadioButton(
+              id: rb_global,
+              label: "All users",
+              selected: scope == "global",
+              enabled: is_admin,
+              color: #d97757,
+              boxColor: #252525,
+              textColor: #e6e6e6,
+              onClick: { scope = "global"; install_dir = default_glob },
+            )
+          }
+
+          if is_admin == false {
+            Text("(run installer as admin to enable global install)", size: 11, color: #ffffff, align: left)
+          }
+        }
+
+        // Diretorio de instalacao
+        Stack(orientation: vertical, gap: 6) {
+          Text("Install directory", size: 13, color: #aaaaaa)
+          Input(
+            value: install_dir,
+            placeholder: "Destination directory",
+            background: #252525,
+            color: #e6e6e6,
+            radius: 6,
+            padding: 10,
+            onChange: { |v| install_dir = v },
+            width: Window.width - 200,
+            selectionColor: #d97757,
+            borderColor: #333333,
+            focusBorderColor: #d97757,
+          )
+          for s in dst_suggest {
+            Button(s, size: 11, background: #1e1e1e, textColor: #9aa7b4, radius: 4, padding: 7, onClick: { install_dir = s })
+          }
+        }
+
+        // Botao instalar — flips the phase; the native host runs the install
+        // (cargo build + copy + PATH) and streams progress into `log_text`.
+        Button(
+          "Install",
+          background: #d97757,
+          textColor: #ffffff,
+          radius: 8,
+          padding: 12,
+          width: 140,
+          enabled: has_cargo && source_dir != "",
+          onClick: { phase = "installing" },
+        )
+      }
+
+    // Tela: instalando (barra de progresso real + log colorido por nivel,
+    // transmitido linha a linha pelo host nativo)
+    } else if phase == "installing" {
+      Stack(orientation: vertical, gap: 14, padding: 32) {
+        Text("Installing cforge...", size: 16, color: #e6e6e6, weight: bold)
+        ProgressBar(
+          value: progress,
+          max: 100,
+          width: 600,
+          height: 14,
+          radius: 7,
+          fillColor: #d97757,
+          trackColor: #2a2a2a,
+        )
+        Stack(orientation: vertical, gap: 3) {
+          for line in log_lines {
+            Text(
+              msg(line),
+              size: 12,
+              width: 600,
+              wrap: word,
+              color: if level(line) == "error" { #ff6b6b } else if level(line) == "ok" { #6cc28e } else if level(line) == "warn" { #e0b070 } else if level(line) == "info" { #9aa7b4 } else { #7aa6c2 },
+            )
+          }
+        }
+      }
+
+    // Tela: concluido (sucesso) — NB: each if/else branch must have a SINGLE
+    // root element (the runtime renders only the first node of a branch), so
+    // everything lives inside one Stack.
+    } else if err == "" {
+      Stack(orientation: vertical, gap: 16, padding: 40, align: center) {
+        Text("[ok] Installation complete!", size: 20, color: #6cc28e, weight: bold, align: center)
+        Text(
+          "Restart your terminal so the new PATH takes effect.",
+          size: 14,
+          color: #888888,
+          align: center,
+        )
+        Button(
+          "Close",
+          background: #333333,
+          textColor: #e6e6e6,
+          radius: 8,
+          padding: 12,
+          align: center,
+          onClick: { phase = "exit" },
+        )
+      }
+
+    // Tela: falha — mostra o motivo completo (geralmente o stderr do cargo),
+    // com wrap e scroll para não cortar/transbordar.
+    } else {
+      Stack(orientation: vertical, gap: 12, padding: 28, align: center) {
+        Text("[x] Installation failed", size: 20, color: #d96868, weight: bold, align: center)
+        Text("Reason:", size: 13, color: #aaaaaa, align: center)
+        Scroll(direction: vertical, height: 280, width: Window.width - 120, background: #161616, radius: 8, padding: 12) {
+          for line in err_lines {
+            Text(line, size: 12, width: Window.width - 170, wrap: word, color: #ff9b9b, align: left)
+          }
+        }
+        Button(
+          "Close",
+          background: #d97757,
+          textColor: #ffffff,
+          radius: 8,
+          padding: 12,
+          align: center,
+          onClick: { phase = "exit" },
+        )
+      }
+    }
+  }
+}
+
+// Pill de status
+view Pill(text: string = "", ok: bool = true) {
+  Stack(
+    orientation: horizontal,
+    gap: 6,
+    padding: 6,
+    radius: 16,
+    background: if ok { #1a2e1a } else { #2e1a1a },
+  ) {
+    Text(
+      if ok { "[ok]" } else { "[x]" },
+      size: 11,
+      color: if ok { #6cc28e } else { #d96868 },
+    )
+    Text(text, size: 11, color: if ok { #6cc28e } else { #d96868 })
+  }
+}

@@ -1,0 +1,17 @@
+import { input, sleep_ms, now_ms, args, env, exists } from cstd
+
+name = input("Qual seu nome? ")
+println!("Olá, {}!", name)
+
+started = now_ms()
+sleep_ms(50)
+elapsed = now_ms() - started
+println!("Esperei ~{}ms", elapsed)
+
+println!("PATH tem {} chars", env("PATH").len())
+println!("Cargo.toml existe? {}", exists("Cargo.toml"))
+println!("args extras: {:?}", args())
+
+if name.is_empty() {
+    println!("(no name given)")
+}

@@ -1,0 +1,23 @@
+// counter.mui — reactive state (signal) + control flow.
+//
+// `mut count = signal(start)` declares reactive state (Copper has no `let`).
+// The `if` chooses between children; the Button handlers mutate the signal.
+
+view Counter(start: int = 0) {
+  mut count = signal(start)
+
+  Stack(orientation: vertical, gap: 8, padding: 16) {
+    Text("Count: ${count}", size: 24, color: #111827)
+
+    if count > 10 {
+      Text("That's a lot!", size: 14, color: #16a34a)
+    } else {
+      Text("Keep going.", size: 14, color: #6b7280)
+    }
+
+    Stack(orientation: horizontal, gap: 8) {
+      Button("-", onClick: { count = count - 1 })
+      Button("+", onClick: { count = count + 1 })
+    }
+  }
+}

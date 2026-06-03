@@ -1,0 +1,27 @@
+// Interactive smoke test: two enabled radios bound to a string signal + a
+// two-way input. Clicking a radio sets `choice` → both re-eval `selected`;
+// typing sets `name` → the `${name}` text updates.
+app {
+  name: "Interact"
+  width: 460
+  height: 340
+  background: #0f172a
+  entry: Demo
+}
+
+view Demo() {
+  mut choice = signal("a")
+  mut name   = signal("")
+
+  Stack(orientation: vertical, gap: 16, padding: 24) {
+    Text("choice = ${choice}", size: 18, color: #e2e8f0, weight: bold)
+
+    Stack(orientation: horizontal, gap: 16) {
+      RadioButton(label: "Option A", selected: choice == "a", color: #38bdf8, boxColor: #1e293b, textColor: #e2e8f0, onClick: { choice = "a" })
+      RadioButton(label: "Option B", selected: choice == "b", color: #38bdf8, boxColor: #1e293b, textColor: #e2e8f0, onClick: { choice = "b" })
+    }
+
+    Input(value: name, placeholder: "type here", background: #1e293b, color: #e2e8f0, caretColor: #38bdf8, radius: 6, padding: 10, onChange: { |v| name = v })
+    Text("name = ${name}", size: 14, color: #94a3b8)
+  }
+}

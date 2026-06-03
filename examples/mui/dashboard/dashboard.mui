@@ -1,0 +1,23 @@
+// dashboard.mui — composes the imported `Card` component.
+//
+// `import { Card } from "../card/card.mui"` brings the view into scope; then `Card(...)`
+// is used like any element, its args bound to the component's params.
+
+import { Card } from "../card/card.mui"
+
+App() {
+  name: "Dashboard"
+  width: 720
+  height: 520
+  background: #f1f5f9
+  mainContent: Dashboard
+}
+
+view Dashboard() {
+  Stack(orientation: vertical, gap: 16, padding: 24) {
+    Text("Dashboard", size: 28, color: #0f172a)
+    Card(title: "Revenue", subtitle: "$12,480 this month")
+    Card(title: "Users", subtitle: "1,204 active")
+    Card(title: "Uptime", subtitle: "99.98%")
+  }
+}

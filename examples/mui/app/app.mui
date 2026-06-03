@@ -1,0 +1,43 @@
+// app.mui — a configured, runnable MUI app.
+//
+// The top-level `App() { }` block sets the window + bundle identity and names
+// the component to mount via `mainContent`, so this is a real, named
+// application (not just a view). An `app.bundle` manifest next to the file
+// (with assets + name/id) is auto-loaded too; this block overrides it.
+
+App() {
+  name: "Counter Pro"
+  id: "net.liy77.counterpro"
+  width: 720
+  height: 480
+  background: #0f172a
+  mainContent: Counter
+}
+
+view Counter(start: int = 0) {
+  mut count = signal(start)
+
+  Stack(orientation: vertical, gap: 12, padding: 32) {
+    Text("Counter Pro", size: 28, color: #f8fafc)
+    Text("Count: ${count}", size: 20, color: #94a3b8)
+
+    Stack(orientation: horizontal, gap: 8) {
+      Button(
+        "-", 
+        radius: 10, 
+        background: #334155, 
+        textColor: #f8fafc, 
+        cursor: pointer, 
+        onClick: { count = count - 1 }
+      )
+      Button(
+        "+", 
+        radius: 10, 
+        background: #2563eb, 
+        textColor: #ffffff, 
+        cursor: pointer, 
+        onClick: { count = count + 1 }
+      )
+    }
+  }
+}

@@ -1,0 +1,17 @@
+// styled.mui — widget styling + anchors.
+//
+// Buttons accept: background/bg fill, textColor, radius, borderWidth, cursor.
+// Colors take #rrggbb, #rrggbbaa (opacity), or rgba(r,g,b,a).
+// `anchor:` positions a widget against its parent (center, topLeft, …).
+
+view Styled() {
+  Stack(orientation: vertical, gap: 12, padding: 24) {
+    Text("Styled widgets", size: 28, color: #0f172a)
+
+    Button("Rounded", radius: 16, background: #2563eb, textColor: #ffffff, cursor: pointer)
+    Button("Subtle", radius: 8, background: rgba(15, 23, 42, 0.08), textColor: #0f172a)
+    Button("Bordered", radius: 10, background: #ffffff, textColor: #2563eb, borderWidth: 2)
+
+    Text("Anchored bottom-right", size: 14, color: #64748b, anchor: bottomRight)
+  }
+}

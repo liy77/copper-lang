@@ -1,0 +1,5 @@
+# Build artifacts — not committed.
+/target/
+/dist/
+Cargo.lock
+mocida.dll
