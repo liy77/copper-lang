@@ -12,7 +12,7 @@ use std::{fs, path, process::Command};
 
 use crate::{parser, tokenizer::tokenizer::Tokenizer, vprint};
 
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = env!("CFORGE_VERSION");
 
 /// Run a `cargo` command behind cforge's own spinner instead of cargo's output:
 /// stdout+stderr are captured (so cargo's progress bar / `Compiling …` spam is
@@ -190,20 +190,8 @@ fn default_libclang_dir() -> Option<path::PathBuf> {
 pub const COPPER_PATH: Lazy<String> = Lazy::new(|| std::env::var("COPPER_PATH").unwrap());
 
 pub fn get_copper_version() -> String {
-    let path = std::path::Path::new(&(*COPPER_PATH)).join("Cargo.toml");
-
-    // Try to read Cargo.toml from installation directory, fallback to default version
-    if let Ok(toml_content) = fs::read_to_string(&path) {
-        if let Some(version_start) = toml_content.find("version = \"") {
-            let version_start = version_start + "version = \"".len();
-            if let Some(version_end) = toml_content[version_start..].find("\"") {
-                return toml_content[version_start..version_start + version_end].to_string();
-            }
-        }
-    }
-
-    // Fallback to hardcoded version if Cargo.toml is not found (installed version)
-    "0.1.0-alpha.1".to_string()
+    // CalVer 0.YY.M — computed from the build date by build.rs at compile time.
+    env!("COPPER_VERSION").to_string()
 }
 
 pub fn print() {

@@ -109,7 +109,7 @@ pub mod xml {
     use quick_xml::{
         escape::{escape, unescape},
         events::Event,
-        Reader,
+        Reader, XmlVersion,
     };
     use std::collections::HashMap;
 
@@ -148,7 +148,7 @@ pub mod xml {
                     for attr in e.attributes() {
                         let attr = attr?;
                         let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                        let value = attr.unescape_value()?.into_owned();
+                        let value = attr.normalized_value(XmlVersion::default())?.into_owned();
                         attributes.insert(key, value);
                     }
 
@@ -172,7 +172,7 @@ pub mod xml {
                     for attr in e.attributes() {
                         let attr = attr?;
                         let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                        let value = attr.unescape_value()?.into_owned();
+                        let value = attr.normalized_value(XmlVersion::default())?.into_owned();
                         attributes.insert(key, value);
                     }
 

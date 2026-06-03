@@ -3,12 +3,12 @@ members = [".", "crates/copper-syntax", "crates/copper-parser", "crates/copper-l
 # `dist/rust` is the output dir for cforge-transpiled programs; it has its
 # own Cargo.toml that must NOT be a workspace member. The installer-gui
 # is its own self-contained Tauri app — also kept out.
-exclude = ["dist", "installer-gui"]
+exclude = ["dist", "installer-gui", "lson-src"]
 resolver = "2"
 
 [package]
 name = "copper-cforge"
-version = "0.0.1-pre-alpha"
+version = "0.1.0-beta.0"
 edition = "2021"
 build = "build.rs"
 authors = ["Liy", "Copper Authors"]
@@ -22,14 +22,14 @@ copper-syntax = { path = "crates/copper-syntax" }
 copper-parser = { path = "crates/copper-parser" }
 mui-syntax = { path = "crates/mui-syntax" }
 mui-codegen = { path = "crates/mui-codegen" }
-clap = "4.5.48"
-colored = "3.0.0"
-once_cell = "1.21.3"
-regex = "1.11.2"
-reqwest = "0.12.23"
-serde = { version = "1.0.226", features = ["serde_derive"] }
-serde_json = "1.0.145"
-tokio = { version = "1.47.1", features = ["full"] }
-toml = "0.9.7"
-quick-xml = "0.38.3"
+clap = "4.6.1"
+colored = "3.1.1"
+once_cell = "1.21.4"
+regex = "1.12.3"
+reqwest = "0.13.4"
+serde = { version = "1.0.228", features = ["serde_derive"] }
+serde_json = "1.0.150"
+tokio = { version = "1.52.3", features = ["full"] }
+toml = "1.1.2"
+quick-xml = "0.40.1"
 walkdir = "2.5.0"

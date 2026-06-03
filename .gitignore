@@ -33,3 +33,6 @@ __pycache__/
 /installer-gui/copper-installer/dist/
 /installer-gui/copper-installer/Cargo.lock
 /installer-gui/copper-installer/mocida.dll
+
+# lson submodule build output (lson-src/ has its own .gitignore, but be explicit)
+lson-src/target/

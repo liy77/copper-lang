@@ -114,16 +114,11 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
 /// Build date stamped in by `build.rs` at compile time (UTC, `YYYY-MM-DD`).
 const BUILD_DATE: &str = env!("COPPER_BUILD_DATE");
 
-/// Append the build date to a version string when it is a pre-release
-/// (contains `alpha`, `beta`, or `rc`). Stable versions are returned as-is.
-fn with_build_date(version: &str) -> String {
-    let v = version.to_ascii_lowercase();
-    if v.contains("alpha") || v.contains("beta") || v.contains("rc") {
-        format!("{} (build {})", version, BUILD_DATE)
-    } else {
-        version.to_string()
-    }
-}
+/// CalVer `0.YY.M` derived from the build date by `build.rs` — shared by cforge and copper.
+const CFORGE_VERSION: &str = env!("CFORGE_VERSION");
+const COPPER_VERSION: &str = env!("COPPER_VERSION");
+/// Short git commit hash stamped in by `build.rs`.
+const GIT_HASH: &str = env!("GIT_COMMIT_HASH");
 
 fn is_command_available(command: &str) -> bool {
     ProcessCommand::new(command)
@@ -328,8 +323,8 @@ async fn main() {
         return;
     }
 
-    env::set_var("CFORGE_VERSION", "0.1.0");
-    env::set_var("COPPER_VERSION", "0.1.0-alpha.1");
+    env::set_var("CFORGE_VERSION", CFORGE_VERSION);
+    env::set_var("COPPER_VERSION", COPPER_VERSION);
     if env::var("COPPER_PATH").is_err() {
         env::set_var(
             "COPPER_PATH",
@@ -345,10 +340,14 @@ async fn main() {
     let commands = parse_commands();
 
     if commands.get_command("version").unwrap().is_valid {
-        let cforge_version = env::var("CFORGE_VERSION").unwrap();
-        let copper_version = env::var("COPPER_VERSION").unwrap();
-        println!("CForge v{}", with_build_date(&cforge_version));
-        println!("Copper v{}", with_build_date(&copper_version));
+        println!(
+            "CForge v{} (build {}, commit {})",
+            CFORGE_VERSION, BUILD_DATE, GIT_HASH
+        );
+        println!(
+            "Copper v{} (build {}, commit {})",
+            COPPER_VERSION, BUILD_DATE, GIT_HASH
+        );
         return;
     }
 

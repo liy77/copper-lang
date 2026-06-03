@@ -10,11 +10,12 @@ What it does:
         admin / root  -> global  (C:\\Program Files\\Copper  |  /usr/local/lib/copper)
         normal user   -> local   (%USERPROFILE%\\.copper      |  $HOME/.copper)
   4. Build cforge in release mode (fresh link — deletes the old binary first).
-  5. Copy cforge + Cargo.toml + std/ + lson/ into the install dir.
-  6. Register COPPER_PATH and add %COPPER_PATH%/bin to PATH:
+  5. Build lson from lson-src/ (git submodule).
+  6. Copy cforge + Cargo.toml + std/ + built lson binary into the install dir.
+  7. Register COPPER_PATH and add %COPPER_PATH%/bin to PATH:
         Windows -> HKCU/HKLM registry (REG_EXPAND_SZ) + a settings broadcast
         Unix    -> /etc/profile.d/copper.sh  or  a managed block in your rc files
-  7. Drop uninstall.py (+ a uninstall.bat shim on Windows) next to the install.
+  8. Drop uninstall.py (+ a uninstall.bat shim on Windows) next to the install.
 
 Usage:
     python scripts/install.py            # auto scope from privileges
@@ -100,8 +101,43 @@ def build_release():
     return exe
 
 
+def build_lson():
+    """Build lson from lson-src/ (git submodule). Returns path to built binary or None."""
+    lson_src = ROOT / "lson-src"
+    if not (lson_src / "Cargo.toml").exists():
+        warn(
+            "lson-src/ not found or submodule not initialised — skipping lson build.\n"
+            "  Run: git submodule update --init lson-src"
+        )
+        return None
+
+    binary_name = "lson.exe" if SYS == "Windows" else "lson"
+    built_bin = lson_src / "target" / "release" / binary_name
+
+    head("Building lson from lson-src/ (cargo build --release)")
+    target_dir = lson_src / "target"
+    result = subprocess.run(
+        [
+            "cargo", "build", "--release",
+            "--manifest-path", str(lson_src / "Cargo.toml"),
+            "--target-dir", str(target_dir),
+        ],
+        cwd=str(ROOT),
+    )
+    if result.returncode != 0:
+        warn("lson build failed — it will be built lazily on first use instead.")
+        return None
+
+    if not built_bin.exists():
+        warn(f"lson build succeeded but binary not found at {built_bin}")
+        return None
+
+    ok(f"Built lson: {built_bin}")
+    return built_bin
+
+
 # --- file install -------------------------------------------------------
-def copy_payload(exe, install_dir):
+def copy_payload(exe, install_dir, lson_bin=None):
     bin_dir = install_dir / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -115,14 +151,26 @@ def copy_payload(exe, install_dir):
         shutil.copy2(ROOT / "Cargo.toml", install_dir / "Cargo.toml")
         ok("Installed project metadata (Cargo.toml)")
 
-    for d in ("lson", "std"):
-        src = ROOT / d
-        if src.is_dir():
-            dst = install_dir / d
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
-            ok(f"Installed {d}/")
+    # Install lson binary into {install_dir}/lson/lson[.exe].
+    if lson_bin is not None and lson_bin.exists():
+        lson_dir = install_dir / "lson"
+        lson_dir.mkdir(parents=True, exist_ok=True)
+        dst_lson = lson_dir / lson_bin.name
+        shutil.copy2(lson_bin, dst_lson)
+        if SYS != "Windows":
+            os.chmod(dst_lson, 0o755)
+        ok(f"Installed lson → {dst_lson}")
+    else:
+        warn("lson not built — it will be compiled from lson-src/ on first use.")
+
+    # std/
+    std_src = ROOT / "std"
+    if std_src.is_dir():
+        dst = install_dir / "std"
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(std_src, dst)
+        ok("Installed std/")
 
     # Ship the uninstaller alongside the install. On Windows we also drop a
     # tiny .bat shim so double-clicking still works without typing `python`.
@@ -225,7 +273,8 @@ def main():
     head(f"{scope.capitalize()} install  →  {install_dir}")
 
     exe = build_release()
-    copy_payload(exe, install_dir)
+    lson_bin = build_lson()
+    copy_payload(exe, install_dir, lson_bin)
 
     head("Registering COPPER_PATH and PATH")
     if SYS == "Windows":

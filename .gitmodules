@@ -1,0 +1,3 @@
+[submodule "lson-src"]
+	path = lson-src
+	url = https://github.com/liy77/lson
