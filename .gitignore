@@ -26,13 +26,11 @@ __pycache__/
 /editors/vscode/node_modules/
 /editors/vscode/out/
 
-# Installer GUI — ignore ONLY build artifacts; the MUI installer SOURCE
-# (installer.mui, backend.rs, the copper-installer host crate) is committed.
+# Installer GUI — the MUI installer SOURCE (installer.mui, backend.rs,
+# app.bundle, assets) is committed; the copper-installer host crate is
+# NOT tracked (local-only / generated).
 /installer-gui/dist/
-/installer-gui/copper-installer/target/
-/installer-gui/copper-installer/dist/
-/installer-gui/copper-installer/Cargo.lock
-/installer-gui/copper-installer/mocida.dll
+/installer-gui/copper-installer/
 
 # lson submodule build output (lson-src/ has its own .gitignore, but be explicit)
 lson-src/target/
