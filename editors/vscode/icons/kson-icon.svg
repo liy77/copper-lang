@@ -1,0 +1,13 @@
+<svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+  <!-- KSON config file icon, copper-themed to match the Copper extension. -->
+  <rect x="3" y="2" width="26" height="28" rx="4" fill="#2b2118"/>
+  <rect x="3" y="2" width="26" height="28" rx="4" fill="none" stroke="#b87333" stroke-width="1.5"/>
+  <!-- structured-data braces -->
+  <path d="M12.5 8 C9.5 8 10 12 8 13 C10 14 9.5 18 12.5 18"
+        fill="none" stroke="#e8a667" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M19.5 8 C22.5 8 22 12 24 13 C22 14 22.5 18 19.5 18"
+        fill="none" stroke="#e8a667" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- key = value hint -->
+  <rect x="9" y="22.5" width="6" height="2.2" rx="1.1" fill="#b87333"/>
+  <rect x="17" y="22.5" width="6" height="2.2" rx="1.1" fill="#7a8b99"/>
+</svg>

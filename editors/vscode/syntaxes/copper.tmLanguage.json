@@ -1,0 +1,133 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Copper",
+  "scopeName": "source.copper",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#macros" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#numbers" },
+    { "include": "#functions" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "comment": "Doc comments (`///` outer, `//!` inner) — like Rust, highlighted distinctly and preserved through transpilation.",
+          "name": "comment.line.documentation.copper",
+          "match": "(///|//!).*$"
+        },
+        { "name": "comment.line.double-slash.copper", "match": "//.*$" },
+        {
+          "name": "comment.block.copper",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.copper",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.copper", "match": "\\\\." },
+            {
+              "name": "meta.interpolation.copper",
+              "match": "\\$[A-Za-z_][A-Za-z0-9_]*"
+            },
+            {
+              "name": "meta.interpolation.copper",
+              "begin": "\\$\\{",
+              "end": "\\}"
+            }
+          ]
+        }
+      ]
+    },
+    "macros": {
+      "patterns": [
+        {
+          "comment": "Macro invocation: name!(...) or name![...] or name!{...}.",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)(!)(?=\\s*[\\(\\[\\{])",
+          "captures": {
+            "1": { "name": "entity.name.function.macro.copper" },
+            "2": { "name": "entity.name.function.macro.copper" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.copper",
+          "match": "\\b(if|else|match|loop|while|for|in|break|continue|return|yield)\\b"
+        },
+        {
+          "comment": "Visibility / memory / safety / linkage / async modifiers.",
+          "name": "storage.modifier.copper",
+          "match": "\\b(pub|public|unsafe|extern|async|await|static|const|dyn|where|mut|ref|move)\\b"
+        },
+        {
+          "name": "keyword.declaration.copper",
+          "match": "\\b(func|struct|class|impl|trait|enum|let|import|from|as|use)\\b"
+        },
+        {
+          "name": "constant.language.copper",
+          "match": "\\b(true|false|null|None|Some|Ok|Err|self|Self|super|crate)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.copper",
+          "match": "\\b(int|float|str|string|bool|void|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|usize|isize|char)\\b"
+        },
+        {
+          "comment": "User type names — capitalized identifiers (Some, Vec, Option, Result, Greeter, …).",
+          "name": "entity.name.type.copper",
+          "match": "\\b([A-Z][A-Za-z0-9_]*)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.copper",
+          "match": "\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "comment": "Copper function declaration: `func ReturnType name(...)`.",
+          "match": "\\b(func)\\s+([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)\\s+([a-z_][A-Za-z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": { "name": "keyword.declaration.copper" },
+            "2": { "name": "entity.name.type.copper" },
+            "3": { "name": "entity.name.function.copper" }
+          }
+        },
+        {
+          "comment": "Function call: name(. Excludes macros (those end in `!` and are matched earlier).",
+          "name": "entity.name.function.copper",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)(?=\\s*\\()"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.copper",
+          "match": "(\\?\\.|\\?|=>|->|::|\\.\\.\\.?|==|!=|<=|>=|&&|\\|\\||[-+*/%=<>!&|^~])"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "name": "copper-lang",
+  "displayName": "Copper",
+  "description": "Language support for Copper (.crs) — syntax highlight, diagnostics, completion, document symbols, hover.",
+  "version": "0.0.1",
+  "publisher": "copper-lang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liy77/copper-lang"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages"],
+  "icon": "icons/extension-icon.jpeg",
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:copper",
+    "onLanguage:kson"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "copper",
+        "aliases": ["Copper", "copper"],
+        "extensions": [".crs"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/crs-icon-light.png",
+          "dark": "./icons/crs-icon-dark.png"
+        }
+      },
+      {
+        "id": "kson",
+        "aliases": ["KSON", "kson"],
+        "extensions": [".kson"],
+        "configuration": "./kson-language-configuration.json",
+        "icon": {
+          "light": "./icons/kson-icon.svg",
+          "dark": "./icons/kson-icon.svg"
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "copper.restartLanguageServer",
+        "title": "Restart Language Server",
+        "category": "Copper"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "copper",
+        "scopeName": "source.copper",
+        "path": "./syntaxes/copper.tmLanguage.json"
+      },
+      {
+        "language": "kson",
+        "scopeName": "source.kson",
+        "path": "./syntaxes/kson.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Copper",
+      "properties": {
+        "copper.serverPath": {
+          "type": "string",
+          "default": "copper-lsp",
+          "description": "Path to the copper-lsp executable. Defaults to PATH lookup."
+        },
+        "copper.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Traces the LSP communication."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}

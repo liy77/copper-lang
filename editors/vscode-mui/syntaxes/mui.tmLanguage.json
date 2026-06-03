@@ -1,0 +1,215 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "MUI",
+  "scopeName": "source.mui",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#view-decl" },
+    { "include": "#declarations" },
+    { "include": "#color-literal" },
+    { "include": "#strings" },
+    { "include": "#macros" },
+    { "include": "#control-keywords" },
+    { "include": "#element" },
+    { "include": "#prop" },
+    { "include": "#enum-access" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#numbers" },
+    { "include": "#functions" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.mui", "match": "//.*$" },
+        { "name": "comment.block.mui", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "view-decl": {
+      "comment": "`view Name(...)` — the component declaration.",
+      "match": "\\b(view)\\s+([A-Z][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.view.mui" },
+        "2": { "name": "entity.name.type.view.mui" }
+      }
+    },
+    "declarations": {
+      "comment": "Copper type declarations — names the declared type precisely (entity.name.type) so `struct`/`class`/`trait`/`enum`/`impl` are highlighted like in the Copper (.crs) extension.",
+      "patterns": [
+        {
+          "comment": "impl Trait for Type — two type names.",
+          "match": "\\b(impl)\\s+([A-Z][A-Za-z0-9_]*)\\s+(for)\\s+([A-Z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.mui" },
+            "2": { "name": "entity.name.type.mui" },
+            "3": { "name": "keyword.declaration.mui" },
+            "4": { "name": "entity.name.type.mui" }
+          }
+        },
+        {
+          "comment": "struct / class / trait / enum / impl Name.",
+          "match": "\\b(struct|class|trait|enum|impl)\\s+([A-Z][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.mui" },
+            "2": { "name": "entity.name.type.mui" }
+          }
+        }
+      ]
+    },
+    "color-literal": {
+      "patterns": [
+        {
+          "comment": "#rrggbb or #rrggbbaa hex color.",
+          "name": "constant.other.color.hex.mui",
+          "match": "#[0-9a-fA-F]{8}\\b|#[0-9a-fA-F]{6}\\b"
+        },
+        {
+          "comment": "rgba()/rgb() color function.",
+          "name": "constant.other.color.rgb.mui",
+          "match": "\\b(rgba?)\\s*\\([^)]*\\)"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.mui",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.mui", "match": "\\\\." },
+            {
+              "comment": "Interpolated expression: ${ ... } highlighted as Copper.",
+              "name": "meta.interpolation.mui",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.mui" } },
+              "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.mui" } },
+              "patterns": [
+                { "include": "#color-literal" },
+                { "include": "#enum-access" },
+                { "include": "#keywords" },
+                { "include": "#types" },
+                { "include": "#numbers" },
+                { "include": "#functions" },
+                { "include": "#operators" }
+              ]
+            },
+            {
+              "name": "meta.interpolation.mui",
+              "match": "\\$[A-Za-z_][A-Za-z0-9_]*"
+            }
+          ]
+        }
+      ]
+    },
+    "macros": {
+      "patterns": [
+        {
+          "comment": "Copper macro invocation: name!(...).",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)(!)(?=\\s*[\\(\\[\\{])",
+          "captures": {
+            "1": { "name": "entity.name.function.macro.mui" },
+            "2": { "name": "entity.name.function.macro.mui" }
+          }
+        }
+      ]
+    },
+    "control-keywords": {
+      "comment": "Control flow valid in children position + reactivity keywords.",
+      "name": "keyword.control.mui",
+      "match": "\\b(if|else|match|for|in|effect|return)\\b"
+    },
+    "element": {
+      "comment": "Element: a PascalCase name immediately followed by `(` or `{`.",
+      "name": "entity.name.tag.mui",
+      "match": "\\b([A-Z][A-Za-z0-9_]*)(?=\\s*[\\(\\{])"
+    },
+    "prop": {
+      "comment": "Named prop / arg: `name:` (lowercase identifier then colon).",
+      "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(:)",
+      "captures": {
+        "1": { "name": "variable.parameter.prop.mui" },
+        "2": { "name": "punctuation.separator.key-value.mui" }
+      }
+    },
+    "enum-access": {
+      "comment": "Enum member like FontStyle.Bold / FillMode.Cover.",
+      "match": "\\b([A-Z][A-Za-z0-9_]*)(\\.)([A-Z][A-Za-z0-9_]*)\\b",
+      "captures": {
+        "1": { "name": "entity.name.type.mui" },
+        "2": { "name": "punctuation.accessor.mui" },
+        "3": { "name": "constant.other.enum.mui" }
+      }
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "comment": "Copper modifiers / declarations. NOTE: no `let` — Copper uses `mut`/bare bindings.",
+          "name": "storage.modifier.mui",
+          "match": "\\b(mut|pub|ref|move|unsafe|async|await|static|const|dyn|where)\\b"
+        },
+        {
+          "name": "keyword.declaration.mui",
+          "match": "\\b(func|struct|class|impl|trait|enum|import|from|as|use|view)\\b"
+        },
+        {
+          "name": "constant.language.mui",
+          "match": "\\b(true|false|null|None|Some|Ok|Err|self|Self)\\b"
+        },
+        {
+          "comment": "Reactive primitives — function-like but worth flagging.",
+          "name": "support.function.reactive.mui",
+          "match": "\\b(signal|computed|effect)\\b(?=\\s*[\\({])"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.mui",
+          "match": "\\b(int|float|str|string|bool|void|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|usize|isize|char)\\b"
+        },
+        {
+          "name": "entity.name.type.mui",
+          "match": "\\b([A-Z][A-Za-z0-9_]*)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.mui",
+          "match": "\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "comment": "Copper function declaration: `func ReturnType name(...)`.",
+          "match": "\\b(func)\\s+([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)\\s+([a-z_][A-Za-z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": { "name": "keyword.declaration.mui" },
+            "2": { "name": "entity.name.type.mui" },
+            "3": { "name": "entity.name.function.mui" }
+          }
+        },
+        {
+          "comment": "Lowercase function call.",
+          "name": "entity.name.function.mui",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)(?=\\s*\\()"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.mui",
+          "match": "(\\?\\.|\\?|=>|->|::|\\.\\.=?|==|!=|<=|>=|&&|\\|\\||[-+*/%=<>!&|^~])"
+        }
+      ]
+    }
+  }
+}

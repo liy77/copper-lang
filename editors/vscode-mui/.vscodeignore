@@ -1,0 +1,13 @@
+.vscode/**
+src/**
+scripts/**
+examples/**
+**/*.ts
+**/*.map
+tsconfig.json
+package-lock.json
+.gitignore
+**/.DS_Store
+# NOTE: node_modules is intentionally NOT ignored — the extension's runtime
+# dependency `vscode-languageclient` must ship in the .vsix or activation fails.
+# (vsce automatically prunes devDependencies.)

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "CRM",
+  "scopeName": "source.crm",
+  "comment": "A .crm file is Copper + Mocida. Its highlighting is identical to .mui (the view markup plus embedded Copper), so this grammar simply includes source.mui. Kept as a separate scope/language only so .crm can carry its own file icon.",
+  "patterns": [
+    { "include": "source.mui" }
+  ]
+}

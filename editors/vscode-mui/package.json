@@ -1,0 +1,124 @@
+{
+  "name": "mui-lang",
+  "displayName": "MUI (mocida UI)",
+  "description": "Language support for MUI (.mui / .crm) — syntax highlight, color swatches, file icons, and autocomplete for the mocida UI language (Copper-powered).",
+  "version": "0.0.1",
+  "publisher": "copper-lang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liy77/copper-lang"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages"],
+  "icon": "icons/mui-extension-icon.png",
+  "main": "./out/extension.js",
+  "activationEvents": ["onLanguage:mui", "onLanguage:crm"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "mui",
+        "aliases": ["MUI", "mui", "Mocida UI"],
+        "extensions": [".mui"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/mui-icon.svg",
+          "dark": "./icons/mui-icon.svg"
+        }
+      },
+      {
+        "id": "crm",
+        "aliases": ["CRM", "Copper Mocida", "crm"],
+        "extensions": [".crm"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/crm-icon.svg",
+          "dark": "./icons/crm-icon.svg"
+        }
+      },
+      {
+        "id": "mocida-bundle",
+        "aliases": ["Mocida App Bundle"],
+        "filenames": ["app.bundle"],
+        "icon": {
+          "light": "./icons/bundle-icon.svg",
+          "dark": "./icons/bundle-icon.svg"
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "mui.restartLanguageServer",
+        "title": "Restart Language Server",
+        "category": "MUI"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mui",
+        "scopeName": "source.mui",
+        "path": "./syntaxes/mui.tmLanguage.json"
+      },
+      {
+        "language": "crm",
+        "scopeName": "source.crm",
+        "path": "./syntaxes/crm.tmLanguage.json"
+      },
+      {
+        "language": "mocida-bundle",
+        "scopeName": "source.mocida-bundle",
+        "path": "./syntaxes/bundle.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "MUI",
+      "properties": {
+        "mui.colorDecorators": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show color swatches next to #rrggbb / rgba() literals and enable the color picker."
+        },
+        "mui.diagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report problems (bracket balance, unknown enum members, unknown props)."
+        },
+        "mui.checkUnknownProps": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn when a known widget is given a prop the catalog doesn't recognize. Turn off if you use custom props."
+        },
+        "mui.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the mui-lsp language server when available (richer, parser-backed features). When off or no server is found, the built-in providers are used."
+        },
+        "mui.lsp.path": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the mui-lsp executable. Leave blank to auto-discover (bundled, a built target/, or PATH)."
+        },
+        "mui.lsp.usePath": {
+          "type": "boolean",
+          "default": false,
+          "description": "As a last resort, launch `mui-lsp` from the system PATH when no explicit/bundled/built binary is found."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./ && node ./scripts/copy-lexicon.js",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package": "npm run compile && npx --yes @vscode/vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}

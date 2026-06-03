@@ -1,0 +1,7 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Mocida App Bundle",
+  "scopeName": "source.mocida-bundle",
+  "comment": "app.bundle is JSON; reuse the built-in JSON grammar for highlighting while giving the file its own language id (for the icon).",
+  "patterns": [{ "include": "source.json" }]
+}

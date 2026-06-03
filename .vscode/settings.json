@@ -1,0 +1,4 @@
+{
+  "rust-analyzer.diagnostics.disabled": ["unlinked-file"],
+  "mui.lsp.path": "C:\\Users\\hcsbr\\Documents\\copper-lang\\target\\debug\\mui-lsp.exe"
+}
