@@ -1,0 +1,8 @@
+[package]
+name = "copper-parser"
+version = "0.0.1-pre-alpha"
+edition = "2021"
+description = "Copper → Rust transpiler parser. Consumes copper-syntax tokens and emits Rust source. Used by cforge (the compiler binary)."
+
+[dependencies]
+copper-syntax = { path = "../copper-syntax" }

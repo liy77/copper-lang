@@ -1,0 +1,9 @@
+[package]
+name = "copper-syntax"
+version = "0.0.1-pre-alpha"
+edition = "2021"
+description = "Tokenizer and AST for the Copper language. Shared between cforge (the transpiler) and copper-lsp (the language server)."
+
+[dependencies]
+once_cell = "1.21.3"
+regex = "1.11.2"
