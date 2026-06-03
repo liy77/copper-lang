@@ -1,0 +1,34 @@
+// webview.mui — an embedded browser surface via mocida's `UIWebView`
+// (backed by WebView2 on Windows).
+//
+// The positional arg is the initial URL (or `url:`/`src:`). Props:
+//   width / height      the surface box (px)
+//   radius:             round the corners
+//   borderColor: + borderWidth:   draw a frame around it
+//
+// Run it:  cforge run examples/mui/webview/webview.mui
+//   (needs an internet connection + the WebView2 runtime, preinstalled on
+//   current Windows 10/11.)
+
+app {
+  name: "WebView"
+  width: 960
+  height: 680
+  background: #0f172a
+  entry: Demo
+}
+
+view Demo() {
+  Stack(orientation: vertical, gap: 12, padding: 16, align: center) {
+    Text("WebView", size: 20, color: #e2e8f0, weight: bold)
+
+    WebView(
+      "https://example.com",
+      width: 912,
+      height: 588,
+      radius: 12,
+      borderColor: #1e293b,
+      borderWidth: 1,
+    )
+  }
+}

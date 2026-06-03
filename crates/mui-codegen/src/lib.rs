@@ -161,7 +161,7 @@ use mocida::{
     App, Button, Checkbox, Children, Color, Cursor, FillMode, FontStyle, Grid, GridView,
     HorizontalAlign, Image, ListView, ProgressBar, RadioButton, Rectangle, Scroll, Shadow, Signal,
     Slider, Spinner, Stack, StackOrientation, Subscription, Switch, Text, TextArea, TextField,
-    TextHAlign, TextVAlign, VerticalAlign, Widget, WrapMode,
+    TextHAlign, TextVAlign, Video, VerticalAlign, WebView, Widget, WrapMode,
 };
 
 type MuiResult<T> = Result<T, mocida::Error>;
@@ -434,6 +434,8 @@ fn emit_element(
         "ProgressBar" => emit_progressbar(e, el, sink),
         "Spinner" => emit_spinner(e, el, sink),
         "Image" => emit_image(e, el, env, sigs, sink),
+        "Video" => emit_video(e, el, env, sigs, sink),
+        "WebView" | "Webview" => emit_webview(e, el, env, sigs, sink),
         _ if !el.children.is_empty() => emit_stack(e, el, env, sigs, comps, sink),
         other => emit_placeholder(e, other, el, env, sigs, sink),
     }
@@ -466,6 +468,9 @@ fn is_core_widget(name: &str) -> bool {
             | "ProgressBar"
             | "Spinner"
             | "Image"
+            | "Video"
+            | "WebView"
+            | "Webview"
     )
 }
 
@@ -1509,6 +1514,90 @@ fn emit_image(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink
         "let __img = Image::new({source:?}, {animated}, {fill}, {tint})?;"
     ));
     emit_widget_tail(e, "__img", w, h, anchor_call(style::anchor(el)), sink);
+    e.dedent();
+    e.line("}");
+}
+
+/// `Video("clip.mp4", width:, height:, fillMode:, radius:, autoplay:, loop:,
+/// muted:, volume:)` — the same surface the runtime builds, lowered to a
+/// `Video::load(...)` builder chain. `radius:` rounds the corners (cross-platform).
+fn emit_video(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink: &str) {
+    let source = el
+        .positional
+        .as_ref()
+        .map(|x| render_text_expr(x, env, sigs))
+        .filter(|s| !s.is_empty())
+        .or_else(|| style::string_prop(el, "source"))
+        .or_else(|| style::string_prop(el, "src"))
+        .unwrap_or_default();
+    let w = style::f32_prop(el, "width").unwrap_or(320.0);
+    let h = style::f32_prop(el, "height").unwrap_or(180.0);
+    e.line("{");
+    e.indent();
+    e.line(&format!("let mut __vid = Video::load({source:?})?;"));
+    if let Some(fm) = style::enum_member(el, "fillMode") {
+        e.line(&format!(
+            "__vid = __vid.fill_mode({});",
+            fill_mode_lit(Some(fm.as_str()))
+        ));
+    }
+    // `loop` is a Copper keyword (dropped before it becomes a prop) — accept the
+    // keyword-safe `repeat:` too.
+    if style::bool_prop(el, "loop") == Some(true) || style::bool_prop(el, "repeat") == Some(true) {
+        e.line("__vid = __vid.loop_playback(true);");
+    }
+    if style::bool_prop(el, "muted") == Some(true) {
+        e.line("__vid = __vid.muted(true);");
+    }
+    if let Some(v) = style::f32_prop(el, "volume") {
+        e.line(&format!("__vid = __vid.volume({});", fmt_f32(v)));
+    }
+    if let Some(r) = style::f32_prop(el, "radius") {
+        e.line(&format!("__vid = __vid.radius({});", fmt_f32(r)));
+    }
+    if style::bool_prop(el, "autoplay") == Some(true) {
+        e.line("__vid.play();");
+    }
+    emit_widget_tail(e, "__vid", w, h, anchor_call(style::anchor(el)), sink);
+    e.dedent();
+    e.line("}");
+}
+
+/// `WebView("https://…", width:, height:, radius:, borderColor:, borderWidth:)`
+/// — lowered to a `WebView::new(...)` builder chain (WebView2 / WKWebView /
+/// WebKitGTK depending on platform).
+fn emit_webview(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink: &str) {
+    let url = el
+        .positional
+        .as_ref()
+        .map(|x| render_text_expr(x, env, sigs))
+        .filter(|s| !s.is_empty())
+        .or_else(|| style::string_prop(el, "url"))
+        .or_else(|| style::string_prop(el, "src"))
+        .unwrap_or_default();
+    let w = style::f32_prop(el, "width").unwrap_or(640.0);
+    let h = style::f32_prop(el, "height").unwrap_or(400.0);
+    e.line("{");
+    e.indent();
+    if url.is_empty() {
+        e.line("let mut __wv = WebView::new(None)?;");
+    } else {
+        e.line(&format!("let mut __wv = WebView::new(Some({url:?}))?;"));
+    }
+    if let Some(r) = style::f32_prop(el, "radius") {
+        e.line(&format!("__wv = __wv.radius({});", fmt_f32(r)));
+    }
+    if let (Some(bc), Some(bw)) = (
+        style::color_prop(el, "borderColor"),
+        style::f32_prop(el, "borderWidth"),
+    ) {
+        e.line(&format!(
+            "__wv = __wv.border({}, {});",
+            color_lit(bc),
+            fmt_f32(bw)
+        ));
+    }
+    emit_widget_tail(e, "__wv", w, h, anchor_call(style::anchor(el)), sink);
     e.dedent();
     e.line("}");
 }

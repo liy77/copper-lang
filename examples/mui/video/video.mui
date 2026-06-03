@@ -1,0 +1,42 @@
+// video.mui — a hardware-decoded video surface via mocida's `UIVideo`.
+//
+// The positional arg is the file path (or a `mocida://key` bundle key). Props:
+//   width / height      the surface box (px)
+//   fillMode:           stretch | scale | tile | center   (how the frame fits)
+//   radius:             round the corners (works on Windows / Linux / macOS)
+//   autoplay: true      start playing immediately
+//   repeat: true        restart when it ends (`loop` is a reserved word)
+//   muted: true         silence the audio track
+//   volume: 0.8         0..1 audio level
+//
+// Run it:  cforge run examples/mui/video/video.mui
+//   NOTE: edit the path below to a real video file on your machine (mocida
+//   decodes via the OS media stack — .mp4/.mov/.webm depending on platform).
+
+app {
+  name: "Video"
+  width: 720
+  height: 540
+  background: #0f172a
+  entry: Demo
+}
+
+view Demo() {
+  Stack(orientation: vertical, gap: 16, padding: 24, align: center) {
+    Text("Video", size: 22, color: #e2e8f0, weight: bold)
+
+    Video(
+      "C:/path/to/your/clip.mp4",
+      width: 640,
+      height: 360,
+      radius: 20,
+      fillMode: scale,
+      autoplay: true,
+      repeat: true,
+      muted: true,
+    )
+
+    Text("autoplay · loop · muted — change the path to your own file",
+         size: 12, color: #64748b)
+  }
+}
