@@ -11,7 +11,8 @@ What it does:
         normal user   -> local   (%USERPROFILE%\\.copper      |  $HOME/.copper)
   4. Build cforge in release mode (fresh link — deletes the old binary first).
   5. Build lson from lson-src/ (git submodule).
-  6. Copy cforge + Cargo.toml + std/ + built lson binary into the install dir.
+  6. Copy cforge + copper-lsp + mui-lsp + Cargo.toml + std/ + built lson
+     binary into the install dir (LSP servers land in bin/, so on PATH).
   7. Register COPPER_PATH and add %COPPER_PATH%/bin to PATH:
         Windows -> HKCU/HKLM registry (REG_EXPAND_SZ) + a settings broadcast
         Unix    -> /etc/profile.d/copper.sh  or  a managed block in your rc files
@@ -146,6 +147,22 @@ def copy_payload(exe, install_dir, lson_bin=None):
     if SYS != "Windows":
         os.chmod(dst_exe, 0o755)
     ok(f"Installed {exe.name}")
+
+    # Language servers (copper-lsp / mui-lsp) live in bin/ next to cforge, so
+    # they land on PATH via %COPPER_PATH%\bin. OndaEngine resolves them through
+    # $COPPER_PATH/bin (see onda-launcher/src/lsp.rs server_cmd). They are built
+    # for free by the workspace `cargo build --release` (no default-members).
+    suffix = ".exe" if SYS == "Windows" else ""
+    for lsp in ("copper-lsp", "mui-lsp"):
+        src_lsp = exe.parent / f"{lsp}{suffix}"
+        if src_lsp.exists():
+            dst_lsp = bin_dir / src_lsp.name
+            shutil.copy2(src_lsp, dst_lsp)
+            if SYS != "Windows":
+                os.chmod(dst_lsp, 0o755)
+            ok(f"Installed {src_lsp.name}")
+        else:
+            warn(f"{lsp} not found at {src_lsp} — skipping (rebuild the workspace).")
 
     if (ROOT / "Cargo.toml").exists():
         shutil.copy2(ROOT / "Cargo.toml", install_dir / "Cargo.toml")
