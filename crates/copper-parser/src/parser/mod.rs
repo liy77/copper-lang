@@ -599,6 +599,37 @@ impl Parser {
                         }
                     }
 
+                    // Distinguish a real typed declaration (`count: i32`) from a
+                    // struct-literal field (`Vec2 { x: self.x }`), which must
+                    // pass through untouched — otherwise `x: self.x` becomes
+                    // `let x: self; .x`. It's a struct field when the name
+                    // follows a `,` (a later field) or the value after the type
+                    // continues as an expression (`.`/`(`/`[`/`,`/operator/`::`).
+                    let name_follows_comma =
+                        self.current > 0 && self.tokens[self.current - 1].kind == TokenKind::Comma;
+                    let value_continues = match self.select(self.current + 3 + extra as usize) {
+                        Some(t) => {
+                            matches!(
+                                t.kind,
+                                TokenKind::Dot
+                                    | TokenKind::OptionalChain
+                                    | TokenKind::ParenthesesStart
+                                    | TokenKind::BracketStart
+                                    | TokenKind::Operator
+                                    | TokenKind::Comma
+                            ) || t.value == "::"
+                            // A newline the tokenizer marked as a `,` separator
+                            // (not `;`) sits between struct-literal fields
+                            // (`Vec2 {\n x: a,\n y: b\n}`) — not a declaration.
+                            || (t.kind == TokenKind::Newline
+                                && t.value.trim_start().starts_with(','))
+                        }
+                        None => false,
+                    };
+                    if name_follows_comma || value_continues {
+                        return Consumed::consume(0);
+                    }
+
                     if prev_is_decl {
                         self.append(
                             &format!("{var_name}: {full_type}"),
@@ -1788,6 +1819,47 @@ impl Parser {
         Consumed::consume(0)
     }
 
+    /// Lower an impl-method body (the tokens *between* its `{` and `}`) to Rust
+    /// by running them through a fresh sub-parser — the same statement machinery
+    /// that handles free-function and top-level bodies, so `let` injection, `;`
+    /// terminators, struct literals, `if`/`for` blocks and `self.field` access
+    /// all lower correctly. The sub-parser wraps top-level statements in
+    /// `fn main() { … }`; we return the inside of that block, re-indented one
+    /// level deeper so it nests under the method signature.
+    fn lower_method_body(body_tokens: Vec<Token>) -> String {
+        if body_tokens.is_empty() {
+            return String::new();
+        }
+        let mut sub = Parser::new(body_tokens);
+        let raw = sub.parse();
+
+        // Pull out the inside of the sub-parser's `fn main() { … }` wrapper.
+        let inner = match raw.find("fn main() {") {
+            Some(start) => {
+                let after = &raw[start + "fn main() {".len()..];
+                match after.rfind('}') {
+                    Some(end) => after[..end].trim_matches('\n'),
+                    None => after.trim_matches('\n'),
+                }
+            }
+            None => raw.trim_matches('\n'),
+        };
+
+        // Re-indent each non-empty line by 4 spaces so the body sits under the
+        // `    fn …{` signature (the sub-parser already indents one level).
+        inner
+            .lines()
+            .map(|line| {
+                if line.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("    {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn process_impl_methods(&mut self, tokens: &[Token]) {
         let mut i = 0;
         while i < tokens.len() {
@@ -1815,15 +1887,55 @@ impl Parser {
                     }
 
                     let return_type_token = &tokens[fn_idx + 1];
-                    let method_name_token = &tokens[fn_idx + 2];
 
-                    if method_name_token.kind != TokenKind::Identifier {
+                    // Gobble any generic arguments that follow the base return
+                    // type (`Option<GameObject>`, `Result<T, E>`, `Vec<int>`).
+                    // The tokenizer splits these into separate `<` / args / `>`
+                    // tokens (angle brackets lex as `Operator`, see the parser's
+                    // ReturnType arm). Without collecting them the method name
+                    // would appear to be `<` and the whole method would be
+                    // silently dropped.
+                    let is_open = |t: &Token| {
+                        t.kind == TokenKind::AngleStart
+                            || (t.kind == TokenKind::Operator && t.value == "<")
+                    };
+                    let is_close = |t: &Token| {
+                        t.kind == TokenKind::AngleEnd
+                            || (t.kind == TokenKind::Operator && t.value == ">")
+                    };
+                    let mut name_idx = fn_idx + 2;
+                    let mut generic_suffix = String::new();
+                    if name_idx < tokens.len() && is_open(&tokens[name_idx]) {
+                        let mut depth = 0usize;
+                        while name_idx < tokens.len() {
+                            let t = &tokens[name_idx];
+                            if is_open(t) {
+                                depth += 1;
+                                generic_suffix.push('<');
+                            } else if is_close(t) {
+                                depth -= 1;
+                                generic_suffix.push('>');
+                                name_idx += 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                continue;
+                            } else {
+                                generic_suffix.push_str(&t.value);
+                            }
+                            name_idx += 1;
+                        }
+                    }
+
+                    if name_idx >= tokens.len() || tokens[name_idx].kind != TokenKind::Identifier {
                         i += 1;
                         continue;
                     }
+                    let method_name_token = &tokens[name_idx];
 
-                    let (return_type, data_type) =
+                    let (mut return_type, data_type) =
                         utils::convert_type_with_marking(&return_type_token.value);
+                    return_type.push_str(&generic_suffix);
 
                     // Mark data type usage for return types
                     if let Some(dt) = data_type {
@@ -1839,7 +1951,7 @@ impl Parser {
                     let method_name = &method_name_token.value;
 
                     // Find parameters
-                    let mut param_start = fn_idx + 3;
+                    let mut param_start = name_idx + 1;
                     while param_start < tokens.len()
                         && tokens[param_start].kind != TokenKind::ParenthesesStart
                     {
@@ -1937,9 +2049,37 @@ impl Parser {
                             if i_param + 2 < param_tokens.len()
                                 && param_tokens[i_param + 1].kind == TokenKind::Colon
                             {
-                                let (param_type, data_type) = utils::convert_type_with_marking(
+                                let (mut param_type, data_type) = utils::convert_type_with_marking(
                                     &param_tokens[i_param + 2].value,
                                 );
+
+                                // Gobble generic arguments on the param type too
+                                // (`Vec<GameObject>`, `Option<i32>`), mirroring
+                                // the return-type handling above. Without this
+                                // the `<...>` tokens leak and the comma inside
+                                // `HashMap<K, V>` is mistaken for a param break.
+                                let mut k = i_param + 3;
+                                if k < param_tokens.len() && is_open(param_tokens[k]) {
+                                    let mut depth = 0usize;
+                                    while k < param_tokens.len() {
+                                        let t = param_tokens[k];
+                                        if is_open(t) {
+                                            depth += 1;
+                                            param_type.push('<');
+                                        } else if is_close(t) {
+                                            depth -= 1;
+                                            param_type.push('>');
+                                            k += 1;
+                                            if depth == 0 {
+                                                break;
+                                            }
+                                            continue;
+                                        } else {
+                                            param_type.push_str(&t.value);
+                                        }
+                                        k += 1;
+                                    }
+                                }
 
                                 if let Some(dt) = data_type {
                                     self.uses_data_types = true;
@@ -1952,10 +2092,20 @@ impl Parser {
                                 }
 
                                 params.push(format!("{}: {}", param_name, param_type));
-                                i_param += 3;
+                                i_param = k;
                             } else {
-                                // Receiver-only param: `self`, `&self`, `&mut self`
-                                params.push(param_name);
+                                // Receiver-only param: `self`, `&self`, `&mut self`.
+                                // A bare `self` borrows (`&self`) — matching the
+                                // `class` path and the convention across Copper
+                                // code (read-only accessors). Methods that need
+                                // to consume the receiver write `&mut self` /
+                                // an explicit owned form. `&self` / `&mut self`
+                                // already carry their prefix and pass through.
+                                if param_name == "self" {
+                                    params.push("&self".to_string());
+                                } else {
+                                    params.push(param_name);
+                                }
                                 i_param += 1;
                             }
 
@@ -1970,65 +2120,31 @@ impl Parser {
                         }
                     }
 
-                    // Extract body
-                    let body_tokens: Vec<&Token> = tokens[body_start + 1..body_end - 1]
-                        .iter()
-                        .filter(|t| t.kind != TokenKind::Newline)
-                        .collect();
-
-                    let mut body_str = String::new();
-                    for (idx, token) in body_tokens.iter().enumerate() {
-                        let token_value = &token.value;
-
-                        // Add space before token if needed
-                        if idx > 0
-                            && !body_str.ends_with(' ')
-                            && !body_str.ends_with('{')
-                            && !token_value.starts_with(',')
-                            && !token_value.starts_with('}')
-                            && !token_value.starts_with('.')
-                            && !token_value.starts_with(';')
-                        {
-                            body_str.push(' ');
-                        }
-
-                        body_str.push_str(token_value);
-                    }
-
-                    // Adjust syntax for Rust
-                    if !body_str.is_empty() && !body_str.ends_with(';') && !body_str.ends_with('}')
-                    {
-                        body_str.push(';');
-                    }
+                    // Lower the body through a fresh sub-parser — the same
+                    // statement machinery free functions use — so multi-statement
+                    // bodies get `let` injection, `;` terminators, struct
+                    // literals and nested `if`/blocks right. Newlines are kept
+                    // (they carry the statement boundaries); the old naive
+                    // token-join dropped them and collapsed the body to one line.
+                    let body_tokens: Vec<Token> = tokens[body_start + 1..body_end - 1].to_vec();
+                    let body_str = Self::lower_method_body(body_tokens);
 
                     // Generate method using Rust syntax
                     let visibility = if is_pub { "pub " } else { "" };
                     let param_str = params.join(", ");
-
-                    if return_type == "()" {
-                        self.append(
-                            &format!("    {}fn {}({}) {{", visibility, method_name, param_str),
-                            AppendMode::ForceAppendWithSpace,
-                        );
-                        self.append(
-                            &format!("        {}", body_str),
-                            AppendMode::ForceAppendWithSpace,
-                        );
-                        self.append("    }", AppendMode::ForceAppendWithSpace);
+                    let sig = if return_type == "()" {
+                        format!("    {}fn {}({}) {{", visibility, method_name, param_str)
                     } else {
-                        self.append(
-                            &format!(
-                                "    {}fn {}({}) -> {} {{",
-                                visibility, method_name, param_str, return_type
-                            ),
-                            AppendMode::ForceAppendWithSpace,
-                        );
-                        self.append(
-                            &format!("        {}", body_str),
-                            AppendMode::ForceAppendWithSpace,
-                        );
-                        self.append("    }", AppendMode::ForceAppendWithSpace);
+                        format!(
+                            "    {}fn {}({}) -> {} {{",
+                            visibility, method_name, param_str, return_type
+                        )
+                    };
+                    self.append(&sig, AppendMode::ForceAppendWithSpace);
+                    if !body_str.is_empty() {
+                        self.append(&body_str, AppendMode::ForceAppendWithSpace);
                     }
+                    self.append("    }", AppendMode::ForceAppendWithSpace);
 
                     i = body_end;
                 } else {

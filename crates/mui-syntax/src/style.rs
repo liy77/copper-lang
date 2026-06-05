@@ -5,8 +5,10 @@
 //! which props exist or how they're interpreted. Each getter pulls a typed
 //! value out of an [`Element`]'s props; `None` means "not set, use the default".
 
-use crate::ast::{Element, MuiValue, Prop, PropValue};
-use copper_syntax::expr::{Expr, ExprKind, Literal, StrPart};
+use std::collections::HashMap;
+
+use crate::ast::{Element, MuiValue, Node, Prop, PropValue};
+use copper_syntax::expr::{BinOp, Expr, ExprKind, Literal, StrPart};
 
 /// An RGBA color in 0-255 channels (alpha 0-255). The single representation
 /// both `#rrggbb[aa]` and `rgba(...)` resolve to.
@@ -97,6 +99,118 @@ pub fn f32_prop(el: &Element, name: &str) -> Option<f32> {
         PropValue::Expr(e) => literal_f32(e),
         _ => None,
     }
+}
+
+/// The window / screen size and the literal sizes of `id:`-tagged widgets,
+/// used to resolve dimension expressions like `Window.width - 520` or
+/// `left_panel.width`. The dev runtime fills the metrics from the live window;
+/// the codegen fills them from the `app { }` block (a static evaluation).
+#[derive(Debug, Clone, Default)]
+pub struct DimEnv {
+    pub window_w: Option<f32>,
+    pub window_h: Option<f32>,
+    pub screen_w: Option<f32>,
+    pub screen_h: Option<f32>,
+    /// `id → (width, height)` literal sizes collected from the view.
+    pub ids: HashMap<String, (Option<f32>, Option<f32>)>,
+}
+
+/// Resolve `<ns>.<field>` — a window/screen metric (`Window.width`) or another
+/// widget's declared size (`left_panel.height`).
+pub fn resolve_metric(env: &DimEnv, ns: &str, field: &str) -> Option<f32> {
+    match (ns, field) {
+        ("Window" | "App", "width") => env.window_w,
+        ("Window" | "App", "height") => env.window_h,
+        ("Screen", "width") => env.screen_w,
+        ("Screen", "height") => env.screen_h,
+        (id, "width") => env.ids.get(id).and_then(|d| d.0),
+        (id, "height") => env.ids.get(id).and_then(|d| d.1),
+        _ => None,
+    }
+}
+
+/// Evaluate a dimension expression to a constant: numeric literals, `+ - * /`
+/// arithmetic, and `Window.width` / `<id>.height` metric references. Returns
+/// `None` for anything not statically resolvable (a live signal, say).
+pub fn eval_dim(e: &Expr, env: &DimEnv) -> Option<f32> {
+    match &e.kind {
+        ExprKind::Literal(Literal::Int(i)) => Some(*i as f32),
+        ExprKind::Literal(Literal::Float(f)) => Some(*f as f32),
+        ExprKind::Member { base, field, .. } => match &base.kind {
+            ExprKind::Ident(ns) => resolve_metric(env, ns, field),
+            _ => None,
+        },
+        ExprKind::Binary { op, lhs, rhs } => {
+            let a = eval_dim(lhs, env)?;
+            let b = eval_dim(rhs, env)?;
+            match op {
+                BinOp::Add => Some(a + b),
+                BinOp::Sub => Some(a - b),
+                BinOp::Mul => Some(a * b),
+                BinOp::Div if b != 0.0 => Some(a / b),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A dimension prop (`width` / `height` / `x` / `y`), honouring metric refs and
+/// arithmetic — not just literals. `Window.width` with no arithmetic parses as
+/// a `Type.Member` enum, so that case is resolved too.
+pub fn dim_prop(el: &Element, name: &str, env: &DimEnv) -> Option<f32> {
+    match &find(el, name)?.value {
+        PropValue::Expr(e) => eval_dim(e, env),
+        PropValue::Mui(MuiValue::Enum {
+            ty: Some(ty),
+            member,
+        }) => resolve_metric(env, ty, member),
+        _ => None,
+    }
+}
+
+/// The `id:` of an element as a name — a bare ident (`id: left_panel`) or a
+/// string (`id: "left_panel"`). `None` when there's no `id`.
+pub fn id_of(el: &Element) -> Option<String> {
+    match &find(el, "id")?.value {
+        PropValue::Expr(e) => match &e.kind {
+            ExprKind::Ident(n) => Some(n.clone()),
+            ExprKind::Literal(Literal::Str(t)) => t.parts.iter().find_map(|p| match p {
+                StrPart::Lit(s) => Some(s.clone()),
+                _ => None,
+            }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Collect every `id:`-tagged widget's literal `width`/`height` (descending into
+/// `if`/`for` bodies and children), so a sibling can size against it.
+pub fn collect_id_dims(nodes: &[Node]) -> HashMap<String, (Option<f32>, Option<f32>)> {
+    fn walk(nodes: &[Node], out: &mut HashMap<String, (Option<f32>, Option<f32>)>) {
+        for node in nodes {
+            match node {
+                Node::Element(el) => {
+                    if let Some(id) = id_of(el) {
+                        out.insert(id, (f32_prop(el, "width"), f32_prop(el, "height")));
+                    }
+                    walk(&el.children, out);
+                }
+                Node::If { then, els, .. } => {
+                    walk(then, out);
+                    if let Some(e) = els {
+                        walk(e, out);
+                    }
+                }
+                Node::For { body, .. } => walk(body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    walk(nodes, &mut out);
+    out
 }
 
 fn literal_f32(e: &Expr) -> Option<f32> {

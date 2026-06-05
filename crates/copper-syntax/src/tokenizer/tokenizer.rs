@@ -35,6 +35,23 @@ fn strip_block_comments(source: &str) -> String {
             continue;
         }
 
+        // Line comment `// …`: copy it verbatim to end of line. A `/*` that
+        // appears INSIDE a line comment (e.g. a glob path like `ui/*.mui` in a
+        // doc comment) must NOT open a block comment — without this guard the
+        // scan ran to the next `*/`/EOF and silently swallowed real code after
+        // the comment (a `view` after such a line vanished -> "no view").
+        if c == '/' && chars.peek() == Some(&'/') {
+            out.push(c);
+            out.push(chars.next().unwrap()); // the second '/'
+            for next in chars.by_ref() {
+                out.push(next);
+                if next == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+
         if c == '/' && chars.peek() == Some(&'*') {
             chars.next(); // consume `*`
                           // Skip until matching `*/`, preserving any newlines so token
@@ -215,6 +232,15 @@ pub struct Tokenizer {
     /// We saw a `match` keyword and are still scanning its head expression;
     /// the next `{` (at paren depth 0) opens the match body.
     expect_match_brace: bool,
+    /// Tracks whether each currently-open `{` opens a **struct/enum literal**
+    /// (`Vec2 { x: 1, y: 2 }`) rather than a code block. Inside one,
+    /// line_break_token separates fields with `,` (not `;`), so a multi-line
+    /// literal whose last field has no trailing comma stays valid.
+    brace_is_struct: Vec<bool>,
+    /// We just emitted a control-flow keyword (`if`/`else`/`while`/`for`/
+    /// `loop`); the next `{` opens its block, NOT a struct literal — even when
+    /// the condition ends in an identifier (`if ready {`, `for x in xs {`).
+    expect_block_brace: bool,
     /// Parenthesis / bracket depth since `expect_match_brace` was set, so
     /// `match foo({}) { ... }` doesn't mistake the inner `{}` for the match
     /// body.
@@ -252,6 +278,8 @@ impl Tokenizer {
             import_specifier_list: false,
             brace_is_match: vec![],
             expect_match_brace: false,
+            brace_is_struct: vec![],
+            expect_block_brace: false,
             match_paren_depth: 0,
             location_data_compensations: vec![],
             errors: Vec::new(),
@@ -605,6 +633,24 @@ impl Tokenizer {
                         self.expect_match_brace = false;
                     }
 
+                    // A `{` opens a struct/enum literal when it directly follows
+                    // a type name (`Vec2 {`) — i.e. the previous token is an
+                    // identifier or a closing generic `>` — and it isn't a
+                    // control-flow block (`if x {`, `for i in xs {`) or a match
+                    // body. The `expect_block_brace` flag disambiguates the
+                    // `Identifier {` case where the identifier is a condition.
+                    let prev_is_type_name = matches!(
+                        self.last_token().map(|t| (t.kind, t.value.clone())),
+                        Some((TokenKind::Identifier, _)) | Some((TokenKind::ReturnType, _))
+                    ) || matches!(
+                        self.last_token().map(|t| (t.kind, t.value.clone())),
+                        Some((TokenKind::Operator, v)) if v == ">"
+                    );
+                    let opens_struct =
+                        prev_is_type_name && !opens_match_body && !self.expect_block_brace;
+                    self.brace_is_struct.push(opens_struct);
+                    self.expect_block_brace = false;
+
                     self.end(TokenKind::BraceEnd, "}".to_string());
                     TokenKind::BraceStart
                 }
@@ -613,6 +659,7 @@ impl Tokenizer {
                         self.import_specifier_list = false;
                     }
                     self.brace_is_match.pop();
+                    self.brace_is_struct.pop();
 
                     self.skip_end();
                     TokenKind::BraceEnd
@@ -788,6 +835,9 @@ impl Tokenizer {
                     "for" => {
                         self.seen_for = true;
                         kind = TokenKind::For;
+                        // The next `{` opens the loop body, not a struct literal,
+                        // even though `for x in items {` ends in an identifier.
+                        self.expect_block_brace = true;
                     }
                     "struct" => {
                         kind = TokenKind::Struct;
@@ -821,6 +871,15 @@ impl Tokenizer {
                 // `func Result<T, E> name(...)` route the whole `Result<...>`
                 // to the parser's ReturnType handler.
                 self.seen_func = false;
+                // Optional-return sugar: `func Type? name(...)`. Fold a
+                // trailing `?` into the ReturnType token (mirrors the ParamType
+                // path below) so `convert_type` lowers `Type?` → `Option<Type>`.
+                // Generic returns (`Result<T, E>`) keep the `?`-less base name;
+                // their `<...>` is still gobbled by the parser's ReturnType arm.
+                if self.current_char() == '?' {
+                    self.next_char();
+                    value.push('?');
+                }
                 kind = TokenKind::ReturnType;
             } else if RUST_KEYWORDS.contains(&value.as_str()) {
                 // Specialise loop-related keywords so the parser can route
@@ -839,6 +898,11 @@ impl Tokenizer {
                     // inside parens belongs to this match expression.
                     self.expect_match_brace = true;
                     self.match_paren_depth = 0;
+                }
+                // Control-flow keywords open a block (not a struct literal) at
+                // the next `{`, even when the condition ends in an identifier.
+                if matches!(value.as_str(), "if" | "else" | "while" | "for" | "loop") {
+                    self.expect_block_brace = true;
                 }
             } else if self.import_specifier_list {
                 kind = TokenKind::ModuleVar;
@@ -906,7 +970,21 @@ impl Tokenizer {
         let kind = TokenKind::Newline;
 
         if self.current_char() == '\n' && self.kind() != Some(TokenKind::Newline) {
+            // A line ending in a binary/infix operator (`a &&`, `x +`, `obj.`)
+            // or `::` is a *continuation*, not a statement end — appending `;`
+            // would produce `a &&;`. Postfix operators (`?`, `++`, `--`) DO end
+            // a statement, so they keep the `;`.
+            let ends_with_continuation = match self.last_token() {
+                Some(t) if t.kind == TokenKind::Dot => true,
+                Some(t) if t.kind == TokenKind::Operator => {
+                    !matches!(t.value.as_str(), "?" | "++" | "--")
+                }
+                _ => false,
+            };
             match self.kind() {
+                _ if ends_with_continuation => {
+                    value.push(self.current_char());
+                }
                 Some(TokenKind::BraceStart) |
                 Some(TokenKind::BracketStart) |
                 Some(TokenKind::ParenthesesStart) |
@@ -922,8 +1000,12 @@ impl Tokenizer {
                     // Inside a `match` body, line endings between arms must
                     // be `,` not `;` — `_ => 2;` is a parse error in Rust,
                     // while `_ => 2,` is correct (and a trailing comma is
-                    // fine right before `}`).
-                    let separator = if matches!(self.brace_is_match.last(), Some(&true)) {
+                    // fine right before `}`). The same holds for the fields of
+                    // a multi-line struct literal (`Vec2 {\n x: 1,\n y: 2\n}`):
+                    // a `;` after the last field would break it, a `,` is fine.
+                    let separator = if matches!(self.brace_is_match.last(), Some(&true))
+                        || matches!(self.brace_is_struct.last(), Some(&true))
+                    {
                         ","
                     } else {
                         ";"

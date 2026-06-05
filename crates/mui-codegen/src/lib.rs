@@ -58,8 +58,13 @@ pub fn generate_program_with(
         out.push_str(&emit_embed_module(spec));
     }
 
+    // Window size from the `app { }` block (defaults mirror generate_main), used
+    // to statically resolve `Window.width` / `Window.height` dimension props.
+    let win_w = doc.app.as_ref().and_then(|a| a.width).unwrap_or(900) as f32;
+    let win_h = doc.app.as_ref().and_then(|a| a.height).unwrap_or(600) as f32;
+
     for view in &doc.views {
-        out.push_str(&generate_view_fn(view, components));
+        out.push_str(&generate_view_fn(view, components, win_w, win_h));
         out.push('\n');
     }
 
@@ -158,9 +163,9 @@ use std::rc::Rc;
 
 use mocida::text::by_ptr;
 use mocida::{
-    App, Button, Checkbox, Children, Color, Cursor, FillMode, FontStyle, Grid, GridView,
+    App, Button, Checkbox, Children, Color, Cursor, Dialog, FillMode, FontStyle, Grid, GridView,
     HorizontalAlign, Image, ListView, ProgressBar, RadioButton, Rectangle, Scroll, Shadow, Signal,
-    Slider, Spinner, Stack, StackOrientation, Subscription, Switch, Text, TextArea, TextField,
+    Slider, Sound, Spinner, Stack, StackOrientation, Subscription, Switch, Text, TextArea, TextField,
     TextHAlign, TextVAlign, Video, VerticalAlign, WebView, Widget, WrapMode,
 };
 
@@ -173,6 +178,9 @@ struct BuiltView {
     // Signals are kept alive (and shared with handlers) here.
     _signals: Vec<Rc<RefCell<Signal<i32>>>>,
     _subs: Vec<Subscription>,
+    // `Audio` clips — kept alive so a one-shot sound finishes (a dropped
+    // `Sound` stops playing).
+    _sounds: Vec<Sound>,
 }
 
 "
@@ -182,8 +190,15 @@ struct BuiltView {
 /// Generate `fn build_<view>(<params>) -> MuiResult<BuiltView> { ... }` — a
 /// reactive builder: it creates real signals, wires text subscriptions and
 /// button handlers, and returns the tree bundled with the live state.
-fn generate_view_fn(view: &View, comps: &Registry) -> String {
+fn generate_view_fn(view: &View, comps: &Registry, win_w: f32, win_h: f32) -> String {
     let mut e = Emitter::new();
+    e.dims = mui_syntax::style::DimEnv {
+        window_w: Some(win_w),
+        window_h: Some(win_h),
+        screen_w: Some(win_w),
+        screen_h: Some(win_h),
+        ids: mui_syntax::style::collect_id_dims(&view.body),
+    };
     let params = view
         .params
         .iter()
@@ -211,6 +226,8 @@ fn generate_view_fn(view: &View, comps: &Registry) -> String {
     e.line("let mut __y: f32 = 24.0;");
     e.line("let mut __subs: Vec<Subscription> = Vec::new();");
     e.line("let mut __keep: Vec<Rc<RefCell<Signal<i32>>>> = Vec::new();");
+    e.line("#[allow(unused_mut)]");
+    e.line("let mut __sounds: Vec<Sound> = Vec::new();");
 
     // Seed from params, then fold in view-level state bindings so `${count}`
     // resolves and the signal map is known for the whole tree.
@@ -224,7 +241,9 @@ fn generate_view_fn(view: &View, comps: &Registry) -> String {
         emit_node(&mut e, node, &env, &sigs, comps, "__children");
     }
 
-    e.line("Ok(BuiltView { children: __children, _signals: __keep, _subs: __subs })");
+    e.line(
+        "Ok(BuiltView { children: __children, _signals: __keep, _subs: __subs, _sounds: __sounds })",
+    );
     e.dedent();
     e.line("}");
     e.finish()
@@ -417,7 +436,12 @@ fn emit_element(
         return;
     }
     match el.name.as_str() {
-        "Rectangle" | "Rect" | "Box" => emit_rectangle(e, el, env, sigs, comps, sink),
+        "Rectangle" | "Rect" | "Box" => emit_rectangle(e, el, env, sigs, comps, sink, None),
+        // A `Popup` with `visible: false` renders nothing; otherwise it's a
+        // floating card (a Rectangle container lifted above siblings via a high
+        // default z-index).
+        "Popup" if style::bool_prop(el, "visible") == Some(false) => {}
+        "Popup" => emit_rectangle(e, el, env, sigs, comps, sink, Some(1000)),
         "Stack" => emit_stack(e, el, env, sigs, comps, sink),
         "Grid" => emit_grid(e, el, env, sigs, comps, sink),
         "Scroll" => emit_scroll(e, el, env, sigs, comps, sink),
@@ -436,6 +460,8 @@ fn emit_element(
         "Image" => emit_image(e, el, env, sigs, sink),
         "Video" => emit_video(e, el, env, sigs, sink),
         "WebView" | "Webview" => emit_webview(e, el, env, sigs, sink),
+        "Dialog" => emit_dialog(e, el, env, sigs, comps, sink),
+        "Audio" | "Sound" => emit_audio(e, el, env, sigs),
         _ if !el.children.is_empty() => emit_stack(e, el, env, sigs, comps, sink),
         other => emit_placeholder(e, other, el, env, sigs, sink),
     }
@@ -471,6 +497,10 @@ fn is_core_widget(name: &str) -> bool {
             | "Video"
             | "WebView"
             | "Webview"
+            | "Dialog"
+            | "Popup"
+            | "Audio"
+            | "Sound"
     )
 }
 
@@ -510,7 +540,8 @@ fn emit_component(e: &mut Emitter, el: &Element, env: &Env, comps: &Registry, si
     }
     let anchor = anchor_call(style::anchor(el));
     e.line(&format!(
-        "let __w = {var}.into_widget_sized(400.0, 200.0)?.position(24.0, __y);"
+        "let __w = {var}.into_widget_sized(400.0, 200.0)?.position({});",
+        position_args(el)
     ));
     if let Some(call) = &anchor {
         e.line(&format!("__w{call};"));
@@ -551,6 +582,7 @@ fn emit_rectangle(
     sigs: &SignalScope,
     comps: &Registry,
     sink: &str,
+    default_z: Option<i32>,
 ) {
     let has_children = !el.children.is_empty();
     let fill = style::color_prop(el, "fill")
@@ -565,8 +597,8 @@ fn emit_rectangle(
     let gap = style::f32_prop(el, "gap").unwrap_or(0.0);
     // Codegen doesn't measure content, so honour explicit sizes and fall back to
     // sensible defaults (a childless rect is a small square).
-    let w = style::f32_prop(el, "width").unwrap_or(if has_children { 400.0 } else { 100.0 });
-    let h = style::f32_prop(el, "height").unwrap_or(if has_children { 160.0 } else { 100.0 });
+    let w = dim(e, el, "width").unwrap_or(if has_children { 400.0 } else { 100.0 });
+    let h = dim(e, el, "height").unwrap_or(if has_children { 160.0 } else { 100.0 });
 
     e.line("{");
     e.indent();
@@ -620,15 +652,23 @@ fn emit_rectangle(
     }
 
     e.line(&format!(
-        "let __w = __r.into_widget_sized({}, {})?.position(24.0, __y);",
+        "let __w = __r.into_widget_sized({}, {})?.position({});",
         fmt_f32(w),
-        fmt_f32(h)
+        fmt_f32(h),
+        position_args(el)
     ));
     if let Some(op) = style::f32_prop(el, "opacity") {
         e.line(&format!("let __w = __w.opacity({});", fmt_f32(op)));
     }
     if let Some(rot) = style::f32_prop(el, "rotation") {
         e.line(&format!("let __w = __w.rotation({});", fmt_f32(rot)));
+    }
+    // `zIndex:` (or the Popup default) lifts the widget above its siblings.
+    if let Some(z) = style::f32_prop(el, "zIndex")
+        .map(|z| z as i32)
+        .or(default_z)
+    {
+        e.line(&format!("let __w = __w.z_index({z});"));
     }
     if let Some(call) = anchor_call(style::anchor(el)) {
         e.line(&format!("__w{call};"));
@@ -663,6 +703,11 @@ fn emit_stack(
         Some("horizontal") => "StackOrientation::Horizontal",
         _ => "StackOrientation::Vertical",
     };
+    // Honour an explicit `width`/`height` (resolving `Window.width` /
+    // `left_panel.width` / arithmetic); fall back to a generous default since
+    // codegen doesn't measure content.
+    let sw = dim(e, el, "width").unwrap_or(400.0);
+    let sh = dim(e, el, "height").unwrap_or(400.0);
     let var = e.fresh("stack");
     e.line("{");
     e.indent();
@@ -688,13 +733,17 @@ fn emit_stack(
         // Capture the Widget so an `onKeyInput` key-down handler can be wired
         // onto it before it's added to the parent.
         e.line(&format!(
-            "let __w = {var}.into_widget_sized(400.0, 400.0)?;"
+            "let __w = {var}.into_widget_sized({}, {})?;",
+            fmt_f32(sw),
+            fmt_f32(sh)
         ));
         emit_key_handler(e, el, sigs, "__w");
         e.line(&format!("{sink}.add(__w)?;"));
     } else {
         e.line(&format!(
-            "{sink}.add({var}.into_widget_sized(400.0, 400.0)?)?;"
+            "{sink}.add({var}.into_widget_sized({}, {})?)?;",
+            fmt_f32(sw),
+            fmt_f32(sh)
         ));
     }
     e.dedent();
@@ -756,9 +805,10 @@ fn emit_text(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink:
 
     let add_widget = |e: &mut Emitter| {
         e.line(&format!(
-            "let __w = __t.into_widget_sized({}, {})?.position(24.0, __y);",
+            "let __w = __t.into_widget_sized({}, {})?.position({});",
             fmt_f32(w),
-            fmt_f32(h)
+            fmt_f32(h),
+            position_args(el)
         ));
         if let Some(call) = &anchor {
             e.line(&format!("__w{call};"));
@@ -875,9 +925,10 @@ fn emit_button(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sin
     }
 
     e.line(&format!(
-        "let __w = __b.into_widget_sized({}, {})?.position(24.0, __y);",
+        "let __w = __b.into_widget_sized({}, {})?.position({});",
         fmt_f32(bw),
-        fmt_f32(bh)
+        fmt_f32(bh),
+        position_args(el)
     ));
     if let Some(call) = anchor_call(style::anchor(el)) {
         e.line(&format!("__w{call};"));
@@ -888,13 +939,36 @@ fn emit_button(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sin
     e.line("}");
 }
 
+/// The `x, y` argument string for a widget's `.position(x, y)` call. Every
+/// widget accepts the common `x:` / `y:` props; each given axis overrides the
+/// stacked-layout default, while a missing axis keeps the running cursor
+/// (`24.0` horizontally, the auto-advanced `__y` vertically). So `x: 100` alone
+/// pins the column but lets the widget flow down with its siblings.
+/// A dimension prop (`width`/`height`/`x`/`y`), resolving metric refs and
+/// arithmetic (`Window.width - 520`, `left_panel.width`) against the emitter's
+/// [`DimEnv`] — not just literals.
+fn dim(e: &Emitter, el: &Element, name: &str) -> Option<f32> {
+    style::dim_prop(el, name, &e.dims)
+}
+
+fn position_args(el: &Element) -> String {
+    let x = style::f32_prop(el, "x")
+        .map(fmt_f32)
+        .unwrap_or_else(|| "24.0".to_string());
+    let y = style::f32_prop(el, "y")
+        .map(fmt_f32)
+        .unwrap_or_else(|| "__y".to_string());
+    format!("{x}, {y}")
+}
+
 /// Emit the common tail for a sized leaf widget: lift the builder variable
 /// `var` into a positioned [`Widget`], apply the anchor, add it to `sink`, and
 /// advance the `__y` cursor so the next top-level sibling sits below it. (When
 /// the widget is nested in a container the container re-lays it out, so the
-/// `__y` position is harmless there.)
+/// `__y` position is harmless there.) `el` supplies the `x:` / `y:` overrides.
 fn emit_widget_tail(
     e: &mut Emitter,
+    el: &Element,
     var: &str,
     w: f32,
     h: f32,
@@ -902,9 +976,10 @@ fn emit_widget_tail(
     sink: &str,
 ) {
     e.line(&format!(
-        "let __w = {var}.into_widget_sized({}, {})?.position(24.0, __y);",
+        "let __w = {var}.into_widget_sized({}, {})?.position({});",
         fmt_f32(w),
-        fmt_f32(h)
+        fmt_f32(h),
+        position_args(el)
     ));
     if let Some(call) = anchor {
         e.line(&format!("__w{call};"));
@@ -940,7 +1015,15 @@ fn emit_grid(
     for node in &el.children {
         emit_node(e, node, &child_env, &child_sigs, comps, &var);
     }
-    emit_widget_tail(e, &var, 400.0, 300.0, anchor_call(style::anchor(el)), sink);
+    emit_widget_tail(
+        e,
+        el,
+        &var,
+        400.0,
+        300.0,
+        anchor_call(style::anchor(el)),
+        sink,
+    );
     e.dedent();
     e.line("}");
 }
@@ -962,8 +1045,8 @@ fn emit_scroll(
         _ => (true, false),
     };
     let gap = style::f32_prop(el, "gap").unwrap_or(8.0);
-    let w = style::f32_prop(el, "width").unwrap_or(400.0);
-    let height = style::f32_prop(el, "height").unwrap_or(240.0);
+    let w = dim(e, el, "width").unwrap_or(400.0);
+    let height = dim(e, el, "height").unwrap_or(240.0);
     e.line("{");
     e.indent();
     e.line("let mut __scroll = Scroll::new()?;");
@@ -976,6 +1059,28 @@ fn emit_scroll(
     }
     if style::bool_prop(el, "dragScroll") == Some(true) {
         e.line("__scroll = __scroll.drag_scroll(true);");
+    }
+    // `scrollbar: false` hides the bar; `scrollbarColor`/`scrollbarTrackColor`/
+    // `scrollbarWidth` customize it.
+    if style::bool_prop(el, "scrollbar") == Some(false) {
+        e.line("__scroll = __scroll.scrollbar(false);");
+    }
+    let bar_thumb = style::color_prop(el, "scrollbarColor");
+    let bar_track = style::color_prop(el, "scrollbarTrackColor");
+    let bar_width = style::f32_prop(el, "scrollbarWidth");
+    if bar_thumb.is_some() || bar_track.is_some() || bar_width.is_some() {
+        let thumb = bar_thumb
+            .map(color_lit)
+            .unwrap_or_else(|| "Color::rgba(150, 155, 168, 0.55)".to_string());
+        let track = bar_track
+            .map(color_lit)
+            .unwrap_or_else(|| "Color::rgba(255, 255, 255, 0.04)".to_string());
+        e.line(&format!(
+            "__scroll = __scroll.scrollbar_style({}, {}, {});",
+            thumb,
+            track,
+            fmt_f32(bar_width.unwrap_or(8.0))
+        ));
     }
     e.line(&format!(
         "let mut __sc = Stack::new(StackOrientation::Vertical)?.spacing({});",
@@ -991,6 +1096,7 @@ fn emit_scroll(
     e.line("__scroll = __scroll.content(__sc.into_widget_sized(400.0, 600.0)?);");
     emit_widget_tail(
         e,
+        el,
         "__scroll",
         w,
         height,
@@ -1011,8 +1117,8 @@ fn emit_listview(
     sink: &str,
 ) {
     let item_h = style::f32_prop(el, "itemHeight").unwrap_or(40.0);
-    let w = style::f32_prop(el, "width").unwrap_or(240.0);
-    let height = style::f32_prop(el, "height").unwrap_or(320.0);
+    let w = dim(e, el, "width").unwrap_or(240.0);
+    let height = dim(e, el, "height").unwrap_or(320.0);
     e.line("{");
     e.indent();
     e.line(&format!(
@@ -1026,7 +1132,15 @@ fn emit_listview(
     for node in &el.children {
         emit_node(e, node, &child_env, &child_sigs, comps, "__lv");
     }
-    emit_widget_tail(e, "__lv", w, height, anchor_call(style::anchor(el)), sink);
+    emit_widget_tail(
+        e,
+        el,
+        "__lv",
+        w,
+        height,
+        anchor_call(style::anchor(el)),
+        sink,
+    );
     e.dedent();
     e.line("}");
 }
@@ -1050,8 +1164,8 @@ fn emit_gridview(
     let cell_h = style::f32_prop(el, "cellHeight")
         .or_else(|| style::f32_prop(el, "cellSize"))
         .unwrap_or(120.0);
-    let w = style::f32_prop(el, "width").unwrap_or(400.0);
-    let height = style::f32_prop(el, "height").unwrap_or(300.0);
+    let w = dim(e, el, "width").unwrap_or(400.0);
+    let height = dim(e, el, "height").unwrap_or(300.0);
     e.line("{");
     e.indent();
     e.line(&format!(
@@ -1066,7 +1180,15 @@ fn emit_gridview(
     for node in &el.children {
         emit_node(e, node, &child_env, &child_sigs, comps, "__gv");
     }
-    emit_widget_tail(e, "__gv", w, height, anchor_call(style::anchor(el)), sink);
+    emit_widget_tail(
+        e,
+        el,
+        "__gv",
+        w,
+        height,
+        anchor_call(style::anchor(el)),
+        sink,
+    );
     e.dedent();
     e.line("}");
 }
@@ -1078,8 +1200,8 @@ fn emit_textfield(e: &mut Emitter, el: &Element, _env: &Env, sink: &str) {
     let value = style::string_prop(el, "value")
         .or_else(|| style::string_prop(el, "text"))
         .unwrap_or_default();
-    let w = style::f32_prop(el, "width").unwrap_or(240.0);
-    let h = style::f32_prop(el, "height").unwrap_or(size + 20.0);
+    let w = dim(e, el, "width").unwrap_or(240.0);
+    let h = dim(e, el, "height").unwrap_or(size + 20.0);
     e.line("{");
     e.indent();
     e.line(&format!(
@@ -1145,7 +1267,7 @@ fn emit_textfield(e: &mut Emitter, el: &Element, _env: &Env, sink: &str) {
     if let Some(c) = style::enum_member(el, "cursor") {
         e.line(&format!("__tf = __tf.cursor({});", cursor_lit(&c)));
     }
-    emit_widget_tail(e, "__tf", w, h, anchor_call(style::anchor(el)), sink);
+    emit_widget_tail(e, el, "__tf", w, h, anchor_call(style::anchor(el)), sink);
     e.dedent();
     e.line("}");
 }
@@ -1159,8 +1281,8 @@ fn emit_textarea(e: &mut Emitter, el: &Element, _env: &Env, sink: &str) {
     let value = style::string_prop(el, "value")
         .or_else(|| style::string_prop(el, "text"))
         .unwrap_or_default();
-    let w = style::f32_prop(el, "width").unwrap_or(280.0);
-    let h = style::f32_prop(el, "height").unwrap_or(120.0);
+    let w = dim(e, el, "width").unwrap_or(280.0);
+    let h = dim(e, el, "height").unwrap_or(120.0);
     e.line("{");
     e.indent();
     e.line(&format!(
@@ -1214,7 +1336,7 @@ fn emit_textarea(e: &mut Emitter, el: &Element, _env: &Env, sink: &str) {
     if let Some(c) = style::enum_member(el, "cursor") {
         e.line(&format!("__ta = __ta.cursor({});", cursor_lit(&c)));
     }
-    emit_widget_tail(e, "__ta", w, h, anchor_call(style::anchor(el)), sink);
+    emit_widget_tail(e, el, "__ta", w, h, anchor_call(style::anchor(el)), sink);
     e.dedent();
     e.line("}");
 }
@@ -1331,8 +1453,8 @@ fn emit_switch(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sin
     let on = eval_bool_prop(el, "value", env)
         .or_else(|| eval_bool_prop(el, "checked", env))
         .unwrap_or(false);
-    let w = style::f32_prop(el, "width").unwrap_or(48.0);
-    let h = style::f32_prop(el, "height").unwrap_or(28.0);
+    let w = dim(e, el, "width").unwrap_or(48.0);
+    let h = dim(e, el, "height").unwrap_or(28.0);
     e.line("{");
     e.indent();
     e.line(&format!("let mut __sw = Switch::new({on})?;"));
@@ -1386,8 +1508,8 @@ fn emit_slider(e: &mut Emitter, el: &Element, sink: &str) {
     let min = style::f32_prop(el, "min").unwrap_or(0.0);
     let max = style::f32_prop(el, "max").unwrap_or(100.0);
     let val = style::f32_prop(el, "value").unwrap_or(min);
-    let w = style::f32_prop(el, "width").unwrap_or(200.0);
-    let h = style::f32_prop(el, "height").unwrap_or(24.0);
+    let w = dim(e, el, "width").unwrap_or(200.0);
+    let h = dim(e, el, "height").unwrap_or(24.0);
     e.line("{");
     e.indent();
     e.line(&format!(
@@ -1427,15 +1549,15 @@ fn emit_slider(e: &mut Emitter, el: &Element, sink: &str) {
     if let Some(c) = style::enum_member(el, "cursor") {
         e.line(&format!("__sl = __sl.cursor({});", cursor_lit(&c)));
     }
-    emit_widget_tail(e, "__sl", w, h, anchor_call(style::anchor(el)), sink);
+    emit_widget_tail(e, el, "__sl", w, h, anchor_call(style::anchor(el)), sink);
     e.dedent();
     e.line("}");
 }
 
 fn emit_progressbar(e: &mut Emitter, el: &Element, sink: &str) {
     let val = style::f32_prop(el, "value").unwrap_or(0.0);
-    let w = style::f32_prop(el, "width").unwrap_or(200.0);
-    let h = style::f32_prop(el, "height").unwrap_or(8.0);
+    let w = dim(e, el, "width").unwrap_or(200.0);
+    let h = dim(e, el, "height").unwrap_or(8.0);
     e.line("{");
     e.indent();
     e.line(&format!(
@@ -1467,7 +1589,7 @@ fn emit_progressbar(e: &mut Emitter, el: &Element, sink: &str) {
     {
         e.line("__pb = __pb.indeterminate(true);");
     }
-    emit_widget_tail(e, "__pb", w, h, anchor_call(style::anchor(el)), sink);
+    emit_widget_tail(e, el, "__pb", w, h, anchor_call(style::anchor(el)), sink);
     e.dedent();
     e.line("}");
 }
@@ -1487,7 +1609,7 @@ fn emit_spinner(e: &mut Emitter, el: &Element, sink: &str) {
     if let Some(s) = style::f32_prop(el, "speed") {
         e.line(&format!("__sp = __sp.speed({});", fmt_f32(s)));
     }
-    emit_widget_tail(e, "__sp", d, d, anchor_call(style::anchor(el)), sink);
+    emit_widget_tail(e, el, "__sp", d, d, anchor_call(style::anchor(el)), sink);
     e.dedent();
     e.line("}");
 }
@@ -1506,14 +1628,18 @@ fn emit_image(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink
         .map(color_lit)
         .unwrap_or_else(|| "Color::WHITE".to_string());
     let animated = style::bool_prop(el, "animated") == Some(true);
-    let w = style::f32_prop(el, "width").unwrap_or(120.0);
-    let h = style::f32_prop(el, "height").unwrap_or(120.0);
+    let w = dim(e, el, "width").unwrap_or(120.0);
+    let h = dim(e, el, "height").unwrap_or(120.0);
     e.line("{");
     e.indent();
     e.line(&format!(
         "let __img = Image::new({source:?}, {animated}, {fill}, {tint})?;"
     ));
-    emit_widget_tail(e, "__img", w, h, anchor_call(style::anchor(el)), sink);
+    // `cache:` toggles the in-memory cache for http/https sources (default on).
+    if style::bool_prop(el, "cache") == Some(false) {
+        e.line("let __img = __img.cache(false);");
+    }
+    emit_widget_tail(e, el, "__img", w, h, anchor_call(style::anchor(el)), sink);
     e.dedent();
     e.line("}");
 }
@@ -1530,8 +1656,8 @@ fn emit_video(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink
         .or_else(|| style::string_prop(el, "source"))
         .or_else(|| style::string_prop(el, "src"))
         .unwrap_or_default();
-    let w = style::f32_prop(el, "width").unwrap_or(320.0);
-    let h = style::f32_prop(el, "height").unwrap_or(180.0);
+    let w = dim(e, el, "width").unwrap_or(320.0);
+    let h = dim(e, el, "height").unwrap_or(180.0);
     e.line("{");
     e.indent();
     e.line(&format!("let mut __vid = Video::load({source:?})?;"));
@@ -1558,7 +1684,7 @@ fn emit_video(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink
     if style::bool_prop(el, "autoplay") == Some(true) {
         e.line("__vid.play();");
     }
-    emit_widget_tail(e, "__vid", w, h, anchor_call(style::anchor(el)), sink);
+    emit_widget_tail(e, el, "__vid", w, h, anchor_call(style::anchor(el)), sink);
     e.dedent();
     e.line("}");
 }
@@ -1575,8 +1701,8 @@ fn emit_webview(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, si
         .or_else(|| style::string_prop(el, "url"))
         .or_else(|| style::string_prop(el, "src"))
         .unwrap_or_default();
-    let w = style::f32_prop(el, "width").unwrap_or(640.0);
-    let h = style::f32_prop(el, "height").unwrap_or(400.0);
+    let w = dim(e, el, "width").unwrap_or(640.0);
+    let h = dim(e, el, "height").unwrap_or(400.0);
     e.line("{");
     e.indent();
     if url.is_empty() {
@@ -1597,7 +1723,112 @@ fn emit_webview(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, si
             fmt_f32(bw)
         ));
     }
-    emit_widget_tail(e, "__wv", w, h, anchor_call(style::anchor(el)), sink);
+    emit_widget_tail(e, el, "__wv", w, h, anchor_call(style::anchor(el)), sink);
+    e.dedent();
+    e.line("}");
+}
+
+/// `Audio("clip.wav", volume:/gain:, autoplay:)` — non-visual one-shot sound
+/// (mocida's `UISound`). Loads the WAV, plays it on build (unless
+/// `autoplay: false`), and parks it in the `__sounds` keep-alive so the clip
+/// finishes. Emits no widget, so it never enters the layout.
+fn emit_audio(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope) {
+    let source = el
+        .positional
+        .as_ref()
+        .map(|x| render_text_expr(x, env, sigs))
+        .filter(|s| !s.is_empty())
+        .or_else(|| style::string_prop(el, "source"))
+        .or_else(|| style::string_prop(el, "src"))
+        .unwrap_or_default();
+    if source.is_empty() {
+        return;
+    }
+    e.line("{");
+    e.indent();
+    e.line(&format!(
+        "if let Ok(mut __snd) = Sound::load_wav({source:?}) {{"
+    ));
+    e.indent();
+    if let Some(g) = style::f32_prop(el, "volume").or_else(|| style::f32_prop(el, "gain")) {
+        e.line(&format!("__snd.set_gain({});", fmt_f32(g)));
+    }
+    if style::bool_prop(el, "autoplay") != Some(false) {
+        e.line("__snd.play();");
+    }
+    e.line("__sounds.push(__snd);");
+    e.dedent();
+    e.line("}");
+    e.dedent();
+    e.line("}");
+}
+
+/// `Dialog(cardWidth:, cardHeight:, radius:, cardColor:/background:,
+/// backdropColor:, dismissOnBackdrop:, visible:) { children }` — a modal-ish
+/// overlay (mocida's `UIDialog`): a translucent backdrop plus a centered card
+/// holding the children. Mirrors the runtime's `build_dialog`; children are
+/// lowered into a vertical stack used as the card content.
+fn emit_dialog(
+    e: &mut Emitter,
+    el: &Element,
+    env: &Env,
+    sigs: &SignalScope,
+    comps: &Registry,
+    sink: &str,
+) {
+    let card_w = style::f32_prop(el, "cardWidth")
+        .or_else(|| dim(e, el, "width"))
+        .unwrap_or(360.0);
+    let card_h = style::f32_prop(el, "cardHeight")
+        .or_else(|| dim(e, el, "height"))
+        .unwrap_or(200.0);
+    e.line("{");
+    e.indent();
+    e.line(&format!(
+        "let mut __dlg = Dialog::new({}, {})?;",
+        fmt_f32(card_w),
+        fmt_f32(card_h)
+    ));
+    if let Some(c) = style::color_prop(el, "cardColor").or_else(|| style::background(el)) {
+        e.line(&format!("__dlg = __dlg.card_color({});", color_lit(c)));
+    }
+    if let Some(c) = style::color_prop(el, "backdropColor") {
+        e.line(&format!("__dlg = __dlg.backdrop_color({});", color_lit(c)));
+    }
+    if let Some(r) = style::f32_prop(el, "radius") {
+        e.line(&format!("__dlg = __dlg.radius({});", fmt_f32(r)));
+    }
+    if style::bool_prop(el, "dismissOnBackdrop") == Some(true) {
+        e.line("__dlg = __dlg.dismiss_on_backdrop(true);");
+    }
+    if !el.children.is_empty() {
+        e.line("{");
+        e.indent();
+        e.line("let mut __dc = Stack::new(StackOrientation::Vertical)?;");
+        if let Some(gap) = style::f32_prop(el, "gap") {
+            e.line(&format!("__dc = __dc.spacing({});", fmt_f32(gap)));
+        }
+        let mut child_env = env.clone();
+        child_env.absorb_bindings(&el.children);
+        let mut child_sigs = sigs.clone();
+        declare_signals(e, &el.children, &child_env, &mut child_sigs);
+        for node in &el.children {
+            emit_node(e, node, &child_env, &child_sigs, comps, "__dc");
+        }
+        e.line(&format!(
+            "__dlg.add_content(__dc.into_widget_sized({}, {})?)?;",
+            fmt_f32(card_w),
+            fmt_f32(card_h)
+        ));
+        e.dedent();
+        e.line("}");
+    }
+    if style::bool_prop(el, "visible") != Some(false) {
+        e.line("__dlg.show();");
+    }
+    // The dialog paints its own fullscreen backdrop + centered card, so it's
+    // added straight to the sink rather than placed by the layout cursor.
+    e.line(&format!("{sink}.add(__dlg.into_widget()?)?;"));
     e.dedent();
     e.line("}");
 }
@@ -1715,7 +1946,7 @@ fn emit_labeled_control(
         .filter(|s| !s.is_empty());
     let anchor = anchor_call(style::anchor(el));
     match label {
-        None => emit_widget_tail(e, bvar, cw, ch, anchor, sink),
+        None => emit_widget_tail(e, el, bvar, cw, ch, anchor, sink),
         Some(label) => {
             e.line(&format!(
                 "let __ctl = {bvar}.into_widget_sized({}, {})?;",
@@ -1726,7 +1957,7 @@ fn emit_labeled_control(
             e.line("let mut __row = Stack::new(StackOrientation::Horizontal)?.spacing(8.0);");
             e.line("__row.add(__ctl)?;");
             e.line("__row.add(__cap)?;");
-            emit_widget_tail(e, "__row", cw + 8.0 + tw, ch, anchor, sink);
+            emit_widget_tail(e, el, "__row", cw + 8.0 + tw, ch, anchor, sink);
         }
     }
 }
@@ -1820,9 +2051,10 @@ fn emit_placeholder(
         inner
     ));
     e.line(&format!(
-        "{sink}.add(__t.into_widget_sized({}, {})?.position(24.0, __y))?;",
+        "{sink}.add(__t.into_widget_sized({}, {})?.position({}))?;",
         fmt_f32(w),
-        fmt_f32(h)
+        fmt_f32(h),
+        position_args(el)
     ));
     e.line(&format!("__y += {};", fmt_f32(h + 8.0)));
     e.dedent();
@@ -2387,6 +2619,55 @@ mod tests {
         let doc = mui_syntax::parse(src);
         assert!(doc.errors.is_empty(), "parse errors: {:?}", doc.errors);
         generate_program(&doc, "MUI")
+    }
+
+    #[test]
+    fn popup_floats_above_via_zindex_and_hides_when_invisible() {
+        let code = gen("view P() {\n\
+               Text(\"under\")\n\
+               Popup(x: 40, y: 60, width: 200, height: 100) { Text(\"floating\") }\n\
+               Popup(visible: false) { Text(\"hidden\") }\n\
+             }\n");
+        // Positioned overlay, lifted above siblings.
+        assert!(
+            code.contains("position(40"),
+            "popup not positioned:\n{code}"
+        );
+        assert!(code.contains(".z_index(1000)"), "popup not lifted:\n{code}");
+        // The invisible popup emits nothing.
+        assert!(
+            !code.contains("hidden"),
+            "invisible popup rendered:\n{code}"
+        );
+    }
+
+    #[test]
+    fn dimension_exprs_resolve_window_id_and_arithmetic() {
+        // `Window.*`, an `id:` widget's size, and arithmetic on them must lower
+        // to constants — not fall back to the default size.
+        let code = gen("App() {\n  width: 1280\n  height: 720\n}\n\
+             view L() {\n\
+               Stack(orientation: horizontal, width: Window.width, height: Window.height - 40) {\n\
+                 Stack(id: side, orientation: vertical, width: 240, height: 100) {\n\
+                   Rectangle(width: side.width, height: 1)\n\
+                 }\n\
+                 Rectangle(width: Window.width - 520, height: 200)\n\
+               }\n\
+             }\n");
+        assert!(code.contains("1280"), "Window.width unresolved:\n{code}");
+        assert!(
+            code.contains("680"),
+            "Window.height - 40 unresolved:\n{code}"
+        );
+        assert!(
+            code.contains("760"),
+            "Window.width - 520 unresolved:\n{code}"
+        );
+        // `side.width` (the id'd stack's 240) drives the inner rectangle.
+        assert!(
+            code.contains("into_widget_sized(240"),
+            "id.width unresolved:\n{code}"
+        );
     }
 
     #[test]

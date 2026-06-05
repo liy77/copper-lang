@@ -1,0 +1,51 @@
+// Impl methods: optional / generic return types, generic params, and the
+// `self` receiver. A bare `self` borrows (lowers to `&self`), so a value can be
+// inspected by many methods without being consumed.
+//
+//   func Type? name(...)        → fn name(&self) -> Option<Type>
+//   func Option<T> / generic    → generic return types are kept intact
+//   param: Vec<T> / Option<T>   → generic param types are kept intact
+
+struct Rect {
+    w: f64,
+    h: f64,
+}
+
+impl Rect {
+    func Rect new(w: f64, h: f64) {
+        return Rect { w, h }
+    }
+
+    // Borrows self (`&self`), so callers keep ownership and can call again.
+    func f64 area(self) {
+        return self.w * self.h
+    }
+
+    // Optional-return sugar: `f64?` → `Option<f64>`. (`/` is lexed as a regex
+    // in this build, so divide via `recip()`.)
+    func f64? aspect(self) {
+        if self.h == 0.0 {
+            return None
+        }
+        return Some(self.w * self.h.recip())
+    }
+
+    // Generic return type on an impl method.
+    func Option<Rect> scaled(self, k: f64) {
+        if k == 0.0 {
+            return None
+        }
+        return Some(Rect::new(self.w * k, self.h * k))
+    }
+
+    // Generic parameter type (`Vec<f64>`): area scaled by the sum of factors.
+    func f64 weighted(self, ks: Vec<f64>) {
+        return self.area() * ks.iter().sum::<f64>()
+    }
+}
+
+mut b = Rect::new(4.0, 2.0)
+println!("area = {}", b.area())
+println!("aspect = {:?}", b.aspect())
+println!("scaled area = {:?}", b.scaled(3.0).unwrap().area())
+println!("weighted = {}", b.weighted(vec![0.5, 1.0, 2.0]))

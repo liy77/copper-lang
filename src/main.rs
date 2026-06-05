@@ -109,6 +109,45 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
                 .required(false)
                 .index(1))
         )
+        // `cforge build <file>` — a friendly alias for `cforge -c -i <file>`.
+        // Accepts the same flags so `cforge build app.mui --release --clean` works
+        // exactly like `cforge -c -i app.mui --release --clean`.
+        .subcommand(ClapCommand::new("build")
+            .about("Compile a file or directory (alias for `-c -i`). Accepts --release, --clean, --bundle, --output, --target.")
+            .arg(Arg::new("input")
+                .help("File (.crs/.mui/.crm) or directory to compile")
+                .value_name("FILE")
+                .required(true)
+                .index(1))
+            .arg(Arg::new("output").short('o').long("output")
+                .help("Output directory for compiled files"))
+            .arg(Arg::new("release").short('r').long("release")
+                .action(clap::ArgAction::SetTrue).help("Compile in release mode"))
+            .arg(Arg::new("clean").long("clean")
+                .action(clap::ArgAction::SetTrue).help("Clean the output directory before compiling"))
+            .arg(Arg::new("bundle").short('b').long("bundle")
+                .action(clap::ArgAction::SetTrue).help("Embed app.bundle into the executable (.mui only)"))
+            .arg(Arg::new("target").long("target").num_args(1).value_name("TARGET")
+                .help("Cross-compile target (windows, mac, linux or a full rust triple)"))
+            .arg(Arg::new("verbose").short('V').long("verbose")
+                .action(clap::ArgAction::SetTrue).help("Enable verbose output"))
+        )
+        // `cforge format <paths…>` — pretty-print MUI (.mui/.crm) files.
+        .subcommand(ClapCommand::new("format")
+            .about("Pretty-print MUI (.mui/.crm) files: clean indentation, spacing and blank lines (comments preserved).")
+            .arg(Arg::new("input")
+                .help("Files or directories to format (recurses into directories)")
+                .value_name("PATH")
+                .required(false)
+                .num_args(1..)
+                .index(1))
+            .arg(Arg::new("check").long("check")
+                .action(clap::ArgAction::SetTrue)
+                .help("Don't write; exit non-zero if any file would change"))
+            .arg(Arg::new("stdout").long("stdout")
+                .action(clap::ArgAction::SetTrue)
+                .help("Write the formatted result to stdout instead of editing files"))
+        )
 });
 
 /// Build date stamped in by `build.rs` at compile time (UTC, `YYYY-MM-DD`).
@@ -287,6 +326,80 @@ fn parse_commands() -> ParsedCommands {
         }
     }
 
+    // `cforge build <file>` — alias for `-c -i <file>`. Translate the subcommand
+    // into the same parsed commands `-c -i` produces, so the compile path in
+    // main() runs unchanged. Accepts the same flags (--release/--clean/--bundle/
+    // --output/--target/--verbose).
+    if let Some(("build", bm)) = matches.subcommand() {
+        let mut compile = ParsedCommand::new("compile".to_string(), vec![]);
+        compile.set_valid(true);
+        parsed_args.update_or_add_command(compile);
+
+        if let Some(file_path) = bm.get_one::<String>("input") {
+            let path = path::Path::new(file_path);
+            if !path.exists() {
+                eprintln!("Error: '{}' does not exist", file_path);
+                std::process::exit(1);
+            }
+            let is_dir = path.is_dir();
+            let is_file = path.is_file();
+            let mut files = Vec::new();
+            if is_dir {
+                files.push(file_path.to_string());
+                for entry in walkdir::WalkDir::new(path)
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|e| e.path().is_file())
+                {
+                    files.push(entry.path().to_string_lossy().into_owned());
+                }
+            } else if is_file {
+                files.push(file_path.to_string());
+            }
+            let mut cmd = ParsedCommand::new("input".to_string(), files);
+            cmd.set_file(is_file);
+            cmd.set_dir(is_dir);
+            cmd.set_valid(true);
+            parsed_args.update_or_add_command(cmd);
+        }
+
+        for flag in ["release", "clean", "bundle", "verbose"] {
+            if bm.get_flag(flag) {
+                let mut cmd = ParsedCommand::new(flag.to_string(), vec![]);
+                cmd.set_valid(true);
+                parsed_args.update_or_add_command(cmd);
+            }
+        }
+
+        if let Some(output_path) = bm.get_one::<String>("output") {
+            let output_dir = output_path.to_string();
+            if !path::Path::new(&output_dir).exists() {
+                let _ = fs::create_dir_all(&output_dir);
+            }
+            let mut cmd = ParsedCommand::new("output".to_string(), vec![output_dir]);
+            cmd.set_valid(true);
+            parsed_args.update_or_add_command(cmd);
+        }
+    }
+
+    // Cross-compile target can come from the top-level flag (`cforge -c -i x
+    // --target …`) or from the `build` subcommand (`cforge build x --target …`).
+    // Record it as a command so main() resolves it the same way for both.
+    let target_raw =
+        matches
+            .get_one::<String>("target")
+            .cloned()
+            .or_else(|| match matches.subcommand() {
+                Some(("build", bm)) => bm.get_one::<String>("target").cloned(),
+                _ => None,
+            });
+    if let Some(t) = target_raw {
+        let mut cmd = ParsedCommand::new("target".to_string(), vec![t]);
+        cmd.set_valid(true);
+        parsed_args.update_or_add_command(cmd);
+    }
+
     parsed_args
 }
 
@@ -309,6 +422,16 @@ async fn main() {
                 None => cforge::commands::install_all().await,
             }
             return;
+        }
+        // `cforge format` only rewrites source text — no toolchain needed.
+        Some(("format", fmt_matches)) => {
+            let paths: Vec<String> = fmt_matches
+                .get_many::<String>("input")
+                .map(|vals| vals.cloned().collect())
+                .unwrap_or_else(|| vec![".".to_string()]);
+            let check = fmt_matches.get_flag("check");
+            let to_stdout = fmt_matches.get_flag("stdout");
+            std::process::exit(cforge::mui_fmt::format_command(&paths, check, to_stdout));
         }
         _ => {}
     }
@@ -405,10 +528,11 @@ async fn main() {
         .unwrap_or(false);
 
     // Resolve --target early so both the compile and run paths can see it.
-    let target_triple: Option<&'static str> = BASE_CMD
-        .clone()
-        .get_matches()
-        .get_one::<String>("target")
+    // parse_commands records it from either the top-level flag or `build --target`.
+    let target_triple: Option<&'static str> = commands
+        .get_command("target")
+        .filter(|c| c.is_valid)
+        .and_then(|c| c.args.first())
         .map(|t| cforge::resolve_target(t));
 
     if let Some(triple) = target_triple {

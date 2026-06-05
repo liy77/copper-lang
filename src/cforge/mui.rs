@@ -64,6 +64,34 @@ pub fn compile(file: &str, output_dir: Option<&str>, do_build: bool, embed: bool
     for err in &doc.errors {
         eprintln!("⚠️  parse: {}", err.message);
     }
+
+    // Host-backed `.mui`: when `App() { host: "..." }` names a native host crate,
+    // its hand-written reducer/tick-loop is the real implementation. Static
+    // codegen can't reproduce that (it renders `for`/`if` as one pass), so build
+    // the host crate as the deliverable instead. Done before the `views` check so
+    // a host-only file (no standalone `view`) still works.
+    let host = doc.app.as_ref().and_then(|a| a.host.clone());
+    if let Some(host) = host {
+        // Resolve the host crate dir the same way run_native_host does.
+        let dir = Path::new(file)
+            .parent()
+            .map(|p| p.join(&host))
+            .unwrap_or_else(|| PathBuf::from(&host));
+        if !dir.join("Cargo.toml").is_file() {
+            // Declared but missing: warn and fall through to static codegen.
+            eprintln!(
+                "{}",
+                format!(
+                    "⚠️  host crate '{host}' declared but not found at {}; falling back to static codegen",
+                    dir.display()
+                )
+                .yellow()
+            );
+        } else {
+            return compile_host(file, &dir, &host, output_dir, do_build);
+        }
+    }
+
     if doc.views.is_empty() {
         eprintln!("❌ {file}: no `view` to generate");
         return 1;
@@ -193,10 +221,130 @@ pub fn compile(file: &str, output_dir: Option<&str>, do_build: bool, embed: bool
         &format!("Built {}/target/release/", out_root.display()),
     );
     if ok {
+        // Without --bundle, the assets live alongside the crate root but the
+        // binary is two levels deeper (target/release/). Copy every staged
+        // file there so SDL_GetBasePath() finds them at runtime.
+        if !embed {
+            let bin_dir = out_root.join("target").join("release");
+            for rel in &staged {
+                let src = out_root.join(rel);
+                let dst = bin_dir.join(rel);
+                if let Some(p) = dst.parent() {
+                    let _ = std::fs::create_dir_all(p);
+                }
+                let _ = std::fs::copy(&src, &dst);
+            }
+        }
         0
     } else {
         1
     }
+}
+
+/// Build a host-backed `.mui`'s native host crate as the codegen deliverable.
+///
+/// When a `.mui` declares `App() { host: "..." }`, the host crate (which already
+/// embeds its own `.mui` + assets) *is* the working program — its reducer and
+/// tick-loop can't be reproduced by static AST lowering. So `cforge -c` on such a
+/// file builds that crate instead of generating Rust. With `-r`/`--release` it
+/// compiles the host to release and stages a self-contained bundle (exe + the
+/// native DLLs mocida needs) under `<output>/mui/`. Returns the exit code.
+fn compile_host(
+    file: &str,
+    dir: &Path,
+    host: &str,
+    output_dir: Option<&str>,
+    do_build: bool,
+) -> i32 {
+    crate::cforge::pretty::head("Embedded host build");
+    println!(
+        "📦 {} declares host {} — building that crate (it embeds the .mui + assets).",
+        Path::new(file)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(file)
+            .bold(),
+        host.bold()
+    );
+
+    if !do_build {
+        // Plain `-c`: don't compile, just point at the host crate (mirrors how the
+        // static path stops after codegen). `-r`/`--release` builds the binary.
+        println!("   {}", dir.display());
+        println!(
+            "{}",
+            "ℹ️  Add -r/--release to build it into a self-contained binary.".dimmed()
+        );
+        return 0;
+    }
+
+    // `-c -r`: build the host crate in release. apply_mocida_env points mocida-sys
+    // at the C source headers + built lib (same as the static build above).
+    println!();
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build").arg("--release").current_dir(dir);
+    if let Some(ws) = find_mocida_rs() {
+        crate::cforge::apply_mocida_env(&mut cmd, &ws);
+    }
+    let (ok, _) = crate::cforge::cargo_with_spinner(
+        cmd,
+        &format!("building {host} (release)"),
+        &format!("Built {host}"),
+    );
+    if !ok {
+        return 1;
+    }
+
+    // Resolve the produced executable (crate's [[bin]]/package name, else host).
+    let bin_name = crate_bin_name(&dir.join("Cargo.toml")).unwrap_or_else(|| host.to_string());
+    let exe_name = if cfg!(windows) {
+        format!("{bin_name}.exe")
+    } else {
+        bin_name.clone()
+    };
+    let release_dir = dir.join("target").join("release");
+    let exe = release_dir.join(&exe_name);
+
+    // Stage a self-contained bundle under <output>/mui/. The .mui + assets are
+    // baked into the exe, but the native DLLs (mocida.dll/SDL3.dll, staged beside
+    // the exe by mocida-sys) are not — copy them next to the deliverable too.
+    let out_dir = PathBuf::from(output_dir.unwrap_or("./dist")).join("mui");
+    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        eprintln!("❌ cannot create {}: {e}", out_dir.display());
+        return 1;
+    }
+    let dest_exe = out_dir.join(&exe_name);
+    if let Err(e) = std::fs::copy(&exe, &dest_exe) {
+        eprintln!(
+            "❌ cannot copy {} → {}: {e}",
+            exe.display(),
+            dest_exe.display()
+        );
+        return 1;
+    }
+    // Copy every *.dll staged beside the host exe (case-insensitive), like
+    // mocida-sys's stage_runtime_dlls does for the build output.
+    if let Ok(entries) = std::fs::read_dir(&release_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let is_dll = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("dll"))
+                .unwrap_or(false);
+            if is_dll {
+                if let Some(name) = p.file_name() {
+                    let _ = std::fs::copy(&p, out_dir.join(name));
+                }
+            }
+        }
+    }
+
+    crate::cforge::pretty::ok(&format!(
+        "Self-contained host binary: {}",
+        dest_exe.display()
+    ));
+    0
 }
 
 /// Write each Copper (`.crs`) / Rust (`.rs`) import as a `<module>.rs` file next
@@ -507,28 +655,37 @@ fn spawn_host(bin: &str, file: &str) -> i32 {
     }
 }
 
-/// `cargo run --release -- <file>` in the host crate dir, with the mocida build
-/// env applied (so `mocida-sys`'s bindgen + link find the C headers/lib).
+/// Build + run the host crate in `dir`. Build is run through `cargo_with_spinner`
+/// so cargo's verbose output is hidden; only the actual app gets inherited stdio.
 fn cargo_run_host(dir: &Path, file: &str) -> i32 {
-    let mut cmd = Command::new("cargo");
-    cmd.arg("run")
-        .arg("--release")
-        .arg("--")
-        .arg(file)
-        .current_dir(dir)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit());
+    let host_name = crate_bin_name(&dir.join("Cargo.toml")).unwrap_or_else(|| {
+        dir.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("host")
+            .to_string()
+    });
+
+    let mut build_cmd = Command::new("cargo");
+    build_cmd.arg("build").arg("--release").current_dir(dir);
     if let Some(ws) = find_mocida_rs() {
-        crate::cforge::apply_mocida_env(&mut cmd, &ws);
+        crate::cforge::apply_mocida_env(&mut build_cmd, &ws);
     }
-    match cmd.status() {
-        Ok(s) => s.code().unwrap_or(0),
-        Err(e) => {
-            eprintln!("❌ Failed to build/run native host: {e}");
-            1
-        }
+    let (ok, _) = crate::cforge::cargo_with_spinner(
+        build_cmd,
+        &format!("building {host_name}"),
+        &format!("Built {host_name}"),
+    );
+    if !ok {
+        return 1;
     }
+
+    let exe_name = if cfg!(windows) {
+        format!("{host_name}.exe")
+    } else {
+        host_name.clone()
+    };
+    let binary = dir.join("target").join("release").join(&exe_name);
+    spawn_host(&binary.to_string_lossy(), file)
 }
 
 /// Spawn a `mui-dev` executable on `file`, inheriting stdio so its logs and

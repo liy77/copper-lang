@@ -1,0 +1,26 @@
+// dialog.mui — the Dialog overlay + the non-visual Audio component.
+//
+// Dialog draws a translucent backdrop and a centered card holding its
+// children; use `x:` / `y:` on the children to place them inside the card.
+// Audio loads a WAV and plays it on build (it adds no widget to the layout).
+
+view DialogDemo() {
+  // Plays once when the view loads. `autoplay: false` would just preload it.
+  Audio("assets/open.wav", volume: 0.8)
+
+  Text("Behind the dialog backdrop.", size: 16, color: #0f172a)
+
+  Dialog(
+    cardWidth: 320,
+    cardHeight: 180,
+    radius: 14,
+    background: #ffffff,
+    backdropColor: #0f172a99,
+    dismissOnBackdrop: true,
+  ) {
+    Text("Delete this file?", x: 24, y: 24, size: 20, color: #0f172a, weight: bold)
+    Text("This action cannot be undone.", x: 24, y: 60, size: 14, color: #64748b)
+    Button("Cancel", x: 24, y: 120, width: 120, height: 40)
+    Button("Delete", x: 176, y: 120, width: 120, height: 40, background: #ef4444)
+  }
+}

@@ -22,6 +22,8 @@ pub const COMMON_PROPS: &[&str] = &[
     "id",
     "size",
     "position",
+    "x",
+    "y",
     "anchor",
     "width",
     "height",
@@ -87,7 +89,10 @@ pub const WIDGETS: &[Widget] = &[
     Widget {
         name: "Scroll",
         doc: "Scroll viewport.",
-        props: &["direction", "gap", "wheelSpeed", "dragScroll"],
+        props: &[
+            "direction", "gap", "wheelSpeed", "dragScroll", "scrollbar", "scrollbarColor",
+            "scrollbarTrackColor", "scrollbarWidth",
+        ],
         positional: false,
         container: true,
     },
@@ -107,8 +112,8 @@ pub const WIDGETS: &[Widget] = &[
     },
     Widget {
         name: "Image",
-        doc: "Image widget. Positional (or `source`/`src`): the source path.",
-        props: &["source", "src", "fillMode", "tint", "animated"],
+        doc: "Image widget. Positional (or `source`/`src`): a local path or http(s) URL.",
+        props: &["source", "src", "fillMode", "tint", "animated", "cache"],
         positional: true,
         container: false,
     },
@@ -179,6 +184,30 @@ pub const WIDGETS: &[Widget] = &[
         positional: false,
         container: false,
     },
+    Widget {
+        name: "Dialog",
+        doc: "Modal-ish overlay: a translucent backdrop plus a centered card holding the children. Use `x:`/`y:` on children to place them inside the card.",
+        props: &["cardWidth", "cardHeight", "radius", "cardColor", "background", "bg", "backdropColor", "dismissOnBackdrop", "visible", "gap"],
+        positional: false,
+        container: true,
+    },
+    Widget {
+        name: "Audio",
+        doc: "Non-visual one-shot sound (a WAV clip). Plays on load unless `autoplay: false`; contributes no widget to the layout.",
+        props: &["source", "src", "volume", "gain", "autoplay"],
+        positional: true,
+        container: false,
+    },
+    Widget {
+        name: "Popup",
+        doc: "Non-modal floating card: a positioned container (`x:`/`y:`) drawn above its siblings via a high z-index. `visible: false` hides it.",
+        props: &[
+            "width", "height", "background", "bg", "radius", "borderColor", "borderWidth", "shadow",
+            "padding", "gap", "zIndex", "visible",
+        ],
+        positional: false,
+        container: true,
+    },
 ];
 
 /// Enum name → member list. Drives `FontStyle.` completion + member validation.
@@ -225,6 +254,8 @@ pub const PROP_DOCS: &[(&str, &str)] = &[
     ("id", "Lookup id for the widget (maps to `UIWidget_SetId`)."),
     ("size", "Size in logical pixels — for `Text`/`Button` this is the font size in points."),
     ("position", "Position `(x, y)` in the parent, in logical pixels."),
+    ("x", "Explicit X position in logical pixels. Overrides the auto-flow column; the unset axis keeps flowing."),
+    ("y", "Explicit Y position in logical pixels. Overrides the auto-flow row; the unset axis keeps flowing."),
     ("width", "Explicit width in logical pixels."),
     ("height", "Explicit height in logical pixels."),
     ("visible", "Whether the widget is shown (`true` / `false`)."),
@@ -255,6 +286,7 @@ pub const PROP_DOCS: &[(&str, &str)] = &[
     ("anchor", "Anchor against the parent: `center`, `top`, `bottom`, `left`, `right`, or a corner like `topLeft`."),
     ("fillMode", "How the image fills its box."),
     ("tint", "Tint color multiplied over the image."),
+    ("cache", "Cache a remote (http/https) image in memory by URL so it is not refetched across rebuilds. `true` (default) or `false`. Not persisted to disk, so a fresh launch still refetches."),
     ("value", "The current value (bind a `signal` for two-way binding)."),
     ("checked", "Initial on/off state (alias of `value`)."),
     ("onChange", "Handler called when the value changes: `onChange: { |v| ... }`."),
@@ -309,10 +341,14 @@ pub const PROP_DOCS: &[(&str, &str)] = &[
     ("cellHeight", "Cell height of a `GridView` in pixels."),
     ("cellSize", "Cell width AND height of a `GridView` (shorthand)."),
     ("wheelSpeed", "Scroll wheel speed in pixels per notch."),
+    ("scrollbar", "Show (`true`, default) or hide (`false`) the scrollbar."),
+    ("scrollbarColor", "Scrollbar thumb color."),
+    ("scrollbarTrackColor", "Scrollbar track color (transparent = no track)."),
+    ("scrollbarWidth", "Scrollbar thickness in pixels (default 8)."),
     ("dragScroll", "Enable drag-to-pan with the left mouse button."),
     // Image
-    ("source", "Image source path (a `mocida://` URI resolves through the bundle)."),
-    ("src", "Image source path (alias of `source`)."),
+    ("source", "Image source: a local path (a `mocida://` URI resolves through the bundle) or an `http://`/`https://` URL (downloaded and cached)."),
+    ("src", "Image source path or http(s) URL (alias of `source`)."),
     ("animated", "Play animated frames (GIF), or the indeterminate sweep on a progress bar."),
     // Stack alignment + spacing
     ("align", "Cross-axis alignment of a `Stack`'s children: `start` / `center` / `end` (needs the stack wider/taller than its content, e.g. an explicit `width`)."),
@@ -329,6 +365,16 @@ pub const PROP_DOCS: &[(&str, &str)] = &[
     ("marginLeft", "Outer left margin in pixels."),
     ("marginX", "Outer left + right margin in pixels."),
     ("marginY", "Outer top + bottom margin in pixels."),
+    // Dialog
+    ("cardWidth", "Dialog card width in logical pixels (alias: `width`)."),
+    ("cardHeight", "Dialog card height in logical pixels (alias: `height`)."),
+    ("cardColor", "Dialog card background fill (alias: `background`/`bg`)."),
+    ("backdropColor", "Translucent overlay drawn behind the dialog card."),
+    ("dismissOnBackdrop", "When `true`, clicking outside the card closes the dialog."),
+    // Audio
+    ("volume", "Playback gain (`1.0` = original, `0.0` = silent, `>1.0` amplifies)."),
+    ("gain", "Playback gain — alias of `volume`."),
+    ("autoplay", "Play as soon as the element is built (default `true` for `Audio`)."),
 ];
 
 /// Values offered for specific props (helps `orientation:` etc.).

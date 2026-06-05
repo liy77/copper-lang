@@ -1,0 +1,18 @@
+// positioned.mui — every widget accepts the common `x:` / `y:` props.
+//
+// Each given axis pins that coordinate (in logical px from the parent's
+// top-left); a missing axis keeps the auto-flow position. So `x: 220` alone
+// pins the column while the widget still flows down with its siblings.
+
+view Positioned() {
+  // Absolutely placed: both axes given.
+  Rectangle(x: 24, y: 24, width: 120, height: 120, background: #3b82f6, radius: 12)
+  Rectangle(x: 160, y: 60, width: 80, height: 80, background: #ef4444, radius: 40)
+
+  // Only x given — pins the column, keeps flowing vertically.
+  Text("flows down, pinned x", x: 280, size: 16, color: #0f172a)
+  Text("still column 280", x: 280, size: 16, color: #64748b)
+
+  // No x/y — plain stacked layout.
+  Button("auto-placed")
+}

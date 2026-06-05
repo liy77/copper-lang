@@ -2,6 +2,7 @@ pub mod commands;
 pub mod fetch;
 pub mod kson;
 pub mod mui;
+pub mod mui_fmt;
 pub mod pretty;
 pub mod properties;
 pub mod vprint;
@@ -115,13 +116,20 @@ pub(crate) fn apply_mocida_env(cmd: &mut Command, mocida_rs: &path::Path) {
         let stage = mocida_c.join("release").join("stage");
         let staged_inc = stage.join("include");
         let staged_lib = stage.join("lib");
-        let (inc, lib) = if staged_inc.join("uikit").is_dir() && dir_has_mocida_lib(&staged_lib) {
+        let source_inc = mocida_c.join("src").join("headers");
+        // Use the staged SDK ONLY when it's at least as fresh as the C source
+        // headers. A stale staged SDK (older than the wrapper's source) is
+        // missing functions the `mocida` wrapper references, so bindgen binds an
+        // incomplete `sys` and the wrapper fails with "cannot find function in
+        // sys". When the source headers are newer, bind against them + the
+        // source `build/` lib instead.
+        let staged_ok = staged_inc.join("uikit").is_dir()
+            && dir_has_mocida_lib(&staged_lib)
+            && !headers_newer(&source_inc, &staged_inc);
+        let (inc, lib) = if staged_ok {
             (staged_inc, Some(staged_lib))
         } else {
-            (
-                mocida_c.join("src").join("headers"),
-                find_mocida_lib_dir(&mocida_c.join("build")),
-            )
+            (source_inc, find_mocida_lib_dir(&mocida_c.join("build")))
         };
         if inc.is_dir() {
             cmd.env("MOCIDA_INCLUDE_DIR", inc);
@@ -149,6 +157,22 @@ pub(crate) fn apply_mocida_env(cmd: &mut Command, mocida_rs: &path::Path) {
         if let Some(p) = default_libclang_dir() {
             cmd.env("LIBCLANG_PATH", p);
         }
+    }
+}
+
+/// True if the `uikit/` headers under `a` are newer than those under `b`,
+/// compared via a stable representative header (`uikit/app.h`). Used to avoid
+/// binding against a stale staged SDK when the C source headers have moved on.
+fn headers_newer(a: &path::Path, b: &path::Path) -> bool {
+    let mtime = |p: &path::Path| {
+        fs::metadata(p.join("uikit").join("app.h"))
+            .and_then(|m| m.modified())
+            .ok()
+    };
+    match (mtime(a), mtime(b)) {
+        (Some(ta), Some(tb)) => ta > tb,
+        // Can't compare → don't override the staged choice.
+        _ => false,
     }
 }
 

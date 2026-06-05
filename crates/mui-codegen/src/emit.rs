@@ -6,6 +6,9 @@ pub struct Emitter {
     buf: String,
     depth: usize,
     counter: usize,
+    /// Window/screen size + `id:` widget sizes, so dimension props like
+    /// `width: Window.width - 520` / `left_panel.width` resolve to constants.
+    pub dims: mui_syntax::style::DimEnv,
 }
 
 impl Emitter {
@@ -14,6 +17,7 @@ impl Emitter {
             buf: String::new(),
             depth: 0,
             counter: 0,
+            dims: mui_syntax::style::DimEnv::default(),
         }
     }
 

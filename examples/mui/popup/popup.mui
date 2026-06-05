@@ -1,0 +1,26 @@
+// popup.mui — the non-modal Popup: a floating card.
+//
+// A Popup is a positioned container (`x:` / `y:`) drawn ABOVE its siblings via
+// a high z-index (default 1000), so it overlays the rest of the view without a
+// modal backdrop. `visible: false` hides it; pair it with a signal + an `if`
+// for a real show/hide toggle.
+
+view PopupDemo() {
+  mut show = signal(0)
+
+  Stack(orientation: vertical, gap: 10, padding: 20) {
+    Text("Editor content underneath.", size: 16, color: #0f172a)
+    Button("Toggle popup", width: 160, height: 36,
+           background: #1e3a5c, textColor: #8ec8f8, radius: 5,
+           onClick: { show += 1 })
+  }
+
+  // Floating context card — pinned at (180, 90), above the content.
+  Popup(x: 180, y: 90, width: 240, height: 130,
+        background: #ffffff, radius: 12, shadow: true,
+        borderColor: #2a2a2a, borderWidth: 1, padding: 14, gap: 8) {
+    Text("Quick actions", size: 13, color: #0f172a, weight: bold)
+    Button("Duplicate", width: 200, height: 30, background: #f1f5f9, textColor: #0f172a, radius: 4)
+    Button("Delete", width: 200, height: 30, background: #fee2e2, textColor: #b91c1c, radius: 4)
+  }
+}

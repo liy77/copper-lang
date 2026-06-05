@@ -190,9 +190,11 @@ Status of the toolchain. Checked = working today.
 - [x] Loops, `match` (guards/`_`/`|`), `if let` / `while let`
 - [x] Optional chaining `?.`, ternary `?:`, string interpolation `"${expr}"`
 - [x] `unsafe` blocks + functions, raw pointers, generic return types
+- [x] Optional return-type sugar (`func Type? name(...)` → `-> Option<Type>`) +
+      generic return / param types on `impl` methods (`func Option<T> find(self, xs: Vec<T>)`)
 - [x] `cstd` standard library, `.rs` interop
 - [x] CalVer versioning + git commit hash in `--version`
-- [ ] Generics in **parameters** (`func<T> name(arg: T)`, `struct S<T>`)
+- [ ] Generics in **parameters** of free functions (`func<T> name(arg: T)`, `struct S<T>`)
 - [ ] Fix `println(var)` / `println("${x}")` → valid Rust (needs a string-literal first arg)
 - [ ] `?:` ternary **inside** `${…}` interpolation (captured opaque before the rewrite)
 - [ ] `&[T]` slice params in `cstd` (tokenized as a vec literal)
@@ -202,6 +204,8 @@ Status of the toolchain. Checked = working today.
 - [x] `cforge -c [-r] x.mui` codegen + native build (via `mui-codegen`)
 - [x] Component import/reuse, same-file components, `app { }` config + bundles
 - [x] `onKeyInput` keyboard handlers (`event.key`, `=`/`+=`/`-=`/`++`, `println!` debug)
+- [x] Common `x:` / `y:` props on **every** widget (per-axis override of the auto-flow cursor)
+- [x] `Dialog` overlay (backdrop + centered card) and non-visual `Audio` (one-shot WAV) components
 - [ ] Codegen **feature parity** with the runtime (string signals, conditional text/color, reactive `if`/`for`, native Stack styling)
 - [ ] Folder-input autocomplete without losing focus on rebuild
 
