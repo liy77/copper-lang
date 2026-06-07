@@ -163,10 +163,11 @@ use std::rc::Rc;
 
 use mocida::text::by_ptr;
 use mocida::{
-    App, Button, Checkbox, Children, Color, Cursor, Dialog, FillMode, FontStyle, Grid, GridView,
+    App, BackdropMaterial, Button, Checkbox, Children, Color, Cursor, Dialog, FillMode, FontStyle,
+    Glass, GlassThickness, Grid, GridView,
     HorizontalAlign, Image, ListView, ProgressBar, RadioButton, Rectangle, Scroll, Shadow, Signal,
     Slider, Sound, Spinner, Stack, StackOrientation, Subscription, Switch, Text, TextArea, TextField,
-    TextHAlign, TextVAlign, Video, VerticalAlign, WebView, Widget, WrapMode,
+    TextHAlign, TextVAlign, VibrancyState, Video, VerticalAlign, WebView, Widget, WrapMode,
 };
 
 type MuiResult<T> = Result<T, mocida::Error>;
@@ -282,12 +283,39 @@ fn generate_main(
             "let _ = mocida::bundle::load_manifest(__bundle_dir.join(\"app.bundle\").to_string_lossy().as_ref());",
         );
     }
+    // Custom (client-side) title bar: must be requested BEFORE App::new so the
+    // window is created borderless. `app { titlebar: custom }` (aliases:
+    // `decorations: none`, `customTitlebar: true`).
+    let custom_titlebar = app
+        .and_then(|a| a.titlebar.clone())
+        .map(|t| matches!(t.to_ascii_lowercase().as_str(), "custom" | "client" | "none"))
+        .unwrap_or(false);
+    if custom_titlebar {
+        e.line("mocida::app::request_custom_titlebar(true);");
+    }
     e.line(&format!(
         "let mut app = App::new({title:?}, {width}, {height})?;"
     ));
     e.line(&format!(
         "app.set_background_color(Color::rgb({br}, {bg}, {bb}));"
     ));
+    // OS window backdrop (Mica / Acrylic / KDE blur) from `app { backdrop }`.
+    if let Some(spec) = app.and_then(|a| a.backdrop.clone()) {
+        e.line("{");
+        e.indent();
+        e.line(&format!("let __bd = BackdropMaterial::from_effect({spec:?});"));
+        e.line("if __bd != BackdropMaterial::None {");
+        e.indent();
+        e.line("if let Some(mut __w) = mocida::window::Window::active() {");
+        e.indent();
+        e.line("__w.set_backdrop(__bd, Color::rgba(255, 255, 255, 0.0), 0.0);");
+        e.dedent();
+        e.line("}");
+        e.dedent();
+        e.line("}");
+        e.dedent();
+        e.line("}");
+    }
     if let Some(name) = app.and_then(|a| a.name.clone()) {
         e.line(&format!("mocida::bundle::set_name({name:?});"));
         e.line(&format!("let _ = app.set_name({name:?});"));
@@ -443,6 +471,7 @@ fn emit_element(
         "Popup" if style::bool_prop(el, "visible") == Some(false) => {}
         "Popup" => emit_rectangle(e, el, env, sigs, comps, sink, Some(1000)),
         "Stack" => emit_stack(e, el, env, sigs, comps, sink),
+        "Glass" => emit_glass(e, el, env, sigs, comps, sink),
         "Grid" => emit_grid(e, el, env, sigs, comps, sink),
         "Scroll" => emit_scroll(e, el, env, sigs, comps, sink),
         "ListView" => emit_listview(e, el, env, sigs, comps, sink),
@@ -476,6 +505,7 @@ fn is_core_widget(name: &str) -> bool {
             | "Rect"
             | "Box"
             | "Stack"
+            | "Glass"
             | "Grid"
             | "Scroll"
             | "ListView"
@@ -746,6 +776,105 @@ fn emit_stack(
             fmt_f32(sh)
         ));
     }
+    e.dedent();
+    e.line("}");
+}
+
+/// `Glass(effect:, radius:, tint:, tintOpacity:, blur:, …)` → `mocida::Glass`.
+/// Mirrors [`emit_stack`] but constructs a glass container with a backdrop
+/// material and its tint / effect-specific knobs.
+fn emit_glass(
+    e: &mut Emitter,
+    el: &Element,
+    env: &Env,
+    sigs: &SignalScope,
+    comps: &Registry,
+    sink: &str,
+) {
+    let effect = style::enum_member(el, "effect").unwrap_or_else(|| "auto".to_string());
+    let horizontal = matches!(style::enum_member(el, "orientation").as_deref(), Some("horizontal"));
+    let sw = dim(e, el, "width").unwrap_or(400.0);
+    let sh = dim(e, el, "height").unwrap_or(400.0);
+    let var = e.fresh("glass");
+
+    e.line("{");
+    e.indent();
+    e.line(&format!(
+        "let mut {var} = Glass::new(BackdropMaterial::from_effect({effect:?}))?;"
+    ));
+    e.line(&format!("{var} = {var}.horizontal({horizontal});"));
+    if let Some(r) = style::f32_prop(el, "radius") {
+        e.line(&format!("{var} = {var}.radius({});", fmt_f32(r)));
+    }
+    if let Some(c) = style::color_prop(el, "tint").or_else(|| style::background(el)) {
+        e.line(&format!("{var} = {var}.tint({});", color_lit(c)));
+    }
+    if let Some(o) = style::f32_prop(el, "tintOpacity") {
+        e.line(&format!("{var} = {var}.tint_opacity({});", fmt_f32(o)));
+    }
+    if let Some(th) = style::enum_member(el, "thickness").as_deref().and_then(|t| match t {
+        "thin" => Some("GlassThickness::Thin"),
+        "thick" => Some("GlassThickness::Thick"),
+        "regular" | "medium" => Some("GlassThickness::Regular"),
+        _ => None,
+    }) {
+        e.line(&format!("{var} = {var}.thickness({th});"));
+    }
+    if let Some(b) = style::f32_prop(el, "blur") {
+        e.line(&format!("{var} = {var}.blur({});", fmt_f32(b)));
+    }
+    if let Some(r) = style::f32_prop(el, "refraction") {
+        e.line(&format!("{var} = {var}.refraction({});", fmt_f32(r)));
+    }
+    if let Some(n) = style::f32_prop(el, "noise") {
+        e.line(&format!("{var} = {var}.noise({});", fmt_f32(n)));
+    }
+    if let Some(s) = style::enum_member(el, "state").as_deref().and_then(|s| match s {
+        "inactive" => Some("VibrancyState::Inactive"),
+        "pressed" => Some("VibrancyState::Pressed"),
+        "active" => Some("VibrancyState::Active"),
+        _ => None,
+    }) {
+        e.line(&format!("{var} = {var}.vibrancy_state({s});"));
+    }
+    if let Some(gap) = style::f32_prop(el, "gap") {
+        e.line(&format!("{var} = {var}.spacing({});", fmt_f32(gap)));
+    }
+    if let Some(pad) = style::f32_prop(el, "padding") {
+        let p = fmt_f32(pad);
+        e.line(&format!("{var} = {var}.padding({p}, {p}, {p}, {p});"));
+    }
+    if let Some(a) = style::enum_member(el, "align").as_deref().and_then(|a| match a {
+        "center" | "middle" => Some(1),
+        "end" | "right" | "bottom" => Some(2),
+        "start" | "left" | "top" => Some(0),
+        _ => None,
+    }) {
+        e.line(&format!("{var} = {var}.align({a});"));
+    }
+    if let Some(j) = style::enum_member(el, "justify").as_deref().and_then(|j| match j {
+        "center" | "middle" => Some(1),
+        "end" => Some(2),
+        "spacebetween" | "between" | "space-between" => Some(3),
+        "start" => Some(0),
+        _ => None,
+    }) {
+        e.line(&format!("{var} = {var}.justify({j});"));
+    }
+
+    let mut child_env = env.clone();
+    child_env.absorb_bindings(&el.children);
+    let mut child_sigs = sigs.clone();
+    declare_signals(e, &el.children, &child_env, &mut child_sigs);
+    for node in &el.children {
+        emit_node(e, node, &child_env, &child_sigs, comps, &var);
+    }
+
+    e.line(&format!(
+        "{sink}.add({var}.into_widget_sized({}, {})?)?;",
+        fmt_f32(sw),
+        fmt_f32(sh)
+    ));
     e.dedent();
     e.line("}");
 }

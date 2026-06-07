@@ -325,6 +325,27 @@ impl Parser {
             // `entry` is the legacy alias.
             "entry" | "mainContent" => cfg.entry = prop_ident_or_string(&value),
             "host" => cfg.host = prop_ident_or_string(&value),
+            "backdrop" => cfg.backdrop = prop_ident_or_string(&value),
+            // Custom (client-side) title bar. `titlebar: custom`, the
+            // `decorations: none` alias, or `customTitlebar: true`.
+            "titlebar" => cfg.titlebar = prop_ident_or_string(&value),
+            "decorations" => {
+                cfg.titlebar = prop_ident_or_string(&value).map(|d| {
+                    match d.as_str() {
+                        "none" | "custom" | "client" => "custom".to_string(),
+                        _ => "native".to_string(),
+                    }
+                });
+            }
+            "customTitlebar" => {
+                // Boolean-ish: `true`/`1`/`custom` → custom, else native.
+                let v = prop_ident_or_string(&value)
+                    .or_else(|| prop_int(&value).map(|i| i.to_string()));
+                cfg.titlebar = Some(match v.as_deref() {
+                    Some("true") | Some("1") | Some("custom") => "custom".to_string(),
+                    _ => "native".to_string(),
+                });
+            }
             "width" => cfg.width = prop_int(&value),
             "height" => cfg.height = prop_int(&value),
             "minWidth" => cfg.min_width = prop_int(&value),
@@ -332,6 +353,9 @@ impl Parser {
             "maxWidth" => cfg.max_width = prop_int(&value),
             "maxHeight" => cfg.max_height = prop_int(&value),
             "renderer" => cfg.renderer = prop_ident_or_string(&value),
+            "rendererWindows" | "rendererWin" => cfg.renderer_windows = prop_ident_or_string(&value),
+            "rendererMacos" | "rendererMac" => cfg.renderer_macos = prop_ident_or_string(&value),
+            "rendererLinux" => cfg.renderer_linux = prop_ident_or_string(&value),
             "msaa" => cfg.msaa = prop_int(&value),
             "aa" | "antialias" => cfg.aa = prop_ident_or_string(&value),
             "renderQuality" => cfg.render_quality = prop_ident_or_string(&value),

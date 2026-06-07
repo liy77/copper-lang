@@ -124,6 +124,13 @@ pub struct AppConfig {
     /// (`none`/`coverage`/`ssaa2x`/`ssaa4x`/`fxaa`/`taa`); `render_quality` =
     /// preset (`low`/`medium`/`high`/`ultra`); `taa_blend` = TAA history weight.
     pub renderer: Option<String>,
+    /// Optional per-OS renderer overrides. When the key for the running OS is set
+    /// it takes precedence over `renderer` (the cross-platform fallback), letting
+    /// a `.mui` declaratively pick e.g. `direct3d12` on Windows, `metal` on macOS,
+    /// `vulkan` on Linux. Keys: `rendererWindows` / `rendererMacos` / `rendererLinux`.
+    pub renderer_windows: Option<String>,
+    pub renderer_macos: Option<String>,
+    pub renderer_linux: Option<String>,
     pub msaa: Option<i32>,
     pub aa: Option<String>,
     pub render_quality: Option<String>,
@@ -136,6 +143,14 @@ pub struct AppConfig {
     /// instead of the generic `mui-dev` — for a `.mui` that needs a real backend
     /// (foreign `.rs`/`.crs` imports, effects, threads). E.g. `host: "copper-installer"`.
     pub host: Option<String>,
+    /// Optional OS window backdrop (`"auto"`/`"off"`/`"mica"`/`"mica-alt"`/
+    /// `"acrylic"`/`"acrylic-legacy"`/`"kde-window"`). Window-wide glass effect
+    /// drawn by the compositor behind the whole window. `None` = opaque.
+    pub backdrop: Option<String>,
+    /// Window decorations: `"custom"` (client-side / borderless, the app paints
+    /// its own title bar) or `"native"`/`None` (the OS title bar). Accepts the
+    /// `decorations` (`none`/`default`) and `customTitlebar` (`true`) aliases.
+    pub titlebar: Option<String>,
     pub span: Span,
 }
 
