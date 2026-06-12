@@ -93,12 +93,43 @@ fn find<'a>(el: &'a Element, name: &str) -> Option<&'a Prop> {
     el.props.iter().find(|p| p.name == name)
 }
 
-/// A numeric prop (`radius: 8`, `borderWidth: 2`, `size: 28`).
-pub fn f32_prop(el: &Element, name: &str) -> Option<f32> {
-    match &find(el, name)?.value {
-        PropValue::Expr(e) => literal_f32(e),
-        _ => None,
+/// Runtime-evaluable env: a snapshot of the live signal table at evaluation
+/// time. Values are stringly-typed (matching how signals flow through the
+/// mui-runtime); numeric evaluation parses them as f32 and bails to None on
+/// a non-numeric value.
+#[derive(Debug, Clone, Default)]
+pub struct ReactiveEnv {
+    pub signals: HashMap<String, String>,
+}
+
+/// A numeric prop, reactive to signals when `env` is Some. With `env = None`
+/// only literals resolve (preserves the static-only contract of the old API).
+pub fn f32_prop_reactive(
+    el: &Element,
+    name: &str,
+    env: Option<&ReactiveEnv>,
+) -> Option<f32> {
+    let e = match &find(el, name)?.value {
+        PropValue::Expr(e) => e,
+        _ => return None,
+    };
+    // Literals are the common static case; resolve them regardless of env so
+    // a literal prop never depends on a signal table it doesn't read.
+    if let Some(v) = literal_f32(e) {
+        return Some(v);
     }
+    match env {
+        Some(env) => {
+            let (v, _deps) = eval_dim_reactive(e, env);
+            v
+        }
+        None => None,
+    }
+}
+
+/// Back-compat wrapper: static-only numeric prop (literal int/float).
+pub fn f32_prop(el: &Element, name: &str) -> Option<f32> {
+    f32_prop_reactive(el, name, None)
 }
 
 /// The window / screen size and the literal sizes of `id:`-tagged widgets,
@@ -151,6 +182,87 @@ pub fn eval_dim(e: &Expr, env: &DimEnv) -> Option<f32> {
                 _ => None,
             }
         }
+        _ => None,
+    }
+}
+
+/// Reactive variant of [`eval_dim`]. Walks a Copper `Expr` against a snapshot
+/// of the live signal table ([`ReactiveEnv`]) and returns the resolved numeric
+/// value plus the set of signal names the expression actually read from the
+/// env. The mui-runtime uses the dep list to register invalidation listeners
+/// (so a change to `is_macos` re-evaluates the prop). Missing signals cause
+/// the whole evaluation to return `None` — the prop falls back to its static
+/// default until the missing signal is provided. Comparison ops (`==`, `!=`)
+/// return `1.0` / `0.0` so they can drive `Ternary` conditions.
+pub fn eval_dim_reactive(e: &Expr, env: &ReactiveEnv) -> (Option<f32>, Vec<String>) {
+    let mut deps = Vec::new();
+    let v = eval_dim_reactive_inner(e, env, &mut deps);
+    (v, deps)
+}
+
+fn eval_dim_reactive_inner(
+    e: &Expr,
+    env: &ReactiveEnv,
+    deps: &mut Vec<String>,
+) -> Option<f32> {
+    match &e.kind {
+        ExprKind::Literal(Literal::Int(i)) => Some(*i as f32),
+        ExprKind::Literal(Literal::Float(f)) => Some(*f as f32),
+        ExprKind::Ident(name) => {
+            // A bare name that's also a signal in the env is reactive; any
+            // other ident (an unqualified function, a constant, a typo) resolves
+            // to None rather than silently treating it as 0.
+            let v = env.signals.get(name).and_then(|s| s.parse::<f32>().ok());
+            if v.is_some() {
+                deps.push(name.clone());
+            }
+            v
+        }
+        ExprKind::Ternary { cond, then, els } => {
+            // Treat the condition as a truthy number: `0.0` → else, anything
+            // else → then. (The comparison arms below produce `0.0`/`1.0`.)
+            let c = eval_dim_reactive_inner(cond, env, deps)?;
+            let pick = if c == 0.0 { els } else { then };
+            eval_dim_reactive_inner(pick, env, deps)
+        }
+        ExprKind::Binary { op, lhs, rhs } => {
+            // Allow either operand to come from a pure-literal expr so a
+            // signal on one side of `==` and a literal string on the other
+            // (`is_macos == "1"`) both resolve. The literal helper also
+            // extracts numeric content from non-interpolated string literals.
+            let a = eval_dim_reactive_inner(lhs, env, deps)
+                .or_else(|| literal_f32_or_str(lhs))?;
+            let b = eval_dim_reactive_inner(rhs, env, deps)
+                .or_else(|| literal_f32_or_str(rhs))?;
+            match op {
+                BinOp::Add => Some(a + b),
+                BinOp::Sub => Some(a - b),
+                BinOp::Mul => Some(a * b),
+                BinOp::Div if b != 0.0 => Some(a / b),
+                // Equality yields 1.0 / 0.0 so it can be the condition of a
+                // Ternary above. Strict equality only — `NaN != NaN` would
+                // otherwise surprise a config author.
+                BinOp::Eq => Some(if a == b { 1.0 } else { 0.0 }),
+                BinOp::Ne => Some(if a != b { 1.0 } else { 0.0 }),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract an `f32` from a pure-literal `Expr` (Int, Float, or a non-
+/// interpolated `Str` whose body parses as a number). Used to coerce one
+/// operand of a binary op — typically the right-hand side of `==` — when the
+/// other side is a signal (and therefore reactive).
+fn literal_f32_or_str(e: &Expr) -> Option<f32> {
+    match &e.kind {
+        ExprKind::Literal(Literal::Int(i)) => Some(*i as f32),
+        ExprKind::Literal(Literal::Float(f)) => Some(*f as f32),
+        ExprKind::Literal(Literal::Str(s)) => s.parts.iter().find_map(|p| match p {
+            StrPart::Lit(t) => t.parse().ok(),
+            StrPart::Expr(_) => None,
+        }),
         _ => None,
     }
 }
