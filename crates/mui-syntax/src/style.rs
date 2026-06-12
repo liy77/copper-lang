@@ -281,6 +281,20 @@ pub fn dim_prop(el: &Element, name: &str, env: &DimEnv) -> Option<f32> {
     }
 }
 
+/// Reactive variant of [`dim_prop`]. Walks a Copper `Expr` against a
+/// [`ReactiveEnv`] snapshot and returns the resolved numeric value. Window/
+/// screen metric refs (`Window.width`, etc.) are intentionally out of scope
+/// here — use the static [`dim_prop`] with a `DimEnv` for those. The
+/// mui-runtime needs only the reactive signal path; metric refs are a
+/// compile-time codegen concern, not a live-signal concern.
+pub fn dim_prop_reactive(el: &Element, name: &str, env: &ReactiveEnv) -> Option<f32> {
+    let e = match &find(el, name)?.value {
+        PropValue::Expr(e) => e,
+        _ => return None,
+    };
+    eval_dim_reactive(e, env).0
+}
+
 /// The `id:` of an element as a name — a bare ident (`id: left_panel`) or a
 /// string (`id: "left_panel"`). `None` when there's no `id`.
 pub fn id_of(el: &Element) -> Option<String> {
@@ -463,7 +477,14 @@ fn array_f32(el: &Element, name: &str) -> Option<Vec<f32>> {
 ///   - `baseTop/Right/Bottom/Left: N` — per-side
 ///
 /// `base` is `"padding"` or `"margin"`. Returns `None` when nothing is set.
-pub fn box_spacing(el: &Element, base: &str) -> Option<(f32, f32, f32, f32)> {
+/// `env = None` falls back to static-only resolution (literals + array f32),
+/// preserving the old contract for callers that don't have a [`ReactiveEnv`]
+/// in scope.
+pub fn box_spacing_reactive(
+    el: &Element,
+    base: &str,
+    env: Option<&ReactiveEnv>,
+) -> Option<(f32, f32, f32, f32)> {
     let mut set = false;
     let (mut l, mut t, mut r, mut b) = (0.0_f32, 0.0, 0.0, 0.0);
 
@@ -476,33 +497,33 @@ pub fn box_spacing(el: &Element, base: &str) -> Option<(f32, f32, f32, f32)> {
             [tt, rr, bb, ll, ..] => (l, t, r, b) = (*ll, *tt, *rr, *bb),
             [] => set = false,
         }
-    } else if let Some(n) = f32_prop(el, base) {
+    } else if let Some(n) = f32_prop_reactive(el, base, env) {
         set = true;
         (l, t, r, b) = (n, n, n, n);
     }
-    if let Some(x) = f32_prop(el, &format!("{base}X")) {
+    if let Some(x) = f32_prop_reactive(el, &format!("{base}X"), env) {
         set = true;
         l = x;
         r = x;
     }
-    if let Some(y) = f32_prop(el, &format!("{base}Y")) {
+    if let Some(y) = f32_prop_reactive(el, &format!("{base}Y"), env) {
         set = true;
         t = y;
         b = y;
     }
-    if let Some(v) = f32_prop(el, &format!("{base}Top")) {
+    if let Some(v) = f32_prop_reactive(el, &format!("{base}Top"), env) {
         set = true;
         t = v;
     }
-    if let Some(v) = f32_prop(el, &format!("{base}Right")) {
+    if let Some(v) = f32_prop_reactive(el, &format!("{base}Right"), env) {
         set = true;
         r = v;
     }
-    if let Some(v) = f32_prop(el, &format!("{base}Bottom")) {
+    if let Some(v) = f32_prop_reactive(el, &format!("{base}Bottom"), env) {
         set = true;
         b = v;
     }
-    if let Some(v) = f32_prop(el, &format!("{base}Left")) {
+    if let Some(v) = f32_prop_reactive(el, &format!("{base}Left"), env) {
         set = true;
         l = v;
     }
@@ -512,6 +533,11 @@ pub fn box_spacing(el: &Element, base: &str) -> Option<(f32, f32, f32, f32)> {
     } else {
         None
     }
+}
+
+/// Back-compat wrapper: static-only box spacing resolution (no signal env).
+pub fn box_spacing(el: &Element, base: &str) -> Option<(f32, f32, f32, f32)> {
+    box_spacing_reactive(el, base, None)
 }
 
 /// A string-literal prop value. Copper lowers a bare `"text"` either to a
