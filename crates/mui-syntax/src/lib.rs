@@ -635,6 +635,17 @@ impl Parser {
         if let Some(v) = classify_mui_value(&raw) {
             return PropValue::Mui(v);
         }
+        // `${expr}` reactive slot. The author wrote this bare (not inside a
+        // string literal) to force the parser to treat the contents as a
+        // Copper expression — strip the `${` / `}` and re-parse the inner
+        // text. If the inner parses, the prop becomes a real `Expr` (so
+        // `eval_dim_reactive` can walk it); otherwise we fall through to the
+        // generic fallback below.
+        if let Some(inner) = strip_reactive_slot(&raw) {
+            if let Some(e) = copper_syntax::expr::parse_expr(&inner).0 {
+                return PropValue::Expr(e);
+            }
+        }
         // Fall back to a lowered Copper expression.
         match copper_syntax::expr::parse_expr(&raw).0 {
             Some(e) => PropValue::Expr(e),
@@ -1160,6 +1171,20 @@ fn classify_mui_value(raw: &str) -> Option<MuiValue> {
         }
     }
     None
+}
+
+/// If `raw` is a bare `${expr}` reactive slot, return the inner text with
+/// surrounding whitespace stripped. The slot form forces the parser to treat
+/// the contents as a Copper expression (not a string literal), which is what
+/// the reactive prop machinery needs. Used by `parse_arg_value` to re-parse
+/// the inner text as a real `Expr` when the slot appears in a prop position.
+fn strip_reactive_slot(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.len() >= 3 && s.starts_with("${") && s.ends_with('}') {
+        Some(s[2..s.len() - 1].trim().to_string())
+    } else {
+        None
+    }
 }
 
 /// True for a bare identifier (letters, digits, `_`; not starting with a
