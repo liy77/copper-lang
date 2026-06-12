@@ -94,30 +94,3 @@ fn missing_signal_returns_none() {
     let env = ReactiveEnv::default();
     assert_eq!(f32_with_env(src, "paddingLeft", &env), None);
 }
-
-#[test]
-fn debug_expr_shape() {
-    use mui_syntax::ast::PropValue;
-    let src = r#"view V() { Stack(paddingLeft: ${is_macos * 66 + 14}) {} }"#;
-    let doc = mui_syntax::parse(src);
-    eprintln!("errors: {:?}", doc.errors);
-    let body = &doc.views[0].body;
-    if let Some(Node::Element(stack)) = body.first() {
-        if let Some(p) = stack.props.iter().find(|p| p.name == "paddingLeft") {
-            if let PropValue::Expr(e) = &p.value {
-                eprintln!("paddingLeft expr: {:#?}", e);
-            }
-        }
-    }
-    let src2 = r#"view V() { Stack(paddingLeft: ${is_macos == "1" ? 80 : 14}) {} }"#;
-    let doc2 = mui_syntax::parse(src2);
-    eprintln!("\nternary errors: {:?}", doc2.errors);
-    let body2 = &doc2.views[0].body;
-    if let Some(Node::Element(stack)) = body2.first() {
-        if let Some(p) = stack.props.iter().find(|p| p.name == "paddingLeft") {
-            if let PropValue::Expr(e) = &p.value {
-                eprintln!("ternary paddingLeft expr: {:#?}", e);
-            }
-        }
-    }
-}
