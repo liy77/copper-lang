@@ -192,34 +192,65 @@ fn dir_has_mocida_lib(dir: &path::Path) -> bool {
 /// Find a built mocida lib dir under `build/` on any OS: checks `build/` itself,
 /// then `build/<platform>/<profile>` (two levels), preferring the newest lib.
 fn find_mocida_lib_dir(build_root: &path::Path) -> Option<path::PathBuf> {
-    if dir_has_mocida_lib(build_root) {
-        return Some(build_root.to_path_buf());
-    }
-    let mut best: Option<(path::PathBuf, std::time::SystemTime)> = None;
+    // Track (path, mtime, is_dylib) so we can prefer a .dylib build over a
+    // .a (static) build, even if the .a is more recent. The static
+    // `libmocida.a` pulls in unresolved SDL3 / AVFoundation / curl / WebKit /
+    // mimalloc symbols at the host link step (those dylibs aren't
+    // transitively linked when mocida is consumed as a `.a`); the
+    // `libmocida.dylib` self-resolves system frameworks.
+    //
+    // Note: we ALWAYS descend into subdirs (no early-return on a root
+    // .a). The mocida build drops a `libmocida.a` in the build root
+    // (via the standalone `setup.py` / `c:static` target) and a
+    // `libmocida.dylib` under `darwin/debug-shared/` (via
+    // `cmake --build build`). If we returned early on the root .a, the
+    // linker would consume the .a and the host would fail to link
+    // SDL3 / AVFoundation / etc.
+    let mut best: Option<(path::PathBuf, std::time::SystemTime, bool)> = None;
     let mut consider = |dir: path::PathBuf| {
         if dir_has_mocida_lib(&dir) {
             let mtime = fs::metadata(&dir)
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
-            if best.as_ref().map(|(_, t)| mtime > *t).unwrap_or(true) {
-                best = Some((dir, mtime));
+            let is_dylib = dir.join("libmocida.dylib").exists();
+            let is_better = match best.as_ref() {
+                Some((_, prev_t, prev_dylib)) => {
+                    // Always prefer dylib over .a (even if older); within
+                    // the same lib kind, the most recent build wins.
+                    is_dylib && !*prev_dylib
+                        || (is_dylib == *prev_dylib && mtime > *prev_t)
+                }
+                None => true,
+            };
+            if is_better {
+                best = Some((dir, mtime, is_dylib));
             }
         }
     };
-    for plat in fs::read_dir(build_root).into_iter().flatten().flatten() {
-        let pdir = plat.path();
-        if !pdir.is_dir() {
-            continue;
-        }
-        consider(pdir.clone());
-        for prof in fs::read_dir(&pdir).into_iter().flatten().flatten() {
-            let d = prof.path();
-            if d.is_dir() {
-                consider(d);
+    // Scan the root AND every subdir (1-2 levels deep, matching the
+    // standard mocida build layout: <root>/libmocida.{a,dylib},
+    // <root>/<plat>/<prof>/libmocida.{a,dylib}, etc.).
+    if build_root.is_dir() {
+        consider(build_root.to_path_buf());
+    }
+    if let Ok(plats) = fs::read_dir(build_root) {
+        for plat in plats.flatten() {
+            let pdir = plat.path();
+            if !pdir.is_dir() {
+                continue;
+            }
+            consider(pdir.clone());
+            if let Ok(profs) = fs::read_dir(&pdir) {
+                for prof in profs.flatten() {
+                    let d = prof.path();
+                    if d.is_dir() {
+                        consider(d);
+                    }
+                }
             }
         }
     }
-    best.map(|(p, _)| p)
+    best.map(|(p, _, _)| p)
 }
 
 /// A directory likely holding libclang, by OS. Windows/macOS use the well-known
