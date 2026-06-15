@@ -9,6 +9,11 @@ pub struct Emitter {
     /// Window/screen size + `id:` widget sizes, so dimension props like
     /// `width: Window.width - 520` / `left_panel.width` resolve to constants.
     pub dims: mui_syntax::style::DimEnv,
+    /// Live reactive signal snapshot (`is_macos = "1"`, `scene_h = 240`,
+    /// …) so dimension ternaries like `height: ${scene_h}` resolve
+    /// to a concrete f32 at codegen time. Same shape as
+    /// `mui_runtime::build_reactive_env` produces.
+    pub reactive_env: mui_syntax::style::ReactiveEnv,
 }
 
 impl Emitter {
@@ -18,6 +23,7 @@ impl Emitter {
             depth: 0,
             counter: 0,
             dims: mui_syntax::style::DimEnv::default(),
+            reactive_env: mui_syntax::style::ReactiveEnv::default(),
         }
     }
 

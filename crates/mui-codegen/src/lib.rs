@@ -1080,6 +1080,20 @@ fn dim(e: &Emitter, el: &Element, name: &str) -> Option<f32> {
     style::dim_prop(el, name, &e.dims)
 }
 
+/// Same as `dim`, but resolves a `${...}` reactive ternary (e.g.
+/// `height: ${scene_h}`) against the emitter's live `ReactiveEnv`
+/// when the literal resolution fails. Used by widgets whose
+/// dimensions are driven by signals (Scroll's `height:` follows
+/// `scene_h` when the user drags the divider between the scene list
+/// and the file tree, etc.). Returns the resolved f32 if either
+/// the literal or the reactive ternary produces a value.
+fn dim_reactive(e: &Emitter, el: &Element, name: &str) -> Option<f32> {
+    if let Some(v) = style::dim_prop(el, name, &e.dims) {
+        return Some(v);
+    }
+    style::dim_prop_reactive(el, name, &e.reactive_env)
+}
+
 fn position_args(el: &Element) -> String {
     let x = style::f32_prop(el, "x")
         .map(fmt_f32)
@@ -1175,7 +1189,13 @@ fn emit_scroll(
     };
     let gap = style::f32_prop(el, "gap").unwrap_or(8.0);
     let w = dim(e, el, "width").unwrap_or(400.0);
-    let height = dim(e, el, "height").unwrap_or(240.0);
+    // `height` is reactive: a literal f32, a metric ref, or a
+    // `${...}` ternary (e.g. `height: ${scene_h}` on the Files panel
+    // scroll viewport, which follows the divider drag). Without
+    // reactive resolution, the ternary falls back to the dim()
+    // default and the scroll area stops resizing when the user
+    // drags the divider.
+    let height = dim_reactive(e, el, "height").unwrap_or(240.0);
     e.line("{");
     e.indent();
     e.line("let mut __scroll = Scroll::new()?;");
