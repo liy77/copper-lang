@@ -1768,6 +1768,16 @@ fn emit_image(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink
     if style::bool_prop(el, "cache") == Some(false) {
         e.line("let __img = __img.cache(false);");
     }
+    // `antialiasing:` enables bilinear texture filtering on the
+    // rendered sprite (the SDL renderer defaults to NEAREST, which
+    // leaves hard pixel edges on scaled PNGs like the OndaEngine
+    // logo at 22×22). On a 2x Retina display the serrated edges
+    // are very visible; turning this on for a 1-line cost gives the
+    // logo a clean, smooth outline matching the rest of the chrome
+    // (icons / text use SDL's default anti-aliased paths).
+    if style::bool_prop(el, "antialiasing") == Some(true) {
+        e.line("let __img = __img.antialiasing(true);");
+    }
     emit_widget_tail(e, el, "__img", w, h, anchor_call(style::anchor(el)), sink);
     e.dedent();
     e.line("}");
