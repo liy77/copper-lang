@@ -28,6 +28,16 @@ use emit::Emitter;
 
 mod eval;
 
+/// Generate a complete Rust program from a MUI source string.
+/// Returns `Err(msg)` if the source has parse errors.
+pub fn generate_from_str(src: &str) -> Result<String, String> {
+    let doc = mui_syntax::parse(src);
+    if !doc.errors.is_empty() {
+        return Err(format!("parse errors: {:?}", doc.errors));
+    }
+    Ok(generate_program(&doc, "MUI"))
+}
+
 /// Generate a complete Rust program (`main.rs`) from a parsed MUI document.
 /// The entry view (the `app { entry: }` one, else the first) is mounted by
 /// `main()`, configured from the document's optional `app { }` block.
@@ -567,10 +577,36 @@ fn emit_node(
                 }
             }
         }
-        Node::If { then, .. } => {
-            e.line("// if cond { ... } — static lowering renders the `then` branch");
-            for n in then {
-                emit_node(e, n, env, sigs, comps, sink);
+        Node::If { cond_raw, then, els, .. } => {
+            let parsed = copper_syntax::expr::parse_expr(cond_raw).0;
+            let sig_lookup = |n: &str| sigs.kind(n);
+            let env_lookup = |n: &str| env.get(n).map(|s| s.to_string());
+            match parsed.as_ref().map(|c| crate::eval::expr_to_rust(c, &sig_lookup, &env_lookup)) {
+                Some(Ok(rust_cond)) => {
+                    // Subscribe structural signals to dirty (once each).
+                    if let Some(c) = &parsed {
+                        let mut reads = Vec::new();
+                        crate::eval::collect_reads(c, &mut reads);
+                        for r in reads.iter().filter(|r| sigs.var(r).is_some()) {
+                            emit_structural_subscribe(e, sigs, r);
+                        }
+                    }
+                    e.line(&format!("if {rust_cond} {{"));
+                    e.indent();
+                    for n in then { emit_node(e, n, env, sigs, comps, sink); }
+                    e.dedent();
+                    if let Some(els) = els {
+                        e.line("} else {");
+                        e.indent();
+                        for n in els { emit_node(e, n, env, sigs, comps, sink); }
+                        e.dedent();
+                    }
+                    e.line("}");
+                }
+                _ => {
+                    // Unsupported condition: fail loudly in generated code.
+                    e.line(&format!("compile_error!(\"mui: unsupported if condition: {}\");", cond_raw.replace('"', "'")));
+                }
             }
         }
         Node::For { body, .. } => {
@@ -582,6 +618,27 @@ fn emit_node(
         Node::Match { .. } => e.line("// match { ... } (not yet executed)"),
         Node::Expr(_) => {}
     }
+}
+
+/// Emit a one-shot subscription that flips `__dirty` when signal `name` changes.
+fn emit_structural_subscribe(e: &mut Emitter, sigs: &SignalScope, name: &str) {
+    let var = sigs.var(name).unwrap();
+    let kind = sigs.kind(name).unwrap();
+    e.line("{");
+    e.indent();
+    e.line("let __d = __dirty.clone();");
+    match kind {
+        crate::eval::SigKind::List => {
+            // Lists are Rc<RefCell<Vec>>, not Signal — handler mutation already
+            // sets dirty explicitly (see handler emission); nothing to subscribe.
+            e.line("// list structural dep — dirty set by its mutating handler");
+        }
+        _ => e.line(&format!(
+            "if let Ok(__sub) = {var}.borrow_mut().subscribe(move |_| __d.set(true)) {{ __subs.push(__sub); }}"
+        )),
+    }
+    e.dedent();
+    e.line("}");
 }
 
 fn emit_element(
@@ -3232,6 +3289,24 @@ view V() {
             !code.contains("{count}"),
             "no unresolved placeholder:\n{code}"
         );
+    }
+
+    #[test]
+    fn lowers_reactive_if() {
+        let src = r#"
+app { name: "I" width: 200 height: 200 entry: V }
+view V() {
+  mut count = signal(0)
+  if count > 0 { Text("pos") } else { Text("zero") }
+  Button("inc", onClick: { count = count + 1 })
+}
+"#;
+        let code = crate::generate_from_str(src).expect("codegen");
+        assert!(code.contains("if (__sig_count.borrow().get() > 0) {"), "real cond:\n{code}");
+        assert!(code.contains("} else {"), "else branch:\n{code}");
+        // structural subscribe marks dirty:
+        assert!(code.contains("__dirty"), "dirty subscribe:\n{code}");
+        assert!(!code.contains("static lowering renders the `then` branch"), "placeholder gone");
     }
 }
 
