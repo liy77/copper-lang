@@ -114,6 +114,11 @@ pub struct Parser {
     /// instead of leaking onto the next statement (`pub let x = ...`).
     pending_pub: bool,
     pending_async_fn: bool,
+    /// True from the moment a Copper `func` keyword is consumed until its name
+    /// identifier is emitted. Used to detect a user-defined `main` and rename
+    /// it to `__copper_main` (see `parse_any`), so it doesn't collide with the
+    /// auto-generated entry point.
+    expect_function_name: bool,
 }
 
 /// Drop the `;` from a statement-terminating newline when the next
@@ -195,6 +200,7 @@ impl Parser {
             pending_unsafe_fn: false,
             pending_pub: false,
             pending_async_fn: false,
+            expect_function_name: false,
         }
     }
 
@@ -768,6 +774,28 @@ impl Parser {
             return Consumed::consume(1);
         }
 
+        // We're emitting a Copper function's name identifier (armed by
+        // parse_function on `func`). If the user named it `main`, rename the
+        // symbol to `__copper_main` and record its return kind so finalize can
+        // synthesize the real `fn main` entry (and suppress the colliding
+        // auto-wrapper). The return type was already captured by the time we
+        // reach the name (`func int main` → return_type set on `int`).
+        if self.expect_function_name && self.kind() == TokenKind::Identifier {
+            self.expect_function_name = false;
+            if token_value == "main" {
+                let kind = if self.result.return_type.trim().is_empty()
+                    || self.result.return_type.trim() == "()"
+                {
+                    result::ReturnKind::Unit
+                } else {
+                    result::ReturnKind::Int
+                };
+                self.result.set_user_main(kind);
+                self.append("__copper_main", AppendMode::Append);
+                return Consumed::consume(1);
+            }
+        }
+
         // `unsafe func ...` — swallow `unsafe` here and let parse_function
         // emit `unsafe fn` once `func` is dispatched. Without this the
         // `unsafe` would land in main_function_code and fuse with whatever
@@ -1159,6 +1187,9 @@ impl Parser {
     pub fn parse_function(&mut self) -> Consumed {
         if self.value() == "func" {
             self.function_start = true;
+            // The next identifier is this function's name; arm the `main`
+            // rename detector in parse_any.
+            self.expect_function_name = true;
             let is_pub = self.pending_pub;
             self.pending_pub = false;
             if self.pending_unsafe_fn {

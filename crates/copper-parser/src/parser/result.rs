@@ -3,6 +3,19 @@ use std::{
     process::{Command, Stdio},
 };
 
+/// The return-kind of a user-defined `main` function, used by `finalize` to
+/// generate the real `fn main` entry point that calls the renamed
+/// `__copper_main`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnKind {
+    /// User `main` returns an integer type (i64/i32/…): the real entry calls
+    /// `std::process::exit(__copper_main() as i32)`.
+    Int,
+    /// User `main` returns unit / void: the real entry just calls
+    /// `__copper_main();`.
+    Unit,
+}
+
 #[derive(Debug, Clone)]
 pub struct Result {
     pub value: String,
@@ -31,6 +44,11 @@ pub struct Result {
     /// definitions). Generic structs are not recorded (their impl would need
     /// generic bounds — out of MVP scope).
     pub(crate) reflect_structs: Vec<(String, Vec<String>)>,
+    /// Set when the user defines their own `func main()`. The function is
+    /// emitted under the renamed symbol `__copper_main`, and `finalize` uses
+    /// this to synthesize the real `fn main` entry point (and to suppress the
+    /// auto-generated `fn main` wrapper that would otherwise collide).
+    pub(crate) user_main: Option<ReturnKind>,
 }
 
 impl Default for Result {
@@ -56,7 +74,14 @@ impl Result {
             used_std_modules: std::collections::BTreeSet::new(),
             external_crates: Vec::new(),
             reflect_structs: Vec::new(),
+            user_main: None,
         }
+    }
+
+    /// Record that the user defined their own `main` (renamed to
+    /// `__copper_main` on emit), with the given return kind.
+    pub fn set_user_main(&mut self, kind: ReturnKind) {
+        self.user_main = Some(kind);
     }
 
     /// Record a Copper struct (name + ordered field names) for reflect codegen.
@@ -106,14 +131,54 @@ impl Result {
     }
 
     pub fn write_main_function(&mut self) {
-        if self.main_function_code.is_empty() {
-            return;
-        }
+        // The collected top-level body, with the cosmetic double-newline
+        // collapsing the existing wrapper applied. Used both to decide whether
+        // there is *meaningful* top-level code and to emit the auto-wrapper.
+        let body = self.main_function_code.replace("\n\n", "");
+        // "Meaningful" top-level code is anything beyond stray statement
+        // separators / whitespace. After a user `func` the closing-brace
+        // newline can leave a lone `";\n"` in main_function_code; that is NOT
+        // a real top-level statement, so don't let it trigger the auto-wrapper
+        // or the both-top-level-and-main conflict diagnostic.
+        let top_level_nonempty = body
+            .chars()
+            .any(|c| !c.is_whitespace() && c != ';');
 
-        self.force_append(
-            &("\n\nfn main() {\n".to_owned() + &self.main_function_code.replace("\n\n", "") + "}"),
-            false,
-        );
+        match self.user_main {
+            // The user wrote their own `main` (emitted as `__copper_main`).
+            // Generate the single real `fn main` entry that calls it, and do
+            // NOT emit the auto-wrapper (it would create a duplicate `fn main`).
+            Some(kind) => {
+                if top_level_nonempty {
+                    // Both top-level statements AND a user `func main` exist:
+                    // genuinely ambiguous. Emit a clear compile-time error
+                    // rather than silently dropping one or producing surprising
+                    // output.
+                    self.force_append(
+                        "\n\ncompile_error!(\"a program cannot have both top-level statements and a `main` function; use one or the other\");\n",
+                        false,
+                    );
+                }
+                let entry = match kind {
+                    ReturnKind::Int => {
+                        "\n\nfn main() { std::process::exit(__copper_main() as i32); }"
+                    }
+                    ReturnKind::Unit => "\n\nfn main() { __copper_main(); }",
+                };
+                self.force_append(entry, false);
+            }
+            // No user `main`: emit the conventional auto-wrapper around the
+            // top-level statements, exactly as before.
+            None => {
+                if self.main_function_code.is_empty() {
+                    return;
+                }
+                self.force_append(
+                    &("\n\nfn main() {\n".to_owned() + &body + "}"),
+                    false,
+                );
+            }
+        }
     }
 
     pub fn append_to_main_function(&mut self, value: &str, space: bool) {

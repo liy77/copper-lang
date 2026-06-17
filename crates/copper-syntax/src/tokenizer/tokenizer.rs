@@ -892,6 +892,22 @@ impl Tokenizer {
                         kind = TokenKind::Keyword;
                     }
                 }
+            } else if self.seen_func
+                && self
+                    .peek_significant_char()
+                    .map(|c| c == '(')
+                    .unwrap_or(false)
+            {
+                // `func name(...)` with no declared return type: the first
+                // identifier after `func` is immediately followed by `(`, so
+                // it's the function NAME (void return), not a return type.
+                // Without this the void `main` (and any void function) would
+                // be mislabeled as a return type, leaving the function nameless
+                // (`fn (...)`). Emit it as a plain Identifier — the parser's
+                // name handling (incl. the `main` → `__copper_main` rename)
+                // then applies.
+                self.seen_func = false;
+                kind = TokenKind::Identifier;
             } else if self.seen_func {
                 // First identifier-like token after `func` is the declared
                 // return type. Win against RUST_KEYWORDS so things like
@@ -1506,6 +1522,18 @@ impl Tokenizer {
             // Misaligned UTF-8 position (shouldn't normally happen).
             '\0'
         }
+    }
+
+    /// Peek the next non-space/tab character from the current chunk position
+    /// without advancing. Used to disambiguate `func name(...)` (void return)
+    /// from `func Type name(...)`: if a `(` immediately follows the first
+    /// identifier after `func`, that identifier is the function name.
+    fn peek_significant_char(&self) -> Option<char> {
+        self.chunk
+            .char_indices()
+            .filter(|(pos, _)| *pos >= self.chunk_column)
+            .map(|(_, ch)| ch)
+            .find(|ch| *ch != ' ' && *ch != '\t')
     }
 
     fn next_char(&mut self) {
