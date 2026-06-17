@@ -3395,10 +3395,23 @@ impl Parser {
                         // field's type (works for `String` and `&str`). Only
                         // inside a struct literal at the field-value depth — a
                         // bare `mut name = "Brian"` (no struct) stays `&str`.
-                        let coerce = matches!(
+                        let in_field_value = matches!(
                             self.struct_lit_stack.last(),
                             Some(Some(d)) if *d == self.chain_delim_depth
                         );
+                        // Don't coerce when the literal is followed by a method
+                        // call / field access (`"Brian".to_string()`): the `.`
+                        // chain already determines the type, and inserting
+                        // `.into()` first (`"Brian".into().to_string()`) makes
+                        // the `.into()` target ambiguous (E0282).
+                        let next_is_chain = matches!(
+                            self.select(self.current + 1).map(|t| (t.kind, t.value.clone())),
+                            Some((TokenKind::Dot, _))
+                        ) || matches!(
+                            self.select(self.current + 1).map(|t| t.value.clone()),
+                            Some(v) if v == "."
+                        );
+                        let coerce = in_field_value && !next_is_chain;
                         if coerce {
                             self.append(
                                 &format!("{}.into()", self.value()),

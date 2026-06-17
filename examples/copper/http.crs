@@ -1,15 +1,17 @@
 // `http` — HTTP/HTTPS client (TLS via the bundled `ureq` crate).
-import { get, get_status, post_json, ok, download } from http
+// Request functions return a rich `Response` (status / body / ok / json).
+import { get, post_json, download } from http
 
-// HTTPS GET — status + body.
-println!("status = {}", get_status("https://example.com"))
-body = get("https://example.com")
-println!("body   = {} bytes", body.len())
-println!("ok     = {}", ok("https://example.com"))
+// HTTPS GET — the response is a Response object.
+r = get("https://example.com")
+println!("status = {}", r.status)
+println!("body   = {} bytes", r.body.len())
+println!("ok     = {}", r.is_ok())
 
-// POST a JSON payload.
+// POST a JSON payload; read a field straight out of the JSON reply.
 reply = post_json("https://httpbin.org/post", "{\"hello\":\"copper\"}")
-println!("post reply = {} bytes", reply.len())
+println!("post status = {}", reply.status)
+println!("post echo   = {}", reply.json("json.hello"))
 
 // Stream a URL straight to disk.
 saved = download("https://example.com", "example.html")
