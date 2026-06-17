@@ -839,7 +839,13 @@ impl Tokenizer {
 
             if BOOL.contains(&value.as_str()) {
                 kind = TokenKind::Keyword;
-            } else if COPPER_KEYWORDS.contains(&value.as_str()) {
+            } else if COPPER_KEYWORDS.contains(&value.as_str())
+                // `from` is contextual: it is only the import keyword while an
+                // import statement is in progress. Anywhere else (`From` trait,
+                // `X::from`, `.from(`, a variable named `from`) it must fall
+                // through to the normal identifier-resolution path below.
+                && (value != "from" || self.seen_import)
+            {
                 match value.as_str() {
                     "import" => {
                         self.seen_import = true;

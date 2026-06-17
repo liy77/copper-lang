@@ -685,10 +685,15 @@ impl Parser {
                     // struct-literal field (`Vec2 { x: self.x }`), which must
                     // pass through untouched — otherwise `x: self.x` becomes
                     // `let x: self; .x`. It's a struct field when the name
-                    // follows a `,` (a later field) or the value after the type
-                    // continues as an expression (`.`/`(`/`[`/`,`/operator/`::`).
-                    let name_follows_comma =
-                        self.current > 0 && self.tokens[self.current - 1].kind == TokenKind::Comma;
+                    // follows a `,` (a later field), follows the literal's
+                    // opening `{` (the first field, e.g. `V { n: x }`), or the
+                    // value after the type continues as an expression
+                    // (`.`/`(`/`[`/`,`/operator/`::`).
+                    let name_follows_comma = self.current > 0
+                        && matches!(
+                            self.tokens[self.current - 1].kind,
+                            TokenKind::Comma | TokenKind::BraceStart
+                        );
                     let value_continues = match self.select(self.current + 3 + extra as usize) {
                         Some(t) => {
                             matches!(
@@ -2048,22 +2053,37 @@ impl Parser {
 
             let mut consumed = 1; // count the 'impl'
 
-            // Generics for impl (optional)
+            // Generics for impl (optional). The tokenizer emits `<`/`>` as
+            // `Operator` (the comparison rule fires before AngleStart/End), so
+            // accept both forms and track `<` depth for nested generics.
             let mut impl_generics = String::new();
             if let Some(tok) = self.select(self.current + consumed) {
-                if tok.kind == TokenKind::AngleStart {
+                if tok.kind == TokenKind::AngleStart
+                    || (tok.kind == TokenKind::Operator && tok.value == "<")
+                {
                     consumed += 1;
                     impl_generics.push('<');
-
+                    let mut depth = 1usize;
                     while let Some(tok) = self.select(self.current + consumed) {
                         consumed += 1;
-                        if tok.kind == TokenKind::AngleEnd {
+                        let is_open = tok.kind == TokenKind::AngleStart
+                            || (tok.kind == TokenKind::Operator && tok.value == "<");
+                        let is_close = tok.kind == TokenKind::AngleEnd
+                            || (tok.kind == TokenKind::Operator && tok.value == ">");
+                        if is_open {
+                            depth += 1;
+                            impl_generics.push('<');
+                        } else if is_close {
+                            depth -= 1;
                             impl_generics.push('>');
-                            break;
-                        }
-                        impl_generics.push_str(&tok.value);
-                        if tok.value == "," {
-                            impl_generics.push(' ');
+                            if depth == 0 {
+                                break;
+                            }
+                        } else {
+                            impl_generics.push_str(&tok.value);
+                            if tok.value == "," {
+                                impl_generics.push(' ');
+                            }
                         }
                     }
                 }
@@ -2081,23 +2101,46 @@ impl Parser {
                 return Consumed::consume(0);
             };
 
-            // Type generics (optional)
+            // Type generics (optional). As with impl generics, `<`/`>` may
+            // arrive as `Operator` tokens; accept both and track depth so
+            // nested generics close correctly. Copper aliases inside the args
+            // (`<int>` -> `<i64>`) are lowered via `convert_type`.
             let mut type_generics = String::new();
             if let Some(tok) = self.select(self.current + consumed) {
-                if tok.kind == TokenKind::AngleStart {
+                if tok.kind == TokenKind::AngleStart
+                    || (tok.kind == TokenKind::Operator && tok.value == "<")
+                {
                     consumed += 1;
                     type_generics.push('<');
-
+                    let mut depth = 1usize;
                     while let Some(tok) = self.select(self.current + consumed) {
                         consumed += 1;
-                        if tok.kind == TokenKind::AngleEnd {
+                        let is_open = tok.kind == TokenKind::AngleStart
+                            || (tok.kind == TokenKind::Operator && tok.value == "<");
+                        let is_close = tok.kind == TokenKind::AngleEnd
+                            || (tok.kind == TokenKind::Operator && tok.value == ">");
+                        if is_open {
+                            depth += 1;
+                            type_generics.push('<');
+                        } else if is_close {
+                            depth -= 1;
                             type_generics.push('>');
-                            break;
+                            if depth == 0 {
+                                break;
+                            }
+                        } else {
+                            type_generics.push_str(&tok.value);
+                            if tok.value == "," {
+                                type_generics.push(' ');
+                            }
                         }
-                        type_generics.push_str(&tok.value);
-                        if tok.value == "," {
-                            type_generics.push(' ');
-                        }
+                    }
+                    // Lower Copper type aliases inside the generic args without
+                    // altering the (trait/type) head: wrap in a dummy head,
+                    // convert, then strip it back off.
+                    let lowered = convert_type(&format!("__CopperGeneric{}", type_generics));
+                    if let Some(stripped) = lowered.strip_prefix("__CopperGeneric") {
+                        type_generics = stripped.to_string();
                     }
                 }
             }
@@ -2115,10 +2158,66 @@ impl Parser {
                             consumed += 1;
                             let actual_target = tok.value.clone();
                             self.current_impl_target = Some(actual_target.clone());
+
+                            // Optional generics on the target type itself
+                            // (`impl Trait<X> for Foo<Y>`). The generics parsed
+                            // above (`type_generics`) belong to the *trait*
+                            // (the name before `for`); read a fresh set for the
+                            // concrete target after it.
+                            let mut target_generics = String::new();
+                            if let Some(tok) = self.select(self.current + consumed) {
+                                if tok.kind == TokenKind::AngleStart
+                                    || (tok.kind == TokenKind::Operator && tok.value == "<")
+                                {
+                                    consumed += 1;
+                                    target_generics.push('<');
+                                    let mut depth = 1usize;
+                                    while let Some(tok) = self.select(self.current + consumed) {
+                                        consumed += 1;
+                                        let is_open = tok.kind == TokenKind::AngleStart
+                                            || (tok.kind == TokenKind::Operator
+                                                && tok.value == "<");
+                                        let is_close = tok.kind == TokenKind::AngleEnd
+                                            || (tok.kind == TokenKind::Operator
+                                                && tok.value == ">");
+                                        if is_open {
+                                            depth += 1;
+                                            target_generics.push('<');
+                                        } else if is_close {
+                                            depth -= 1;
+                                            target_generics.push('>');
+                                            if depth == 0 {
+                                                break;
+                                            }
+                                        } else {
+                                            target_generics.push_str(&tok.value);
+                                            if tok.value == "," {
+                                                target_generics.push(' ');
+                                            }
+                                        }
+                                    }
+                                    let lowered = convert_type(&format!(
+                                        "__CopperGeneric{}",
+                                        target_generics
+                                    ));
+                                    if let Some(stripped) =
+                                        lowered.strip_prefix("__CopperGeneric")
+                                    {
+                                        target_generics = stripped.to_string();
+                                    }
+                                }
+                            }
+
+                            // `type_generics` (parsed before `for`) belongs to
+                            // the trait; `target_generics` to the concrete type.
                             self.append(
                                 &format!(
-                                    "impl{} {} for {}{} {{",
-                                    impl_generics, trait_name, actual_target, type_generics
+                                    "impl{} {}{} for {}{} {{",
+                                    impl_generics,
+                                    trait_name,
+                                    type_generics,
+                                    actual_target,
+                                    target_generics
                                 ),
                                 AppendMode::ForceAppendWithSpace,
                             );
