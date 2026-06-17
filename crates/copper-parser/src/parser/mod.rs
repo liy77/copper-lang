@@ -34,6 +34,8 @@ const FS_SOURCE: &str = include_str!("../../../../std/fs.crs");
 const FS_NATIVE: &str = include_str!("../../../../std/fs_native.rs");
 const WS_SOURCE: &str = include_str!("../../../../std/ws.crs");
 const WS_NATIVE: &str = include_str!("../../../../std/ws_native.rs");
+const REFLECT_SOURCE: &str = include_str!("../../../../std/reflect.crs");
+const REFLECT_NATIVE: &str = include_str!("../../../../std/reflect_native.rs");
 pub mod result;
 pub mod scope;
 pub mod scope_manager;
@@ -1780,6 +1782,12 @@ impl Parser {
             let mut current_field = String::new();
             let mut in_field_name = true;
 
+            // For reflect codegen: ordered field names of this struct. A struct
+            // with generic params is skipped (its `impl reflect::Reflect` would
+            // need generic bounds — out of MVP scope).
+            let mut reflect_fields: Vec<String> = Vec::new();
+            let has_generics = !generics.is_empty();
+
             while brace_count > 0 && consumed < self.tokens.len() - self.current {
                 if let Some(tok) = self.select(self.current + consumed) {
                     consumed += 1;
@@ -1789,6 +1797,11 @@ impl Parser {
                             brace_count -= 1;
                             if brace_count == 0 {
                                 if !current_field.trim().is_empty() {
+                                    if let Some(name) =
+                                        Self::reflect_field_name(&current_field)
+                                    {
+                                        reflect_fields.push(name);
+                                    }
                                     self.append(
                                         &format!("    {},", current_field.trim()),
                                         AppendMode::ForceAppendWithSpace,
@@ -1864,6 +1877,9 @@ impl Parser {
                         }
                         TokenKind::Comma => {
                             if !current_field.trim().is_empty() {
+                                if let Some(name) = Self::reflect_field_name(&current_field) {
+                                    reflect_fields.push(name);
+                                }
                                 self.append(
                                     &format!("    {},", current_field.trim()),
                                     AppendMode::ForceAppendWithSpace,
@@ -1881,6 +1897,9 @@ impl Parser {
                             // complete (name + type seen); a blank line or the
                             // newline right after `{` leaves nothing to emit.
                             if !in_field_name && !current_field.trim().is_empty() {
+                                if let Some(name) = Self::reflect_field_name(&current_field) {
+                                    reflect_fields.push(name);
+                                }
                                 self.append(
                                     &format!("    {},", current_field.trim()),
                                     AppendMode::ForceAppendWithSpace,
@@ -1903,10 +1922,32 @@ impl Parser {
             self.is_inside_struct = false;
             self.current_struct = None;
 
+            // Record this struct for reflect codegen (emitted at EOF iff the
+            // `reflect` module is imported). Skip generic structs.
+            if !has_generics {
+                self.result.record_reflect_struct(&struct_name, reflect_fields);
+            }
+
             return Consumed::consume(consumed.try_into().unwrap());
         }
 
         Consumed::consume(0)
+    }
+
+    /// Extract the bare field name from an accumulated `current_field`
+    /// (`"name: Type"`), trimmed. Returns `None` if it has no name part.
+    fn reflect_field_name(current_field: &str) -> Option<String> {
+        let name = current_field
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
     }
 
     pub fn parse_impl_block(&mut self) -> Consumed {
@@ -2715,7 +2756,7 @@ impl Parser {
     /// True for native std modules selectable via `import { ... } from <name>`
     /// (besides cstd, which keeps its own dedicated path).
     fn is_native_std_module(name: &str) -> bool {
-        matches!(name, "net" | "http" | "url" | "json" | "crypto" | "time" | "fs" | "ws")
+        matches!(name, "net" | "http" | "url" | "json" | "crypto" | "time" | "fs" | "ws" | "reflect")
     }
 
     /// (crs surface, native helpers) for a native std module name.
@@ -2729,6 +2770,7 @@ impl Parser {
             "time" => Some((TIME_SOURCE, TIME_NATIVE)),
             "fs" => Some((FS_SOURCE, FS_NATIVE)),
             "ws" => Some((WS_SOURCE, WS_NATIVE)),
+            "reflect" => Some((REFLECT_SOURCE, REFLECT_NATIVE)),
             _ => None,
         }
     }
@@ -2772,6 +2814,9 @@ impl Parser {
                 self.result.prepend_cstd_module(&module);
             }
         }
+        // When `reflect` is imported, auto-derive `impl reflect::Reflect` for
+        // every recorded (non-generic) struct, appended after the struct defs.
+        self.result.append_reflect_impls();
     }
 
     pub fn parse(&mut self) -> String {
