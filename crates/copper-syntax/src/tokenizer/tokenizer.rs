@@ -977,7 +977,15 @@ impl Tokenizer {
             let ends_with_continuation = match self.last_token() {
                 Some(t) if t.kind == TokenKind::Dot => true,
                 Some(t) if t.kind == TokenKind::Operator => {
-                    !matches!(t.value.as_str(), "?" | "++" | "--")
+                    // Postfix `++` / `--` end a statement (keep the `;`). The
+                    // tokenizer emits them as two single-char `+`/`-` operator
+                    // tokens, so the last token alone looks like a binary `+`
+                    // (a continuation). Detect the pair so `count++\n if ...`
+                    // gets its terminator instead of fusing into the next line.
+                    let is_postfix_pair = (t.value == "+" || t.value == "-")
+                        && self.second_last_nonws_value().as_deref()
+                            == Some(t.value.as_str());
+                    !is_postfix_pair && !matches!(t.value.as_str(), "?" | "++" | "--")
                 }
                 _ => false,
             };
@@ -1155,6 +1163,18 @@ impl Tokenizer {
         self.tokens
             .iter()
             .rfind(|t| t.kind != TokenKind::Whitespace)
+    }
+
+    /// Value of the second-to-last non-whitespace token, if any. Used to
+    /// detect postfix `++` / `--`, which the tokenizer emits as two
+    /// single-char `+` / `-` operators rather than one token.
+    fn second_last_nonws_value(&self) -> Option<String> {
+        self.tokens
+            .iter()
+            .rev()
+            .filter(|t| t.kind != TokenKind::Whitespace)
+            .nth(1)
+            .map(|t| t.value.clone())
     }
 
     pub fn token(&mut self, kind: TokenKind, value: String) -> &mut Token {
