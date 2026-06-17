@@ -1,0 +1,16 @@
+// `http` — HTTP/HTTPS client (TLS via the bundled `ureq` crate).
+import { get, get_status, post_json, ok, download } from http
+
+// HTTPS GET — status + body.
+println!("status = {}", get_status("https://example.com"))
+body = get("https://example.com")
+println!("body   = {} bytes", body.len())
+println!("ok     = {}", ok("https://example.com"))
+
+// POST a JSON payload.
+reply = post_json("https://httpbin.org/post", "{\"hello\":\"copper\"}")
+println!("post reply = {} bytes", reply.len())
+
+// Stream a URL straight to disk.
+saved = download("https://example.com", "example.html")
+println!("downloaded = {}", saved)

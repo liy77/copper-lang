@@ -16,6 +16,10 @@ pub struct Result {
     pub(crate) uses_xml: bool,
     pub(crate) uses_toml: bool,
     pub(crate) cstd_used: bool,
+    /// Native std modules (other than cstd) pulled in via
+    /// `import { … } from <module>` — currently `net` / `http`. Each is
+    /// bundled as `pub mod <name> { ... }` and may inject crate deps.
+    pub(crate) used_std_modules: std::collections::BTreeSet<String>,
     /// External crates pulled in by `import { … } from <crate>` (anything that
     /// isn't `std`/`cstd`/a local module). cforge resolves their versions and
     /// adds them to the generated Cargo.toml — after filtering out names that
@@ -43,6 +47,7 @@ impl Result {
             uses_xml: false,
             uses_toml: false,
             cstd_used: false,
+            used_std_modules: std::collections::BTreeSet::new(),
             external_crates: Vec::new(),
         }
     }
@@ -152,6 +157,17 @@ impl Result {
         self.cstd_used = true;
     }
 
+    /// Mark a native std module (e.g. "net", "http") as imported, so the
+    /// compiler bundles its `pub mod` and injects any crate deps.
+    pub fn mark_std_module(&mut self, name: &str) {
+        self.used_std_modules.insert(name.to_string());
+    }
+
+    /// The native std modules imported, sorted (deterministic emit order).
+    pub fn used_std_modules(&self) -> Vec<String> {
+        self.used_std_modules.iter().cloned().collect()
+    }
+
     pub fn cstd_is_used(&self) -> bool {
         self.cstd_used
     }
@@ -211,6 +227,12 @@ impl Result {
         }
 
         // XML needs no external dependency for now (uses String).
+
+        // Native std modules with crate-backed implementations.
+        if self.used_std_modules.contains("http") {
+            deps.push("ureq".to_string());
+        }
+        // (the `net` module is std-only — no dependency.)
 
         // External crates from `import { … } from <crate>`.
         for c in &self.external_crates {

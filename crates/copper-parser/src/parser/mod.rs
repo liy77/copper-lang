@@ -14,6 +14,14 @@ const CSTD_SOURCE: &str = include_str!("../../../../std/cstd.crs");
 /// Native-Rust helpers for things Copper cannot yet express cleanly
 /// (multi-line method chains, `&[T]`, `cfg!(target_os=...)`).
 const CSTD_NATIVE: &str = include_str!("../../../../std/cstd_native.rs");
+
+// Additional native std modules, bundled on demand when imported
+// (`import { ... } from net` / `from http`). Each has a Copper-written
+// `.crs` surface plus a native `.rs` of helpers.
+const NET_SOURCE: &str = include_str!("../../../../std/net.crs");
+const NET_NATIVE: &str = include_str!("../../../../std/net_native.rs");
+const HTTP_SOURCE: &str = include_str!("../../../../std/http.crs");
+const HTTP_NATIVE: &str = include_str!("../../../../std/http_native.rs");
 pub mod result;
 pub mod scope;
 pub mod scope_manager;
@@ -1270,6 +1278,8 @@ impl Parser {
                     for var in &self.current_import_vars {
                         self.result.mark_cstd_used(var);
                     }
+                } else if Self::is_native_std_module(&module) {
+                    self.result.mark_std_module(&module);
                 } else if !matches!(
                     module.as_str(),
                     "std" | "core" | "alloc" | "crate" | "self" | "super"
@@ -2687,17 +2697,35 @@ impl Parser {
     /// upgrade every top-level `fn` to `pub fn`, and wrap the lot in
     /// `pub mod cstd { ... }` so user code can `use cstd::{input};`.
     fn transpile_cstd_module() -> String {
-        let mut tk = Tokenizer::new(CSTD_SOURCE.to_string());
+        Self::transpile_std_module("cstd", CSTD_SOURCE, CSTD_NATIVE)
+    }
+
+    /// True for native std modules selectable via `import { ... } from <name>`
+    /// (besides cstd, which keeps its own dedicated path).
+    fn is_native_std_module(name: &str) -> bool {
+        matches!(name, "net" | "http")
+    }
+
+    /// (crs surface, native helpers) for a native std module name.
+    fn std_module_sources(name: &str) -> Option<(&'static str, &'static str)> {
+        match name {
+            "net" => Some((NET_SOURCE, NET_NATIVE)),
+            "http" => Some((HTTP_SOURCE, HTTP_NATIVE)),
+            _ => None,
+        }
+    }
+
+    /// Transpile a Copper-written std module, promote its top-level `fn`s to
+    /// `pub fn`, and wrap it with the native helper block in
+    /// `pub mod <mod_name> { ... }`.
+    fn transpile_std_module(mod_name: &str, crs_source: &str, native: &str) -> String {
+        let mut tk = Tokenizer::new(crs_source.to_string());
         let tokens = tk.tokenize();
         let mut sub = Parser::new(tokens);
         let raw = sub.parse();
 
-        // The sub-parser unconditionally emits `fn main() {}` at the
-        // bottom — strip it; the cstd module never runs its own main.
         let body = raw.replace("fn main() {}", "").trim_end().to_string();
 
-        // Promote every line whose first non-whitespace tokens are `fn `
-        // to `pub fn `, so user code can `use cstd::{name};` after the wrap.
         let promoted = body
             .lines()
             .map(|line| {
@@ -2713,9 +2741,19 @@ impl Parser {
             .join("\n");
 
         format!(
-            "#[allow(dead_code)]\npub mod cstd {{\n{}\n\n{}\n}}\n",
-            promoted, CSTD_NATIVE
+            "#[allow(dead_code)]\npub mod {} {{\n{}\n\n{}\n}}\n",
+            mod_name, promoted, native
         )
+    }
+
+    /// Transpile + prepend every native std module the program imported.
+    fn prepend_used_std_modules(&mut self) {
+        for name in self.result.used_std_modules() {
+            if let Some((crs, native)) = Self::std_module_sources(&name) {
+                let module = Self::transpile_std_module(&name, crs, native);
+                self.result.prepend_cstd_module(&module);
+            }
+        }
     }
 
     pub fn parse(&mut self) -> String {
@@ -2729,6 +2767,7 @@ impl Parser {
                     let module = Self::transpile_cstd_module();
                     self.result.prepend_cstd_module(&module);
                 }
+                self.prepend_used_std_modules();
                 self.result.write_main_function();
                 break self.result.get().expect("Format Error");
             }
@@ -2953,6 +2992,7 @@ impl Parser {
                     let module = Self::transpile_cstd_module();
                     self.result.prepend_cstd_module(&module);
                 }
+                self.prepend_used_std_modules();
                 self.result.write_main_function();
                 break self.result.get().expect("Format Error");
             }

@@ -1,0 +1,20 @@
+// Copper `net` standard library — TCP / UDP networking over the Rust
+// standard library (no external dependencies).
+//
+// Loaded when a program does `import { ... } from net`. The compiler wraps
+// this file + `std/net_native.rs` into a single `pub mod net { ... }`.
+//
+// The substantive logic lives in `std/net_native.rs` because it needs
+// `&[u8]` slices, multi-line builder chains and timeouts that Copper's
+// surface syntax doesn't express directly. This file documents the public
+// surface; the native side implements it:
+//
+//   net::resolve(host)               -> first resolved "ip:port" or ""
+//   net::is_port_open(host, port)    -> bool (TCP connect, 2s timeout)
+//   net::tcp_request(addr, payload)  -> response bytes as a String
+//   net::tcp_send(addr, payload)     -> bool (fire-and-forget)
+//   net::udp_send(addr, payload)     -> bool
+//   net::udp_request(addr, payload)  -> response String (one datagram)
+//   net::local_ip()                  -> best-guess outbound local IP
+//
+// `addr` is "host:port" (e.g. "example.com:80", "127.0.0.1:6379").

@@ -1,0 +1,23 @@
+// Copper `http` standard library — HTTP / HTTPS client.
+//
+// Loaded when a program does `import { ... } from http`. The compiler wraps
+// this file + `std/http_native.rs` into `pub mod http { ... }` and adds the
+// `ureq` crate (a small, blocking, pure-Rust client with rustls TLS) to the
+// generated Cargo.toml — so `https://` works out of the box, no system curl.
+//
+// Public surface (implemented natively in std/http_native.rs):
+//
+//   http::get(url)                       -> response body (String, "" on error)
+//   http::get_status(url)                -> HTTP status code (i32, 0 on error)
+//   http::post(url, content_type, body)  -> response body
+//   http::post_json(url, json_body)      -> response body (application/json)
+//   http::put(url, content_type, body)   -> response body
+//   http::delete(url)                    -> response body
+//   http::download(url, path)            -> bool (stream body to a file)
+//   http::get_header(url, name)          -> a single response header value
+//   http::request(method, url,
+//                 content_type, body)    -> "status\n<body>" (status on line 1)
+//   http::ok(url)                        -> bool (2xx status)
+//
+// `url` may be http:// or https://. All calls are blocking with a 30s
+// timeout and follow redirects (ureq's default).
