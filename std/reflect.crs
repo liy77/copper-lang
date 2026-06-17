@@ -1,0 +1,30 @@
+// Copper `reflect` standard library — runtime reflection over Copper structs.
+//
+// `import { Reflected, Value } from reflect`. Pure Rust std, no dependencies.
+// Bundled as `pub mod reflect { ... }` with std/reflect_native.rs.
+//
+// Importing `reflect` makes every Copper `struct` in the program reflectable:
+// cforge auto-generates `impl reflect::Reflect for <Struct>` for each struct,
+// so you can inspect its type name and fields at runtime.
+//
+//   obj.reflect()        -> Reflected   (method, auto-generated per struct)
+//   reflect::of(&obj)    -> Reflected
+//
+//   Reflected.keys()     -> [string]            field names, in declared order
+//   Reflected.values()   -> [Value]             field values, in declared order
+//   Reflected.fields()   -> [(string, Value)]   (name, value) pairs
+//   Reflected.get(name)  -> Value?              value for a field, or null
+//   Reflected.has(name)  -> bool                true if the field exists
+//   Reflected.type_name()-> string             the struct's name
+//   Reflected.len()      -> int                 number of fields
+//
+// `Value` is an enum over the reflectable field kinds:
+//   Value::Int(int) | Value::Float(float) | Value::Bool(bool)
+//   Value::Str(string) | Value::List([Value]) | Value::Null
+//
+//   Value.show()         -> string             human-readable rendering
+//
+// MVP limitation: scalar (int/float/bool/string) and string-list fields are
+// supported. Nested-struct fields are a follow-up (no `Value::from` impl yet),
+// and generic structs (`struct Box<T>`) are skipped — no reflect impl is
+// generated for them.
