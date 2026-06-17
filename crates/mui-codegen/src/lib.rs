@@ -160,6 +160,7 @@ fn header() -> String {
 // Edit the .mui/.crm source, not this file; re-run `cforge build` to regenerate.
 #![allow(unused_imports, unused_variables, unused_mut, dead_code, clippy::all)]
 
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -174,16 +175,53 @@ use mocida::{
 
 type MuiResult<T> = Result<T, mocida::Error>;
 
+/// A snapshot of every live signal's value, keyed by source name. Carried
+/// across a whole-view rebuild so the new tree re-seeds from the old state
+/// (Task 4: seed/dirty/on_tick rebuild engine).
+#[derive(Clone, Default)]
+struct Seed {
+    ints: std::collections::HashMap<String, i32>,
+    strs: std::collections::HashMap<String, String>,
+    lists: std::collections::HashMap<String, Vec<String>>,
+}
+impl Seed {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn int(&self, k: &str) -> Option<i32> {
+        self.ints.get(k).copied()
+    }
+    fn str(&self, k: &str) -> Option<String> {
+        self.strs.get(k).cloned()
+    }
+    fn list(&self, k: &str) -> Option<Vec<String>> {
+        self.lists.get(k).cloned()
+    }
+}
+
 /// A built view: its widget tree plus the live reactive state (signals +
-/// subscriptions) that must stay alive for the whole app loop.
+/// subscriptions) that must stay alive for the whole app loop, plus a
+/// `snapshot` closure that captures the current signal values for a rebuild.
 struct BuiltView {
     children: Children,
+    /// Re-read every live signal into a fresh `Seed` (for the rebuild tick).
+    snapshot: Box<dyn Fn() -> Seed>,
     // Signals are kept alive (and shared with handlers) here.
     _signals: Vec<Rc<RefCell<Signal<i32>>>>,
+    _signals_str: Vec<Rc<RefCell<Signal<String>>>>,
+    _signals_list: Vec<Rc<RefCell<Vec<String>>>>,
     _subs: Vec<Subscription>,
     // `Audio` clips — kept alive so a one-shot sound finishes (a dropped
     // `Sound` stops playing).
     _sounds: Vec<Sound>,
+}
+
+impl BuiltView {
+    /// Take the children out as a raw pointer for `UIApp_SetChildren`, leaving
+    /// an empty `Children` behind so `self` stays fully owned (no partial move).
+    fn children_take(&mut self) -> *mut mocida::sys::UIChildren {
+        std::mem::replace(&mut self.children, Children::new(0).unwrap()).into_raw()
+    }
 }
 
 "
@@ -212,8 +250,13 @@ fn generate_view_fn(view: &View, comps: &Registry, win_w: f32, win_h: f32) -> St
                 param_type(p.ty.as_deref())
             )
         })
-        .collect::<Vec<_>>()
-        .join(", ");
+        .collect::<Vec<_>>();
+    // Components are inlined, so every view fn takes the rebuild plumbing
+    // (`__seed`, `__dirty`) uniformly after its own params (decision #3).
+    let mut sig_params = params.clone();
+    sig_params.push("__seed: &Seed".to_string());
+    sig_params.push("__dirty: Rc<Cell<bool>>".to_string());
+    let sig_params = sig_params.join(", ");
 
     e.line(&format!(
         "/// View `{}` — generated from MUI source.",
@@ -222,13 +265,15 @@ fn generate_view_fn(view: &View, comps: &Registry, win_w: f32, win_h: f32) -> St
     e.line(&format!(
         "fn {}({}) -> MuiResult<BuiltView> {{",
         view_fn_name(&view.name),
-        params
+        sig_params
     ));
     e.indent();
     e.line("let mut __children = Children::new(16)?;");
     e.line("let mut __y: f32 = 24.0;");
     e.line("let mut __subs: Vec<Subscription> = Vec::new();");
     e.line("let mut __keep: Vec<Rc<RefCell<Signal<i32>>>> = Vec::new();");
+    e.line("let mut __keep_str: Vec<Rc<RefCell<Signal<String>>>> = Vec::new();");
+    e.line("let mut __keep_list: Vec<Rc<RefCell<Vec<String>>>> = Vec::new();");
     e.line("#[allow(unused_mut)]");
     e.line("let mut __sounds: Vec<Sound> = Vec::new();");
 
@@ -240,12 +285,16 @@ fn generate_view_fn(view: &View, comps: &Registry, win_w: f32, win_h: f32) -> St
     let mut sigs = SignalScope::default();
     declare_signals(&mut e, &view.body, &env, &mut sigs);
 
+    // Snapshot closure: clone every signal Rc and re-read it on demand into a
+    // fresh Seed (so the rebuild tick re-seeds the new tree from live state).
+    emit_snapshot_closure(&mut e, &sigs);
+
     for node in &view.body {
         emit_node(&mut e, node, &env, &sigs, comps, "__children");
     }
 
     e.line(
-        "Ok(BuiltView { children: __children, _signals: __keep, _subs: __subs, _sounds: __sounds })",
+        "Ok(BuiltView { children: __children, snapshot: Box::new(__snap), _signals: __keep, _signals_str: __keep_str, _signals_list: __keep_list, _subs: __subs, _sounds: __sounds })",
     );
     e.dedent();
     e.line("}");
@@ -327,22 +376,42 @@ fn generate_main(
     }
     e.line("mocida::text::search_fonts();");
     e.line("let _ = mocida::text::get_font(\"Arial\");");
-    let args = entry
+    let mut arg_parts = entry
         .params
         .iter()
         .map(|p| default_arg(p.default.as_ref(), p.ty.as_deref()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    e.line(&format!(
-        "let view = {}({})?;",
-        view_fn_name(&entry.name),
-        args
-    ));
-    e.line("app.set_children(view.children);");
+        .collect::<Vec<_>>();
+    // Thread the rebuild plumbing into the entry view call (decision #3: only
+    // the entry call passes real `__seed`/`__dirty` args; inlined components
+    // inherit them from the enclosing fn).
+    arg_parts.push("&__seed".to_string());
+    arg_parts.push("__dirty.clone()".to_string());
+    let args = arg_parts.join(", ");
+    let view_fn = view_fn_name(&entry.name);
+
+    // Seed/dirty/on_tick whole-view rebuild engine (Task 4).
+    e.line("let __dirty = Rc::new(Cell::new(false));");
+    e.line("#[allow(unused_mut)]");
+    e.line("let mut __seed = Seed::new();");
+    e.line(&format!("let mut __view = {view_fn}({args})?;"));
+    e.line("let __app_ptr = app.as_ptr();");
+    e.line("unsafe { mocida::sys::UIApp_SetChildren(__app_ptr, __view.children_take()); }");
+    e.line("app.on_tick(move || {");
+    e.indent();
+    e.line("if __dirty.replace(false) {");
+    e.indent();
+    e.line("__seed = (__view.snapshot)();");
+    e.line(&format!("if let Ok(__v) = {view_fn}({args}) {{"));
+    e.indent();
+    e.line("__view = __v;");
+    e.line("unsafe { mocida::sys::UIApp_SetChildren(__app_ptr, __view.children_take()); }");
+    e.dedent();
+    e.line("}");
+    e.dedent();
+    e.line("}");
+    e.dedent();
+    e.line("});");
     e.line("app.show().run();");
-    // Keep the signals + subscriptions alive across the whole loop.
-    e.line("drop(view._subs);");
-    e.line("drop(view._signals);");
     e.line("Ok(())");
     e.dedent();
     e.line("}");
@@ -357,13 +426,16 @@ fn generate_main(
 /// variable that holds each (an `Rc<RefCell<Signal<i32>>>`).
 #[derive(Default, Clone)]
 struct SignalScope {
-    /// name → generated var (e.g. `count` → `__sig_count`).
-    vars: std::collections::HashMap<String, String>,
+    /// name → (generated var, kind). e.g. `count` → (`__sig_count`, Int).
+    vars: std::collections::HashMap<String, (String, crate::eval::SigKind)>,
 }
 
 impl SignalScope {
     fn var(&self, name: &str) -> Option<&str> {
-        self.vars.get(name).map(String::as_str)
+        self.vars.get(name).map(|(v, _)| v.as_str())
+    }
+    fn kind(&self, name: &str) -> Option<crate::eval::SigKind> {
+        self.vars.get(name).map(|(_, k)| *k)
     }
 }
 
@@ -371,6 +443,7 @@ impl SignalScope {
 /// `mut name = signal(...)` binding in `nodes`, registering it in `scope` and
 /// pushing a clone into `__keep` so it outlives the window.
 fn declare_signals(e: &mut Emitter, nodes: &[Node], env: &Env, scope: &mut SignalScope) {
+    use crate::eval::SigKind;
     for n in nodes {
         if let Node::Let {
             name,
@@ -381,16 +454,73 @@ fn declare_signals(e: &mut Emitter, nodes: &[Node], env: &Env, scope: &mut Signa
             if scope.vars.contains_key(name) {
                 continue;
             }
-            if let Some(init) = signal_init(expr, env) {
-                let var = format!("__sig_{}", sanitize_ident(name));
-                e.line(&format!(
-                    "let {var} = Rc::new(RefCell::new(Signal::<i32>::new({init})?));"
-                ));
-                e.line(&format!("__keep.push({var}.clone());"));
-                scope.vars.insert(name.clone(), var);
+            // Only `signal(...)` initializers become live signals.
+            let Some(inner) = signal_call_arg(expr) else {
+                continue;
+            };
+            let kind = signal_kind(inner);
+            let var = format!("__sig_{}", sanitize_ident(name));
+            match kind {
+                SigKind::Int => {
+                    let init = signal_init(expr, env).unwrap_or_else(|| "0".to_string());
+                    e.line(&format!(
+                        "let {var} = Rc::new(RefCell::new(Signal::<i32>::new(__seed.int({name:?}).unwrap_or({init}))?));"
+                    ));
+                    e.line(&format!("__keep.push({var}.clone());"));
+                }
+                SigKind::Str => {
+                    let init = signal_str_init(inner).unwrap_or_default();
+                    e.line(&format!(
+                        "let {var} = Rc::new(RefCell::new(Signal::<String>::new(__seed.str({name:?}).unwrap_or_else(|| {init:?}.to_string()))?));"
+                    ));
+                    e.line(&format!("__keep_str.push({var}.clone());"));
+                }
+                SigKind::List => {
+                    // List signals are a plain shared `Vec<String>` (no Signal<T>
+                    // wrapper): structural `for` re-reads it on rebuild.
+                    e.line(&format!(
+                        "let {var} = match __seed.list({name:?}) {{ Some(__v) => Rc::new(RefCell::new(__v)), None => Rc::new(RefCell::new(Vec::<String>::new())) }};"
+                    ));
+                    e.line(&format!("__keep_list.push({var}.clone());"));
+                }
             }
+            scope.vars.insert(name.clone(), (var, kind));
         }
     }
+}
+
+/// Emit `let __snap = { <clone each signal Rc>; move || { <read into Seed> } };`
+/// — a closure that captures the live signals and re-reads their current values
+/// into a fresh `Seed` whenever the rebuild tick calls it.
+fn emit_snapshot_closure(e: &mut Emitter, sigs: &SignalScope) {
+    use crate::eval::SigKind;
+    e.line("let __snap = {");
+    e.indent();
+    // Clone each signal Rc into the closure's captured environment.
+    for (var, _) in sigs.vars.values() {
+        e.line(&format!("let {var} = {var}.clone();"));
+    }
+    e.line("move || {");
+    e.indent();
+    e.line("let mut __s = Seed::new();");
+    for (name, (var, kind)) in sigs.vars.iter() {
+        match kind {
+            SigKind::Int => e.line(&format!(
+                "__s.ints.insert({name:?}.to_string(), {var}.borrow().get());"
+            )),
+            SigKind::Str => e.line(&format!(
+                "__s.strs.insert({name:?}.to_string(), {var}.borrow().get());"
+            )),
+            SigKind::List => e.line(&format!(
+                "__s.lists.insert({name:?}.to_string(), {var}.borrow().clone());"
+            )),
+        }
+    }
+    e.line("__s");
+    e.dedent();
+    e.line("}");
+    e.dedent();
+    e.line("};");
 }
 
 // ---------------------------------------------------------------------------
@@ -422,7 +552,10 @@ fn emit_node(
                 e.line("// effect { ... } (no interpretable statements yet)");
             }
             for action in actions {
-                if let Some(v) = sigs.var(action.name()) {
+                // Effects run once at build time; only the int-signal mutation
+                // path is interpreted here (str/list effects await the evaluator).
+                if sigs.kind(action.name()) == Some(crate::eval::SigKind::Int) {
+                    let v = sigs.var(action.name()).unwrap();
                     let update = action_update_expr(&action);
                     e.line("{");
                     e.indent();
@@ -1051,14 +1184,15 @@ fn emit_button(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sin
 
     // Wire onClick to a signal mutation when interpretable.
     if let Some(action) = onclick_action(el) {
-        if let Some(v) = sigs.var(action.name()) {
+        if let Some(kind) = sigs.kind(action.name()) {
+            let v = sigs.var(action.name()).unwrap();
             e.line(&format!("let __h = {v}.clone();"));
-            let update = action_update_expr(&action);
+            if action_needs_dirty(&action) {
+                e.line("let __dirty_h = __dirty.clone();");
+            }
             e.line("__b = __b.on_click(move |_| {");
             e.indent();
-            e.line("let __cur = __h.borrow().get();");
-            e.line(&format!("let __next = {update};"));
-            e.line("let _ = __h.borrow_mut().set(__next);");
+            emit_action_body(e, &action, kind);
             e.dedent();
             e.line("});");
         }
@@ -2297,7 +2431,67 @@ fn action_update_expr(action: &HandlerAction) -> String {
             }
         }
         HandlerAction::SetInt { value, .. } => format!("{value}"),
+        // Non-int actions don't use the `__cur`/`__next` i32 path; they are
+        // emitted by `emit_action` directly. Provide a harmless fallback so the
+        // match stays exhaustive.
+        HandlerAction::SetStr { .. }
+        | HandlerAction::SetList { .. }
+        | HandlerAction::PushList { .. }
+        | HandlerAction::ClearList { .. } => "__cur".to_string(),
     }
+}
+
+/// Emit the body of a click/change handler that mutates the signal held in the
+/// captured Rc `__h` according to `action`, dispatching on the signal's `kind`.
+/// Sets `__dirty` so a structural rebuild picks up list/str mutations. The
+/// caller has already opened the `move |_| {` closure and captured `__h` (and
+/// `__dirty_h` for the dirty flag).
+fn emit_action_body(e: &mut Emitter, action: &HandlerAction, kind: crate::eval::SigKind) {
+    use crate::eval::SigKind;
+    match (action, kind) {
+        (HandlerAction::AddAssign { .. } | HandlerAction::SetInt { .. }, SigKind::Int) => {
+            let update = action_update_expr(action);
+            e.line("let __cur = __h.borrow().get();");
+            e.line(&format!("let __next = {update};"));
+            e.line("let _ = __h.borrow_mut().set(__next);");
+        }
+        (HandlerAction::SetStr { value, .. }, SigKind::Str) => {
+            e.line(&format!(
+                "let _ = __h.borrow_mut().set({value:?}.to_string());"
+            ));
+        }
+        (HandlerAction::SetList { values, .. }, SigKind::List) => {
+            let items = values
+                .iter()
+                .map(|v| format!("{v:?}.to_string()"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            e.line(&format!("*__h.borrow_mut() = vec![{items}];"));
+            e.line("__dirty_h.set(true);");
+        }
+        (HandlerAction::PushList { value, .. }, SigKind::List) => {
+            e.line(&format!("__h.borrow_mut().push({value:?}.to_string());"));
+            e.line("__dirty_h.set(true);");
+        }
+        (HandlerAction::ClearList { .. }, SigKind::List) => {
+            e.line("__h.borrow_mut().clear();");
+            e.line("__dirty_h.set(true);");
+        }
+        // Kind/action mismatch (e.g. SetStr on an int signal): skip — the source
+        // is malformed for this signal; emitting nothing keeps codegen sound.
+        _ => {}
+    }
+}
+
+/// Whether `action` mutates a list signal (and so needs the `__dirty` flag
+/// captured into the handler closure).
+fn action_needs_dirty(action: &HandlerAction) -> bool {
+    matches!(
+        action,
+        HandlerAction::SetList { .. }
+            | HandlerAction::PushList { .. }
+            | HandlerAction::ClearList { .. }
+    )
 }
 
 /// A named handler prop parsed into an action (int-signal subset).
@@ -2349,7 +2543,7 @@ fn emit_key_handler(e: &mut Emitter, el: &Element, sigs: &SignalScope, wvar: &st
         .vars
         .iter()
         .filter(|(name, _)| toks.contains(&name.as_str()))
-        .map(|(n, v)| (n.clone(), v.clone()))
+        .map(|(n, (v, _))| (n.clone(), v.clone()))
         .collect();
     let body = lower_key_body(&raw, &param);
 
@@ -2438,14 +2632,15 @@ fn operand_value(e: &Expr, env: &Env) -> String {
 /// when its handler is an interpretable int-signal action. No-op otherwise.
 fn emit_control_onchange(e: &mut Emitter, var: &str, el: &Element, sigs: &SignalScope) {
     if let Some(action) = control_action(el) {
-        if let Some(v) = sigs.var(action.name()) {
+        if let Some(kind) = sigs.kind(action.name()) {
+            let v = sigs.var(action.name()).unwrap();
             e.line(&format!("let __h = {v}.clone();"));
-            let update = action_update_expr(&action);
+            if action_needs_dirty(&action) {
+                e.line("let __dirty_h = __dirty.clone();");
+            }
             e.line(&format!("{var} = {var}.on_change(move |_| {{"));
             e.indent();
-            e.line("let __cur = __h.borrow().get();");
-            e.line(&format!("let __next = {update};"));
-            e.line("let _ = __h.borrow_mut().set(__next);");
+            emit_action_body(e, &action, kind);
             e.dedent();
             e.line("});");
         }
@@ -2630,6 +2825,38 @@ fn signal_init(e: &Expr, env: &Env) -> Option<String> {
     }
 }
 
+/// The single argument expression of a `signal(<arg>)` call, or `None` if `e`
+/// isn't a `signal(...)` initializer.
+fn signal_call_arg(e: &Expr) -> Option<&Expr> {
+    let ExprKind::Call { callee, args, .. } = &e.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(n) if n == "signal") {
+        return None;
+    }
+    args.first()
+}
+
+/// Classify a `signal(<init>)` initializer's element by its argument:
+/// int literal → Int, string literal → Str, `[...]` array → List. Anything
+/// else defaults to Int (the historical behavior).
+fn signal_kind(arg: &Expr) -> crate::eval::SigKind {
+    use crate::eval::SigKind;
+    match &arg.kind {
+        ExprKind::Literal(Literal::Str(_)) => SigKind::Str,
+        ExprKind::Array(_) => SigKind::List,
+        _ => SigKind::Int,
+    }
+}
+
+/// The initial text of a string-literal `signal("...")` initializer.
+fn signal_str_init(arg: &Expr) -> Option<String> {
+    match &arg.kind {
+        ExprKind::Literal(Literal::Str(t)) => str_template_literal(t),
+        _ => None,
+    }
+}
+
 /// Identifier names an expression reads (for finding which signals a label
 /// depends on). Walks the `format(tmpl, args...)` shape + bare idents.
 fn names_read(e: &Expr) -> Vec<String> {
@@ -2667,7 +2894,12 @@ trait ActionName {
 impl ActionName for HandlerAction {
     fn name(&self) -> &str {
         match self {
-            HandlerAction::AddAssign { name, .. } | HandlerAction::SetInt { name, .. } => name,
+            HandlerAction::AddAssign { name, .. }
+            | HandlerAction::SetInt { name, .. }
+            | HandlerAction::SetStr { name, .. }
+            | HandlerAction::SetList { name, .. }
+            | HandlerAction::PushList { name, .. }
+            | HandlerAction::ClearList { name, .. } => name,
         }
     }
 }
@@ -2854,11 +3086,17 @@ mod tests {
     #[test]
     fn emits_view_fn_and_main() {
         let code = gen("view Hello(name: string = \"world\") { Text(\"Hi, ${name}!\", size: 28) }");
-        assert!(code.contains("fn build_hello(name: &str) -> MuiResult<BuiltView>"));
+        // View fns now take the rebuild plumbing after their own params.
+        assert!(code.contains(
+            "fn build_hello(name: &str, __seed: &Seed, __dirty: Rc<Cell<bool>>) -> MuiResult<BuiltView>"
+        ));
         assert!(code.contains("fn main() -> MuiResult<()>"));
         assert!(code.contains("App::new("));
-        // The entry call uses the default.
-        assert!(code.contains("build_hello(\"world\")"), "code:\n{code}");
+        // The entry call uses the default plus the threaded seed/dirty args.
+        assert!(
+            code.contains("build_hello(\"world\", &__seed, __dirty.clone())"),
+            "code:\n{code}"
+        );
     }
 
     #[test]
@@ -2866,10 +3104,11 @@ mod tests {
         let code = gen(
             "view C(start: int = 0) {\n  mut count = signal(start)\n  Stack {\n    Text(\"Count: ${count}\")\n    Button(\"+\", onClick: { count = count + 1 })\n  }\n}",
         );
-        // A real signal initialised from the param default.
+        // A real signal initialised from the param default, now seedable so a
+        // whole-view rebuild can re-seed it from the previous state.
         assert!(
-            code.contains("Signal::<i32>::new(0)"),
-            "signal init from param default:\n{code}"
+            code.contains("Signal::<i32>::new(__seed.int(\"count\").unwrap_or(0))"),
+            "signal init from param default (seedable):\n{code}"
         );
         // Reactive text: subscribes + updates via pointer.
         assert!(code.contains(".subscribe("), "text subscribes:\n{code}");
@@ -2935,6 +3174,50 @@ mod tests {
     }
 
     #[test]
+    fn declares_string_and_list_signals() {
+        let src = r#"
+app { name: "S" width: 200 height: 200 entry: V }
+view V() {
+  mut status = signal("on")
+  mut items = signal([])
+  Text("${status}")
+}
+"#;
+        let code = gen(src);
+        assert!(
+            code.contains("Signal::<String>::new"),
+            "string signal:\n{code}"
+        );
+        assert!(
+            code.contains("Rc::new(RefCell::new(Vec::<String>::new()))"),
+            "list signal:\n{code}"
+        );
+    }
+
+    #[test]
+    fn main_installs_rebuild_tick() {
+        let src = r#"
+app { name: "R" width: 200 height: 200 entry: V }
+view V() {
+  mut count = signal(0)
+  if count > 0 { Text("pos") } else { Text("zero") }
+  Button("inc", onClick: { count = count + 1 })
+}
+"#;
+        let code = gen(src);
+        assert!(
+            code.contains("Rc::new(Cell::new(false))"),
+            "dirty flag:\n{code}"
+        );
+        assert!(code.contains(".on_tick("), "tick installed:\n{code}");
+        assert!(
+            code.contains("UIApp_SetChildren"),
+            "swap via raw ptr:\n{code}"
+        );
+        assert!(code.contains("__seed"), "seed threaded:\n{code}");
+    }
+
+    #[test]
     fn signal_of_param_resolves_through_env() {
         // The reported bug: `${count}` showed `{count}` because `count =
         // signal(start)` resolves through the *param* `start`, and the binding
@@ -2951,3 +3234,4 @@ mod tests {
         );
     }
 }
+
