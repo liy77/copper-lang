@@ -85,6 +85,7 @@ impl EndToken {
             length,
             data,
             generated: false,
+            struct_brace: false,
             origin: None,
             location_data: None,
         }
@@ -237,6 +238,13 @@ pub struct Tokenizer {
     /// line_break_token separates fields with `,` (not `;`), so a multi-line
     /// literal whose last field has no trailing comma stays valid.
     brace_is_struct: Vec<bool>,
+    /// Set when the most recently tokenized `}` closed a **struct/enum
+    /// literal** (`Point { x: 1, y: 2 }`). A struct literal in value position
+    /// is an expression that DOES need a `;` terminator — unlike a block close
+    /// (`if {...}`, fn body) which doesn't. `line_break_token` reads this to
+    /// emit the `;` after `mut p = Point { ... }`. Cleared once any non-`}`,
+    /// non-whitespace token is seen.
+    last_closed_brace_was_struct: bool,
     /// We just emitted a control-flow keyword (`if`/`else`/`while`/`for`/
     /// `loop`); the next `{` opens its block, NOT a struct literal — even when
     /// the condition ends in an identifier (`if ready {`, `for x in xs {`).
@@ -279,6 +287,7 @@ impl Tokenizer {
             brace_is_match: vec![],
             expect_match_brace: false,
             brace_is_struct: vec![],
+            last_closed_brace_was_struct: false,
             expect_block_brace: false,
             match_paren_depth: 0,
             location_data_compensations: vec![],
@@ -479,6 +488,9 @@ impl Tokenizer {
         let mut consumed = 0;
         let mut value = String::new();
         let mut kind = TokenKind::Symbol;
+        // Set when this token is the `{`/`}` of a struct/enum literal; copied
+        // onto the pushed token so the parser can coerce string fields (Bug B).
+        let mut is_struct_brace = false;
 
         // `#[...]` Rust attribute — capture the full `#[...]` as one Attribute token
         // so the parser doesn't mis-parse `[...]` as a vec literal.
@@ -649,6 +661,7 @@ impl Tokenizer {
                     let opens_struct =
                         prev_is_type_name && !opens_match_body && !self.expect_block_brace;
                     self.brace_is_struct.push(opens_struct);
+                    is_struct_brace = opens_struct;
                     self.expect_block_brace = false;
 
                     self.end(TokenKind::BraceEnd, "}".to_string());
@@ -659,7 +672,12 @@ impl Tokenizer {
                         self.import_specifier_list = false;
                     }
                     self.brace_is_match.pop();
-                    self.brace_is_struct.pop();
+                    // Remember whether this `}` closed a struct literal: a
+                    // struct literal in value position is an expression and
+                    // needs a `;` after it (handled in line_break_token).
+                    self.last_closed_brace_was_struct =
+                        matches!(self.brace_is_struct.pop(), Some(true));
+                    is_struct_brace = self.last_closed_brace_was_struct;
 
                     self.skip_end();
                     TokenKind::BraceEnd
@@ -700,7 +718,16 @@ impl Tokenizer {
             kind = TokenKind::Dot;
         }
 
-        self.token(kind, value);
+        // Only stamp `struct_brace` when we actually produced a brace token.
+        // `symbol_token` is also called speculatively for non-symbol chars and
+        // ends with a zero-length `self.token(Symbol, "")`, which (length 0)
+        // returns the PREVIOUS token instead of pushing — writing here would
+        // clobber a real struct-brace flag on whatever token came before.
+        if matches!(kind, TokenKind::BraceStart | TokenKind::BraceEnd) {
+            self.token(kind, value).struct_brace = is_struct_brace;
+        } else {
+            self.token(kind, value);
+        }
 
         Consumed::consume(consumed)
     }
@@ -865,6 +892,22 @@ impl Tokenizer {
                         kind = TokenKind::Keyword;
                     }
                 }
+            } else if self.seen_func
+                && self
+                    .peek_significant_char()
+                    .map(|c| c == '(')
+                    .unwrap_or(false)
+            {
+                // `func name(...)` with no declared return type: the first
+                // identifier after `func` is immediately followed by `(`, so
+                // it's the function NAME (void return), not a return type.
+                // Without this the void `main` (and any void function) would
+                // be mislabeled as a return type, leaving the function nameless
+                // (`fn (...)`). Emit it as a plain Identifier — the parser's
+                // name handling (incl. the `main` → `__copper_main` rename)
+                // then applies.
+                self.seen_func = false;
+                kind = TokenKind::Identifier;
             } else if self.seen_func {
                 // First identifier-like token after `func` is the declared
                 // return type. Win against RUST_KEYWORDS so things like
@@ -992,6 +1035,21 @@ impl Tokenizer {
             match self.kind() {
                 _ if ends_with_continuation => {
                     value.push(self.current_char());
+                }
+                // A `}` that closed a struct literal in value position
+                // (`mut p = Point { x: 1, y: 2 }`) is an EXPRESSION and needs a
+                // terminator, unlike a block close (`if {...}`, fn body). Pick
+                // `,` when that literal is itself a field value inside an
+                // enclosing match arm / struct literal, else `;`.
+                Some(TokenKind::BraceEnd) if self.last_closed_brace_was_struct => {
+                    let separator = if matches!(self.brace_is_match.last(), Some(&true))
+                        || matches!(self.brace_is_struct.last(), Some(&true))
+                    {
+                        ","
+                    } else {
+                        ";"
+                    };
+                    value.push_str(&format!("{}{}", separator, self.current_char()));
                 }
                 Some(TokenKind::BraceStart) |
                 Some(TokenKind::BracketStart) |
@@ -1187,6 +1245,18 @@ impl Tokenizer {
             }
 
             return self.tokens.last_mut().unwrap();
+        }
+
+        // The `last_closed_brace_was_struct` flag is set when a `}` closes a
+        // struct literal and read by the very next `line_break_token`. Keep it
+        // alive across the closing `}` itself, intervening whitespace, and the
+        // terminating newline; clear it as soon as any other token appears so a
+        // later, unrelated `}`-less statement doesn't pick up a stale `;`.
+        if !matches!(
+            kind,
+            TokenKind::BraceEnd | TokenKind::Newline | TokenKind::Whitespace
+        ) {
+            self.last_closed_brace_was_struct = false;
         }
 
         let mut token = Token::new(kind, value, length, Data::None, false);
@@ -1452,6 +1522,18 @@ impl Tokenizer {
             // Misaligned UTF-8 position (shouldn't normally happen).
             '\0'
         }
+    }
+
+    /// Peek the next non-space/tab character from the current chunk position
+    /// without advancing. Used to disambiguate `func name(...)` (void return)
+    /// from `func Type name(...)`: if a `(` immediately follows the first
+    /// identifier after `func`, that identifier is the function name.
+    fn peek_significant_char(&self) -> Option<char> {
+        self.chunk
+            .char_indices()
+            .filter(|(pos, _)| *pos >= self.chunk_column)
+            .map(|(_, ch)| ch)
+            .find(|ch| *ch != ' ' && *ch != '\t')
     }
 
     fn next_char(&mut self) {
