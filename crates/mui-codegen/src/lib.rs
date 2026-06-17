@@ -611,10 +611,37 @@ fn emit_node(
                 }
             }
         }
-        Node::For { body, .. } => {
-            e.line("// for ... { } — static lowering renders one iteration");
-            for n in body {
-                emit_node(e, n, env, sigs, comps, sink);
+        Node::For { pattern, iter, body, .. } => {
+            let sig_lookup = |n: &str| sigs.kind(n);
+            let env_lookup = |n: &str| env.get(n).map(|s| s.to_string());
+            match crate::eval::expr_to_rust(iter, &sig_lookup, &env_lookup) {
+                Ok(rust_iter) => {
+                    // Make the iterable structural: a List's dirtiness already
+                    // comes from its mutating handlers (emit_structural_subscribe
+                    // only emits a comment for it); Int/Str iterables subscribe to
+                    // `__dirty`. The loop var is NOT a signal — never subscribe it.
+                    let mut reads = Vec::new();
+                    crate::eval::collect_reads(iter, &mut reads);
+                    for r in reads.iter().filter(|r| sigs.var(r).is_some()) {
+                        emit_structural_subscribe(e, sigs, r);
+                    }
+                    let var = sanitize_ident(pattern);
+                    e.line(&format!("for {var} in {rust_iter} {{"));
+                    e.indent();
+                    // Bind the loop var so `${item}` lowers to the Rust local
+                    // `item` (a build-time format arg), not a literal/signal.
+                    let mut child_env = env.clone();
+                    child_env.loop_vars.insert(pattern.clone(), var.clone());
+                    for n in body {
+                        emit_node(e, n, &child_env, sigs, comps, sink);
+                    }
+                    e.dedent();
+                    e.line("}");
+                }
+                Err(msg) => {
+                    let m = format!("mui: unsupported for iterable: {msg}");
+                    e.line(&format!("compile_error!({m:?});"));
+                }
             }
         }
         Node::Match { .. } => e.line("// match { ... } (not yet executed)"),
@@ -1106,11 +1133,24 @@ fn emit_text(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink:
         .unwrap_or_default();
     let (w, h) = text_extent(&label, size);
 
+    // A label referencing an in-scope loop var must be computed at runtime from
+    // the Rust loop local, not baked as a literal. `loop_label` is the runtime
+    // `format!(...)` expression (a `String`); when present it overrides the
+    // literal first arg to `Text::new`.
+    let loop_label = el
+        .positional
+        .as_ref()
+        .and_then(|x| loop_var_format(x, env));
+
     e.line("{");
     e.indent();
+    let label_arg = match &loop_label {
+        Some(fmt) => format!("&{fmt}"),
+        None => format!("{label:?}"),
+    };
     e.line(&format!(
-        "let mut __t = Text::new({:?}, {})?.color({});",
-        label,
+        "let mut __t = Text::new({}, {})?.color({});",
+        label_arg,
         fmt_f32(size),
         color
     ));
@@ -2713,6 +2753,13 @@ fn emit_control_onchange(e: &mut Emitter, var: &str, el: &Element, sigs: &Signal
 #[derive(Default, Clone)]
 struct Env {
     vars: std::collections::HashMap<String, String>,
+    /// Loop variables bound by an enclosing `for <pattern> in ...`. Maps the
+    /// MUI pattern name (e.g. `item`) to the Rust loop local it lowers to (a
+    /// `String` in scope). A `${item}` interpolation resolves to this bare
+    /// identifier — a build-time `format!` argument, NOT a literal or signal —
+    /// because the loop var is fixed within one iteration (the whole list
+    /// rebuilds on change via the engine, so it needs no reactive subscription).
+    loop_vars: std::collections::HashMap<String, String>,
 }
 
 impl Env {
@@ -2774,6 +2821,75 @@ fn resolve_name(name: &str, env: &Env) -> String {
     env.get(name)
         .map(str::to_string)
         .unwrap_or_else(|| format!("{{{name}}}"))
+}
+
+/// If `e` (a `Text`/`Button` positional) references any in-scope loop variable,
+/// build the runtime Rust `format!(...)` expression that computes its label from
+/// the loop locals. Loop-var interpolations become bare-identifier args; any
+/// other interpolation resolves through `env` (folded literal) — keeping the
+/// build-time value for params/signal initials. Returns `None` when no loop var
+/// is referenced (so the caller keeps the existing literal/reactive path).
+fn loop_var_format(e: &Expr, env: &Env) -> Option<String> {
+    if env.loop_vars.is_empty() {
+        return None;
+    }
+    // Collect (template, ordered interpolation idents) for the two label shapes.
+    let (tmpl, idents): (String, Vec<Option<String>>) = match &e.kind {
+        ExprKind::Literal(Literal::Str(t)) => {
+            let mut tmpl = String::new();
+            let mut idents = Vec::new();
+            for part in &t.parts {
+                match part {
+                    StrPart::Lit(s) => tmpl.push_str(&s.replace('{', "{{").replace('}', "}}")),
+                    StrPart::Expr(ex) => {
+                        tmpl.push_str("{}");
+                        idents.push(match &ex.kind {
+                            ExprKind::Ident(n) => Some(n.clone()),
+                            _ => None,
+                        });
+                    }
+                }
+            }
+            (tmpl, idents)
+        }
+        ExprKind::Ident(n) => ("{}".to_string(), vec![Some(n.clone())]),
+        ExprKind::Call { callee, args, .. } if is_format_call(callee) => {
+            let tmpl = match args.first().map(|a| &a.kind) {
+                Some(ExprKind::Literal(Literal::Str(t))) => render_template_raw(t),
+                _ => return None,
+            };
+            let idents = args[1..]
+                .iter()
+                .map(|a| match &a.kind {
+                    ExprKind::Ident(n) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect();
+            (tmpl, idents)
+        }
+        _ => return None,
+    };
+    // Only take over the label when a loop var is actually referenced.
+    let refs_loop_var = idents
+        .iter()
+        .flatten()
+        .any(|n| env.loop_vars.contains_key(n));
+    if !refs_loop_var {
+        return None;
+    }
+    // Each interpolation: a loop var → its Rust local; else the env literal
+    // (param default / signal initial), defaulting to an empty string.
+    let arg_exprs: Vec<String> = idents
+        .iter()
+        .map(|maybe| match maybe {
+            Some(n) => match env.loop_vars.get(n) {
+                Some(local) => local.clone(),
+                None => format!("{:?}", env.get(n).unwrap_or("")),
+            },
+            None => "\"\"".to_string(),
+        })
+        .collect();
+    Some(format!("format!({tmpl:?}, {})", arg_exprs.join(", ")))
 }
 
 fn is_format_call(callee: &Expr) -> bool {
@@ -3309,6 +3425,24 @@ view V() {
         // structural subscribe marks dirty:
         assert!(code.contains("__dirty"), "dirty subscribe:\n{code}");
         assert!(!code.contains("static lowering renders the `then` branch"), "placeholder gone");
+    }
+
+    #[test]
+    fn lowers_reactive_for() {
+        let src = r#"
+app { name: "F" width: 200 height: 200 entry: App }
+view App(title: string = "Todos") {
+  mut items = signal([])
+  Stack(orientation: vertical) {
+    for item in items {
+      Text("${item}")
+    }
+  }
+}
+"#;
+        let code = crate::generate_from_str(src).expect("codegen");
+        assert!(code.contains("for item in __sig_items.borrow().clone() {"), "dynamic loop:\n{code}");
+        assert!(!code.contains("renders one iteration"), "placeholder gone:\n{code}");
     }
 }
 
