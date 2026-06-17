@@ -1,0 +1,7 @@
+// `url` — percent-encoding + query helpers (pure std, no deps).
+import { encode, decode, query2, join } from url
+
+println!("encode: {}", encode("hello world & co"))
+println!("decode: {}", decode("hello%20world%20%26%20co"))
+println!("query:  {}", query2("q", "café", "page", "2"))
+println!("join:   {}", join("https://api.example.com/", "/search"))

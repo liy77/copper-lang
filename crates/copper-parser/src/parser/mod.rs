@@ -22,6 +22,10 @@ const NET_SOURCE: &str = include_str!("../../../../std/net.crs");
 const NET_NATIVE: &str = include_str!("../../../../std/net_native.rs");
 const HTTP_SOURCE: &str = include_str!("../../../../std/http.crs");
 const HTTP_NATIVE: &str = include_str!("../../../../std/http_native.rs");
+const URL_SOURCE: &str = include_str!("../../../../std/url.crs");
+const URL_NATIVE: &str = include_str!("../../../../std/url_native.rs");
+const JSON_SOURCE: &str = include_str!("../../../../std/json.crs");
+const JSON_NATIVE: &str = include_str!("../../../../std/json_native.rs");
 pub mod result;
 pub mod scope;
 pub mod scope_manager;
@@ -2703,7 +2707,7 @@ impl Parser {
     /// True for native std modules selectable via `import { ... } from <name>`
     /// (besides cstd, which keeps its own dedicated path).
     fn is_native_std_module(name: &str) -> bool {
-        matches!(name, "net" | "http")
+        matches!(name, "net" | "http" | "url" | "json")
     }
 
     /// (crs surface, native helpers) for a native std module name.
@@ -2711,6 +2715,8 @@ impl Parser {
         match name {
             "net" => Some((NET_SOURCE, NET_NATIVE)),
             "http" => Some((HTTP_SOURCE, HTTP_NATIVE)),
+            "url" => Some((URL_SOURCE, URL_NATIVE)),
+            "json" => Some((JSON_SOURCE, JSON_NATIVE)),
             _ => None,
         }
     }

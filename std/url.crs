@@ -1,0 +1,12 @@
+// Copper `url` standard library — URL percent-encoding and helpers.
+//
+// Loaded via `import { ... } from url`. Pure Rust std, no dependencies.
+// Bundled as `pub mod url { ... }` with std/url_native.rs.
+//
+// Public surface (implemented in std/url_native.rs):
+//
+//   url::encode(s)            -> percent-encode for a query component
+//   url::decode(s)            -> reverse percent-encoding (+ and %XX)
+//   url::encode_component(s)  -> stricter encode (also encodes / ? & = etc.)
+//   url::query2(k1,v1,k2,v2)  -> "k1=v1&k2=v2" with both sides encoded
+//   url::join(base, path)     -> join a base URL and a path, fixing slashes

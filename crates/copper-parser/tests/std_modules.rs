@@ -51,3 +51,28 @@ fn both_modules_coexist() {
     assert!(rust.contains("pub mod net {") && rust.contains("pub mod http {"), "got: {rust}");
     assert!(deps.iter().any(|d| d == "ureq"), "deps: {deps:?}");
 }
+
+
+#[test]
+fn url_module_is_bundled_no_dep() {
+    let (rust, deps) = transpile_with_deps(
+        "import { encode, decode } from url
+x = encode(\"a b\")
+",
+    );
+    assert!(rust.contains("pub mod url {"), "url not bundled: {rust}");
+    assert!(rust.contains("pub fn encode("), "encode not promoted: {rust}");
+    assert!(!deps.iter().any(|d| d == "ureq" || d == "serde_json"), "url pulled a dep: {deps:?}");
+}
+
+#[test]
+fn json_module_is_bundled_with_serde_dep() {
+    let (rust, deps) = transpile_with_deps(
+        "import { get, get_int } from json
+x = get(\"{}\", \"a\")
+",
+    );
+    assert!(rust.contains("pub mod json {"), "json not bundled: {rust}");
+    assert!(rust.contains("pub fn get("), "get not promoted: {rust}");
+    assert!(deps.iter().any(|d| d == "serde_json"), "serde_json dep missing: {deps:?}");
+}

@@ -1,0 +1,10 @@
+// `json` — read values out of a JSON string (serde_json-backed).
+import { get, get_int, get_bool, has, len, pretty } from json
+
+doc = "{\"user\":{\"name\":\"Ana\",\"age\":28,\"admin\":true},\"tags\":[\"a\",\"b\",\"c\"]}"
+println!("name  = {}", get(doc, "user.name"))
+println!("age   = {}", get_int(doc, "user.age"))
+println!("admin = {}", get_bool(doc, "user.admin"))
+println!("tag0  = {}", get(doc, "tags.0"))
+println!("#tags = {}", len(doc, "tags"))
+println!("email? {}", has(doc, "user.email"))

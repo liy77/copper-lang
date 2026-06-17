@@ -1,0 +1,25 @@
+// Copper `json` standard library — read values out of a JSON string.
+//
+// Loaded via `import { ... } from json`. Backed by the `serde_json` crate
+// (auto-added to the generated Cargo.toml). Bundled as `pub mod json { ... }`
+// with std/json_native.rs.
+//
+// Designed for consuming HTTP/API responses: parse once, pluck values by a
+// dotted/indexed path. Everything returns an owned value, with a sensible
+// empty fallback when the path is missing or the type doesn't match.
+//
+//   json::is_valid(s)             -> bool
+//   json::get(s, path)            -> String   (scalar at path, "" if missing)
+//   json::get_int(s, path)        -> i64      (0 if missing/non-numeric)
+//   json::get_float(s, path)      -> f64
+//   json::get_bool(s, path)       -> bool
+//   json::has(s, path)            -> bool     (path exists)
+//   json::len(s, path)            -> i64      (array/object length, else 0)
+//   json::pretty(s)               -> String   (re-indented, "" if invalid)
+//   json::minify(s)               -> String   (whitespace-stripped)
+//
+// `path` is dot-separated; array indices are numeric segments:
+//   json::get(body, "user.name")
+//   json::get(body, "items.0.id")
+//   json::get_int(body, "page.total")
+// An empty path returns / refers to the whole document.

@@ -232,7 +232,10 @@ impl Result {
         if self.used_std_modules.contains("http") {
             deps.push("ureq".to_string());
         }
-        // (the `net` module is std-only — no dependency.)
+        if self.used_std_modules.contains("json") && !deps.contains(&"serde_json".to_string()) {
+            deps.push("serde_json".to_string());
+        }
+        // (the `net` and `url` modules are std-only — no dependency.)
 
         // External crates from `import { … } from <crate>`.
         for c in &self.external_crates {
