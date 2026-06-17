@@ -1033,6 +1033,10 @@ impl Parser {
                 | Some(TokenKind::ParametersEnd)
                 | Some(TokenKind::ParenthesesEnd)
                 | Some(TokenKind::BracketEnd)
+                // An identifier in argument position is tokenized as `Param`
+                // (`g(v[i])`); it still names a value, so a following `[` is an
+                // index access, not a list literal.
+                | Some(TokenKind::Param)
         );
         // A `[` immediately after `!` is the body of a macro invocation
         // (`vec![...]`, `assert![...]`, ...) — never a literal. Don't add a
