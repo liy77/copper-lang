@@ -2197,7 +2197,10 @@ impl Parser {
                     let trait_name = target_type.clone();
 
                     if let Some(tok) = self.select(self.current + consumed) {
-                        if tok.kind == TokenKind::Identifier {
+                        // The target after `for` may be a user type (Identifier)
+                        // OR a primitive/std type spelled as a keyword (`i64`,
+                        // `bool`, `f64`, ...) — e.g. `impl Reflect for i64`.
+                        if tok.kind == TokenKind::Identifier || tok.kind == TokenKind::Keyword {
                             consumed += 1;
                             let actual_target = tok.value.clone();
                             self.current_impl_target = Some(actual_target.clone());
