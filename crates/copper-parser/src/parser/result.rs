@@ -25,6 +25,12 @@ pub struct Result {
     /// adds them to the generated Cargo.toml — after filtering out names that
     /// are actually sibling modules.
     pub(crate) external_crates: Vec<String>,
+    /// Every Copper struct parsed, as `(struct_name, field_names)`, recorded so
+    /// that — when the `reflect` module is imported — cforge can append an
+    /// `impl reflect::Reflect for <Struct>` at end-of-output (after the struct
+    /// definitions). Generic structs are not recorded (their impl would need
+    /// generic bounds — out of MVP scope).
+    pub(crate) reflect_structs: Vec<(String, Vec<String>)>,
 }
 
 impl Default for Result {
@@ -49,6 +55,45 @@ impl Result {
             cstd_used: false,
             used_std_modules: std::collections::BTreeSet::new(),
             external_crates: Vec::new(),
+            reflect_structs: Vec::new(),
+        }
+    }
+
+    /// Record a Copper struct (name + ordered field names) for reflect codegen.
+    pub fn record_reflect_struct(&mut self, name: &str, fields: Vec<String>) {
+        self.reflect_structs
+            .push((name.to_string(), fields));
+    }
+
+    /// If the `reflect` module is imported, append one
+    /// `impl reflect::Reflect for <Struct>` per recorded struct to the output.
+    /// Called at end-of-output so import-before-struct ordering doesn't matter,
+    /// and emitted *after* the struct definitions already in `self.value`.
+    pub fn append_reflect_impls(&mut self) {
+        if !self.used_std_modules.contains("reflect") {
+            return;
+        }
+        let mut out = String::new();
+        for (name, fields) in &self.reflect_structs {
+            out.push_str(&format!("impl reflect::Reflect for {} {{\n", name));
+            out.push_str("    fn reflect(&self) -> reflect::Reflected {\n");
+            out.push_str(&format!(
+                "        reflect::Reflected::new(\"{}\", vec![\n",
+                name
+            ));
+            for field in fields {
+                out.push_str(&format!(
+                    "            (\"{f}\".to_string(), reflect::Value::from(self.{f}.clone())),\n",
+                    f = field
+                ));
+            }
+            out.push_str("        ])\n");
+            out.push_str("    }\n");
+            out.push_str("}\n\n");
+        }
+        if !out.is_empty() {
+            self.value.push('\n');
+            self.value.push_str(&out);
         }
     }
 
