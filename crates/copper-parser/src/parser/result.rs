@@ -106,13 +106,21 @@ impl Result {
                 "        reflect::Reflected::new(\"{}\", vec![\n",
                 name
             ));
+            // Each field reflects via `to_value()` — implemented for scalars,
+            // `Vec<T>`, `Option<T>`, and (auto-derived) every Copper struct —
+            // so a nested struct field recurses as `Value::Object(...)`. The
+            // fully-qualified call avoids needing the trait in scope.
             for field in fields {
                 out.push_str(&format!(
-                    "            (\"{f}\".to_string(), reflect::Value::from(self.{f}.clone())),\n",
+                    "            (\"{f}\".to_string(), reflect::Reflect::to_value(&self.{f})),\n",
                     f = field
                 ));
             }
             out.push_str("        ])\n");
+            out.push_str("    }\n");
+            // The companion `to_value` so this struct nests inside another.
+            out.push_str("    fn to_value(&self) -> reflect::Value {\n");
+            out.push_str("        reflect::Value::Object(self.reflect())\n");
             out.push_str("    }\n");
             out.push_str("}\n\n");
         }
