@@ -75,6 +75,15 @@ pub struct Parser {
     is_inside_class: bool,
     current_class: Option<String>,
     is_inside_struct: bool,
+    /// One entry per currently-open `{` in the main token stream. `Some(d)`
+    /// when that `{` opens a **struct/enum literal** (`Point { x: 1, y: 2 }`),
+    /// where `d` is the `chain_delim_depth` just inside it; `None` for a code
+    /// block. A string literal whose enclosing struct-literal entry is `Some(d)`
+    /// AND whose current depth is exactly `d` (i.e. it's a direct field value,
+    /// not buried in a nested call/array) is emitted as `"..".into()` so it
+    /// coerces to a `String` field (Bug B). Mirrors the tokenizer's
+    /// `brace_is_struct`.
+    struct_lit_stack: Vec<Option<usize>>,
     is_inside_impl: bool,
     current_struct: Option<String>,
     current_impl_target: Option<String>,
@@ -174,6 +183,7 @@ impl Parser {
             is_inside_class: false,
             current_class: None,
             is_inside_struct: false,
+            struct_lit_stack: vec![],
             is_inside_impl: false,
             current_struct: None,
             current_impl_target: None,
@@ -1781,6 +1791,11 @@ impl Parser {
             let mut brace_count = 1;
             let mut current_field = String::new();
             let mut in_field_name = true;
+            // True once the type part of the current field has been emitted.
+            // A following name-token (Identifier in name position) then starts a
+            // NEW field even with no comma/newline separator (e.g. same-line
+            // `x: int  y: int`); without this the fields fuse into `x:i64y:`.
+            let mut seen_type = false;
 
             // For reflect codegen: ordered field names of this struct. A struct
             // with generic params is skipped (its `impl reflect::Reflect` would
@@ -1811,13 +1826,37 @@ impl Parser {
                             }
                         }
                         TokenKind::Identifier => {
+                            let ident_value = tok.value.clone();
+                            // A name-position Identifier arriving after the
+                            // current field's type was emitted (no comma/newline
+                            // between) starts a NEW field on the same line. Flush
+                            // the complete field first, then read this token as
+                            // the new field name.
+                            if !in_field_name
+                                && seen_type
+                                && !current_field.trim().is_empty()
+                            {
+                                if let Some(name) =
+                                    Self::reflect_field_name(&current_field)
+                                {
+                                    reflect_fields.push(name);
+                                }
+                                self.append(
+                                    &format!("    {},", current_field.trim()),
+                                    AppendMode::ForceAppendWithSpace,
+                                );
+                                current_field.clear();
+                                in_field_name = true;
+                                seen_type = false;
+                            }
                             if in_field_name {
-                                current_field = tok.value.clone();
+                                current_field = ident_value;
                                 in_field_name = false;
                             } else {
                                 // This is a type
+                                seen_type = true;
                                 let (converted_type, data_type) =
-                                    utils::convert_type_with_marking(&tok.value);
+                                    utils::convert_type_with_marking(&ident_value);
 
                                 // Mark data type usage for struct fields
                                 if let Some(dt) = data_type {
@@ -1833,14 +1872,25 @@ impl Parser {
                                 current_field.push_str(&converted_type);
                             }
                         }
+                        // The `:` separator may arrive as a dedicated `Colon`
+                        // token or — depending on the surrounding tokens — as
+                        // an `Operator(":")`. Treat both as the name→type
+                        // boundary: reset `seen_type` so the type that follows
+                        // is recognised.
                         TokenKind::Colon => {
                             current_field.push_str(": ");
+                            seen_type = false;
+                        }
+                        TokenKind::Operator if tok.value == ":" => {
+                            current_field.push_str(": ");
+                            seen_type = false;
                         }
                         TokenKind::ParamType
                         | TokenKind::Type
                         | TokenKind::Json
                         | TokenKind::Xml
                         | TokenKind::Toml => {
+                            seen_type = true;
                             let (converted_type, data_type) =
                                 utils::convert_type_with_marking(&tok.value);
 
@@ -1886,6 +1936,7 @@ impl Parser {
                                 );
                                 current_field.clear();
                                 in_field_name = true;
+                                seen_type = false;
                             }
                         }
                         TokenKind::Newline => {
@@ -1906,10 +1957,19 @@ impl Parser {
                                 );
                                 current_field.clear();
                                 in_field_name = true;
+                                seen_type = false;
                             }
                         }
                         _ => {
                             if !tok.value.trim().is_empty() && tok.value != " " {
+                                // Type content that the dedicated arms above
+                                // didn't catch — most notably a primitive-type
+                                // keyword like `bool` (tokenized as `Keyword`).
+                                // Mark the type as seen so a following bare
+                                // field name flushes (`done: bool  priority:`).
+                                if !in_field_name && current_field.contains(':') {
+                                    seen_type = true;
+                                }
                                 current_field.push_str(&tok.value);
                             }
                         }
@@ -2835,8 +2895,10 @@ impl Parser {
                 break self.result.get().expect("Format Error");
             }
 
-            let token_info = self.current().map(|t| (t.kind, t.value.clone()));
-            if let Some((dispatched_kind, dispatched_value)) = token_info {
+            let token_info = self
+                .current()
+                .map(|t| (t.kind, t.value.clone(), t.struct_brace));
+            if let Some((dispatched_kind, dispatched_value, dispatched_struct_brace)) = token_info {
                 // Optional-chaining bookkeeping. Done before dispatch so the
                 // closing `)` of any open chain is emitted *before* the token
                 // that ends the chain (operator, separator, or a closing
@@ -3025,6 +3087,27 @@ impl Parser {
                             })
                             .consume_var(&mut self.current);
                     }
+                    TokenKind::String => {
+                        // A plain string literal as a DIRECT struct-literal
+                        // field value is `&str`, but the field is typically
+                        // `String`. Emit `"..".into()` so Rust coerces it to the
+                        // field's type (works for `String` and `&str`). Only
+                        // inside a struct literal at the field-value depth — a
+                        // bare `mut name = "Brian"` (no struct) stays `&str`.
+                        let coerce = matches!(
+                            self.struct_lit_stack.last(),
+                            Some(Some(d)) if *d == self.chain_delim_depth
+                        );
+                        if coerce {
+                            self.append(
+                                &format!("{}.into()", self.value()),
+                                AppendMode::Append,
+                            );
+                        } else {
+                            self.append(&self.value(), AppendMode::Append);
+                        }
+                        self.next();
+                    }
                     _ => {
                         self.append(&self.value(), AppendMode::Append);
                         self.next();
@@ -3047,6 +3130,25 @@ impl Parser {
                         if self.chain_delim_depth > 0 =>
                     {
                         self.chain_delim_depth -= 1;
+                    }
+                    _ => {}
+                }
+
+                // Track struct-literal nesting so a string literal in a field
+                // value can be coerced (`"Ana".into()`). The tokenizer flagged
+                // the `{`/`}` of a struct literal with `struct_brace`. Record
+                // the depth just inside the brace so we only coerce DIRECT field
+                // values, not strings nested in a call/array argument.
+                match dispatched_kind {
+                    TokenKind::BraceStart => {
+                        self.struct_lit_stack.push(if dispatched_struct_brace {
+                            Some(self.chain_delim_depth)
+                        } else {
+                            None
+                        });
+                    }
+                    TokenKind::BraceEnd => {
+                        self.struct_lit_stack.pop();
                     }
                     _ => {}
                 }

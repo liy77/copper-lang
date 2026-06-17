@@ -31,6 +31,11 @@ pub struct Token {
     pub length: usize,
     pub data: Data,
     pub generated: bool,
+    /// For a `BraceStart`/`BraceEnd` token: `true` when this `{`/`}` opens or
+    /// closes a **struct/enum literal** (`Point { x: 1 }`) rather than a code
+    /// block. The tokenizer decides this (it has the surrounding context); the
+    /// parser reads it to coerce string literals in struct fields (Bug B).
+    pub struct_brace: bool,
     pub origin: Option<Box<Token>>,
     pub location_data: Option<LocationData>,
 }
@@ -43,6 +48,7 @@ impl Token {
             length,
             data,
             generated,
+            struct_brace: false,
             origin: None,
             location_data: None,
         }
