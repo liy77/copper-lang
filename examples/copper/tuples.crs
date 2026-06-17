@@ -29,7 +29,10 @@ func (int, int) minmax(a: int, b: int) {
 (lo, hi) = minmax(9, 3)
 println!("lo={} hi={}", lo, hi)
 
-// Nested tuple (access only — destructuring nested tuples not yet supported)
+// Nested tuple: access by index, or destructure (including nested patterns).
 nested = ((1, 2), (3, 4))
 println!("inner0.0={}", nested.0.0)
 println!("inner1.1={}", nested.1.1)
+
+((a, b), (c, d)) = nested
+println!("a={} b={} c={} d={}", a, b, c, d)

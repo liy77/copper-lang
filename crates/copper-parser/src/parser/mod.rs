@@ -227,8 +227,7 @@ impl Parser {
 
         // `mut (a, b) = expr` → `let (mut a, mut b) = expr`
         if self.peek_kind() == Some(TokenKind::ParenthesesStart) {
-            if let Some((bindings, total)) = self.scan_tuple_destructure(self.current + 1, true) {
-                let pattern = bindings.join(", ");
+            if let Some((pattern, total)) = self.scan_tuple_destructure(self.current + 1, true) {
                 // total includes `(` through `=`; add 1 for leading `mut`
                 self.append(&format!("let ({pattern}) ="), AppendMode::AppendWithSpace);
                 return Consumed::consume((total + 1) as isize);
@@ -267,50 +266,55 @@ impl Parser {
     /// if the pattern is not a simple flat tuple destructure.
     ///
     /// When `all_mut` is true every binding is prefixed with `mut`.
-    fn scan_tuple_destructure(&self, start: usize, all_mut: bool) -> Option<(Vec<String>, usize)> {
-        let mut i = start + 1; // skip the `(`
-        let depth = 1usize;
+    fn scan_tuple_destructure(&self, start: usize, all_mut: bool) -> Option<(String, usize)> {
+        let mut i = start + 1; // skip the outer `(`
+        let mut depth = 1usize;
         let mut pending_mut = false;
-        let mut bindings: Vec<String> = Vec::new();
+        let mut saw_binding = false;
+        // Build the inner pattern verbatim, preserving nested tuples
+        // (`a, (b, c)`); the caller wraps it in `let (...) =`.
+        let mut pattern = String::new();
 
         loop {
             let tok = self.select(i)?;
             i += 1;
             match tok.kind {
-                TokenKind::ParenthesesStart => {
-                    // Nested tuple in pattern — not supported, bail.
-                    return None;
+                TokenKind::ParenthesesStart | TokenKind::ParametersStart => {
+                    // Nested tuple pattern — recurse by tracking depth and
+                    // copying the parens into the output.
+                    depth += 1;
+                    pattern.push('(');
                 }
                 TokenKind::ParenthesesEnd | TokenKind::ParametersEnd if depth == 1 => {
-                    break; // i now points at token after `)`
+                    break; // matched the outer `)`; i now points past it
                 }
                 TokenKind::ParenthesesEnd | TokenKind::ParametersEnd => {
-                    // depth > 1 is unreachable because ParenthesesStart bails above,
-                    // but keep the arm for exhaustiveness.
-                    return None;
+                    depth -= 1;
+                    pattern.push(')');
                 }
                 TokenKind::Identifier => {
-                    let name = if all_mut || pending_mut {
-                        format!("mut {}", tok.value)
-                    } else {
-                        tok.value.clone()
-                    };
-                    bindings.push(name);
+                    if all_mut || pending_mut {
+                        pattern.push_str("mut ");
+                    }
+                    pattern.push_str(&tok.value);
                     pending_mut = false;
+                    saw_binding = true;
                 }
                 TokenKind::Keyword if tok.value == "mut" => {
                     pending_mut = true;
                 }
-                TokenKind::Comma if depth == 1 => {}
+                TokenKind::Comma => {
+                    pattern.push_str(", ");
+                }
                 _ => return None,
             }
         }
 
-        if bindings.is_empty() {
+        if !saw_binding {
             return None;
         }
 
-        // After `)` must be `=` (not `=>`).
+        // After the outer `)` must come `=` (not `=>`).
         let eq = self.select(i)?;
         if eq.value != "=" {
             return None;
@@ -322,7 +326,7 @@ impl Parser {
 
         // total = tokens from `(` through `=` (inclusive)
         let total = (i + 1) - start;
-        Some((bindings, total))
+        Some((pattern, total))
     }
 
     /// `(a, b) = expr` → `let (a, b) = expr`
@@ -346,10 +350,9 @@ impl Parser {
                 return Consumed::consume(0);
             }
         }
-        let Some((bindings, total)) = self.scan_tuple_destructure(self.current, false) else {
+        let Some((pattern, total)) = self.scan_tuple_destructure(self.current, false) else {
             return Consumed::consume(0);
         };
-        let pattern = bindings.join(", ");
         self.append(&format!("let ({pattern}) ="), AppendMode::AppendWithSpace);
         Consumed::consume(total as isize)
     }
