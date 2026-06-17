@@ -26,6 +26,8 @@ use mui_syntax::style::{self, Anchor, HAnchor, Rgba, ShadowSpec, VAnchor};
 mod emit;
 use emit::Emitter;
 
+mod eval;
+
 /// Generate a complete Rust program (`main.rs`) from a parsed MUI document.
 /// The entry view (the `app { entry: }` one, else the first) is mounted by
 /// `main()`, configured from the document's optional `app { }` block.
@@ -2757,7 +2759,7 @@ fn to_snake(s: &str) -> String {
 
 /// Keep only identifier-safe characters (defensive — view/param names come
 /// from the parser, but never trust unchecked text in generated code).
-fn sanitize_ident(s: &str) -> String {
+pub(crate) fn sanitize_ident(s: &str) -> String {
     let mut out: String = s
         .chars()
         .map(|c| {
@@ -2777,6 +2779,17 @@ fn sanitize_ident(s: &str) -> String {
         out.insert(0, '_');
     }
     out
+}
+
+/// Return `Some(s)` when `t` is a single plain-text literal with no
+/// interpolation; `None` for any template that contains `${}` expressions.
+pub(crate) fn str_template_literal(t: &StrTemplate) -> Option<String> {
+    if t.parts.len() == 1 {
+        if let StrPart::Lit(s) = &t.parts[0] {
+            return Some(s.clone());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
