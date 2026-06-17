@@ -1660,18 +1660,37 @@ impl Parser {
             self.current_struct = Some(struct_name.clone());
             self.is_inside_struct = true;
 
+            // Generic parameter list `<T, U, ...>`. The tokenizer may emit the
+            // brackets either as AngleStart/AngleEnd or — because the
+            // comparison-operator rule fires first — as Operator("<") /
+            // Operator(">"). Accept both, and track `<` depth so nested
+            // generics (`<Vec<T>>`) and multiple params close correctly.
             let mut generics = String::new();
-            if let Some(tok) = self.select(self.current + consumed) {
-                if tok.kind == TokenKind::AngleStart {
+            let opens_generics = matches!(
+                self.select(self.current + consumed),
+                Some(t) if t.kind == TokenKind::AngleStart
+                    || (t.kind == TokenKind::Operator && t.value == "<")
+            );
+            if opens_generics {
+                consumed += 1;
+                generics.push('<');
+                let mut depth = 1usize;
+                while let Some(tok) = self.select(self.current + consumed) {
                     consumed += 1;
-                    generics.push('<');
-
-                    while let Some(tok) = self.select(self.current + consumed) {
-                        consumed += 1;
-                        if tok.kind == TokenKind::AngleEnd {
-                            generics.push('>');
+                    let is_open = tok.kind == TokenKind::AngleStart
+                        || (tok.kind == TokenKind::Operator && tok.value == "<");
+                    let is_close = tok.kind == TokenKind::AngleEnd
+                        || (tok.kind == TokenKind::Operator && tok.value == ">");
+                    if is_open {
+                        depth += 1;
+                        generics.push('<');
+                    } else if is_close {
+                        depth -= 1;
+                        generics.push('>');
+                        if depth == 0 {
                             break;
                         }
+                    } else {
                         generics.push_str(&tok.value);
                         if tok.value == "," {
                             generics.push(' ');
@@ -1797,7 +1816,21 @@ impl Parser {
                             }
                         }
                         TokenKind::Newline => {
-                            // Ignores newlines
+                            // A newline separates struct fields in Copper
+                            // (`first: T` / `second: T` on their own lines, no
+                            // comma). Flush the accumulated field — without
+                            // this, consecutive fields fuse into
+                            // `first: Tsecond: T`. Only flush once a field is
+                            // complete (name + type seen); a blank line or the
+                            // newline right after `{` leaves nothing to emit.
+                            if !in_field_name && !current_field.trim().is_empty() {
+                                self.append(
+                                    &format!("    {},", current_field.trim()),
+                                    AppendMode::ForceAppendWithSpace,
+                                );
+                                current_field.clear();
+                                in_field_name = true;
+                            }
                         }
                         _ => {
                             if !tok.value.trim().is_empty() && tok.value != " " {
