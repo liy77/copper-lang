@@ -298,6 +298,14 @@ pub enum HandlerAction {
     AddAssign { name: String, delta: i64 },
     /// `name = <int literal>`.
     SetInt { name: String, value: i64 },
+    /// `name = "literal"` — set a string signal.
+    SetStr { name: String, value: String },
+    /// `name = [a, b, ...]` (with elements) — replace a list signal's contents.
+    SetList { name: String, values: Vec<String> },
+    /// `name.push(value)` — append to a list signal.
+    PushList { name: String, value: String },
+    /// `name = []` (or `name.clear()`) — empty a list signal.
+    ClearList { name: String },
 }
 
 /// Parse the raw handler body into a [`HandlerAction`], or `None`.
@@ -347,6 +355,11 @@ fn parse_handler_action(raw: &str) -> Option<HandlerAction> {
         }
     }
 
+    // `name . push ( "x" )` / `name.push("x")` and `name . clear ( )`.
+    if let Some(act) = parse_list_method(s) {
+        return Some(act);
+    }
+
     // `name = ...`
     if toks.len() >= 3 && is_ident(toks[0]) && toks[1] == "=" {
         let rhs = &toks[2..];
@@ -358,6 +371,34 @@ fn parse_handler_action(raw: &str) -> Option<HandlerAction> {
                     value: v,
                 });
             }
+            // `name = "literal"` — string signal assignment.
+            if let Some(value) = string_literal(rhs[0]) {
+                return Some(HandlerAction::SetStr {
+                    name: toks[0].to_string(),
+                    value,
+                });
+            }
+        }
+        // `name = [ ... ]` — list assignment (empty → ClearList; else SetList).
+        if rhs.first() == Some(&"[") && rhs.last() == Some(&"]") {
+            let inner = &rhs[1..rhs.len() - 1];
+            // Drop separators; accept string/int literals as elements.
+            let values: Vec<String> = inner
+                .iter()
+                .filter(|t| **t != ",")
+                .filter_map(|t| string_literal(t).or_else(|| {
+                    t.parse::<i64>().ok().map(|n| n.to_string())
+                }))
+                .collect();
+            if values.is_empty() {
+                return Some(HandlerAction::ClearList {
+                    name: toks[0].to_string(),
+                });
+            }
+            return Some(HandlerAction::SetList {
+                name: toks[0].to_string(),
+                values,
+            });
         }
         // `name = name + N` / `name = name - N`
         if rhs.len() == 3 && rhs[0] == toks[0] {
@@ -378,6 +419,46 @@ fn parse_handler_action(raw: &str) -> Option<HandlerAction> {
         }
     }
     None
+}
+
+/// Recognise `name.push("x")` / `name.clear()` (token text may be spaced, e.g.
+/// `name . push ( "x" )`), returning the matching list action.
+fn parse_list_method(s: &str) -> Option<HandlerAction> {
+    let toks: Vec<&str> = s.split_whitespace().collect();
+    // Find `name . method ( ... )` ignoring the optional spacing.
+    if toks.len() < 4 || !is_ident(toks[0]) || toks[1] != "." {
+        return None;
+    }
+    let method = toks[2];
+    if toks.get(3) != Some(&"(") || toks.last() != Some(&")") {
+        return None;
+    }
+    let args = &toks[4..toks.len() - 1];
+    match method {
+        "clear" if args.is_empty() => Some(HandlerAction::ClearList {
+            name: toks[0].to_string(),
+        }),
+        "push" if args.len() == 1 => {
+            let value = string_literal(args[0])
+                .or_else(|| args[0].parse::<i64>().ok().map(|n| n.to_string()))?;
+            Some(HandlerAction::PushList {
+                name: toks[0].to_string(),
+                value,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The unquoted text of a double-quoted string token, or `None` if `t` isn't a
+/// `"..."` literal.
+fn string_literal(t: &str) -> Option<String> {
+    let bytes = t.as_bytes();
+    if bytes.len() >= 2 && bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"' {
+        Some(t[1..t.len() - 1].to_string())
+    } else {
+        None
+    }
 }
 
 fn is_ident(s: &str) -> bool {
@@ -407,4 +488,68 @@ pub fn parse_actions(raw: &str) -> Vec<HandlerAction> {
 pub struct MuiError {
     pub span: Span,
     pub message: String,
+}
+
+#[cfg(test)]
+mod handler_action_tests {
+    use super::*;
+
+    #[test]
+    fn parses_int_actions() {
+        assert_eq!(
+            parse_handler_action("count = count + 1"),
+            Some(HandlerAction::AddAssign {
+                name: "count".into(),
+                delta: 1
+            })
+        );
+        assert_eq!(
+            parse_handler_action("count = 5"),
+            Some(HandlerAction::SetInt {
+                name: "count".into(),
+                value: 5
+            })
+        );
+    }
+
+    #[test]
+    fn parses_set_str() {
+        assert_eq!(
+            parse_handler_action("status = \"off\""),
+            Some(HandlerAction::SetStr {
+                name: "status".into(),
+                value: "off".into()
+            })
+        );
+    }
+
+    #[test]
+    fn parses_list_actions() {
+        assert_eq!(
+            parse_handler_action("items = [ ]"),
+            Some(HandlerAction::ClearList {
+                name: "items".into()
+            })
+        );
+        assert_eq!(
+            parse_handler_action("items = [ \"a\" , \"b\" ]"),
+            Some(HandlerAction::SetList {
+                name: "items".into(),
+                values: vec!["a".into(), "b".into()]
+            })
+        );
+        assert_eq!(
+            parse_handler_action("items . push ( \"x\" )"),
+            Some(HandlerAction::PushList {
+                name: "items".into(),
+                value: "x".into()
+            })
+        );
+        assert_eq!(
+            parse_handler_action("items . clear ( )"),
+            Some(HandlerAction::ClearList {
+                name: "items".into()
+            })
+        );
+    }
 }
