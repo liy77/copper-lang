@@ -1,137 +1,203 @@
 // Copper `http` standard library — HTTP / HTTPS client.
 //
 // Loaded when a program does `import { ... } from http`. The compiler wraps
-// this file + `std/http_native.rs` into `pub mod http { ... }` and adds the
-// `ureq` crate (a small, blocking, pure-Rust client with rustls TLS) to the
-// generated Cargo.toml — so `https://` works out of the box, no system curl.
+// this file into `pub mod http { ... }` and adds the `ureq` crate (a small,
+// blocking, pure-Rust client with rustls TLS) plus `serde_json` (for
+// `Response::json`) to the generated Cargo.toml — so `https://` works out of
+// the box, no system curl.
 //
-// Public surface (implemented natively in std/http_native.rs):
+// The request functions return a rich `Response`, not a bare string:
 //
-//   http::get(url)                       -> response body (String, "" on error)
-//   http::get_status(url)                -> HTTP status code (i32, 0 on error)
-//   http::post(url, content_type, body)  -> response body
-//   http::post_json(url, json_body)      -> response body (application/json)
-//   http::put(url, content_type, body)   -> response body
-//   http::delete(url)                    -> response body
-//   http::download(url, path)            -> bool (stream body to a file)
-//   http::get_header(url, name)          -> a single response header value
+//   struct Response { status: i64, body: String, ok: bool }
+//     resp.status        -> HTTP status code (i64; 0 on transport error)
+//     resp.body          -> response body (String; "" on transport error)
+//     resp.ok            -> true when status is 2xx
+//     resp.is_ok()       -> same as resp.ok
+//     resp.text()        -> the body (String)
+//     resp.json(path)    -> extract a dotted JSON path from the body
+//                           ("a.b.0"); "" if absent. "" path -> whole body.
+//
+//   http::get(url)                       -> Response
+//   http::post(url, content_type, body)  -> Response
+//   http::post_json(url, json_body)      -> Response (application/json)
+//   http::put(url, content_type, body)   -> Response
+//   http::delete(url)                    -> Response
 //   http::request(method, url,
-//                 content_type, body)    -> "status\n<body>" (status on line 1)
-//   http::ok(url)                        -> bool (2xx status)
+//                 content_type, body)    -> Response
+//   http::get_status(url)                -> i64 status (convenience)
+//   http::ok(url)                        -> bool (2xx) (convenience)
+//   http::get_header(url, name)          -> a single response header value
+//   http::download(url, path)            -> bool (stream body to a file)
 //
 // `url` may be http:// or https://. All calls are blocking with a 30s
 // timeout and follow redirects (ureq's default).
 
-/// GET `url`, return the response body. "" on any network/HTTP error.
-func String get(url: &str) {
-    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
-    match agent_opt.get(url).call() {
-        Ok(resp) => { return resp.into_string().unwrap_or_default() },
-        Err(_) => { return String::new() },
+// The result of an HTTP request.
+struct Response {
+    status: i64
+    body: String
+    ok: bool
+}
+
+impl Response {
+    // True when the status is 2xx.
+    func bool is_ok(&self) {
+        return self.ok
+    }
+
+    // The response body as text.
+    func String text(&self) {
+        return self.body.clone()
+    }
+
+    // Extract a dotted path (`"a.b.0"`) from the JSON body. "" if the body
+    // is not JSON or the path is absent. An empty path returns the whole
+    // body re-serialized.
+    func String json(&self, path: &str) {
+        mut parsed = serde_json::from_str::<serde_json::Value>(&self.body)
+        if parsed.is_err() {
+            return String::new()
+        }
+        mut root = parsed.unwrap()
+        if path.is_empty() {
+            return serde_json::to_string(&root).unwrap_or_default()
+        }
+        mut ptr = format!("/{}", path.replace('.', "/"))
+        mut node_opt = root.pointer(&ptr)
+        if node_opt.is_none() {
+            return String::new()
+        }
+        mut node = node_opt.unwrap()
+        return match node {
+            serde_json::Value::String(v) => v.clone(),
+            serde_json::Value::Null => String::new(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        }
     }
 }
 
-/// GET `url`, return only the HTTP status code (e.g. 200, 404). 0 on a
-/// transport error. ureq treats 4xx/5xx as Err(Status), so we unwrap both.
-func i32 get_status(url: &str) {
-    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
-    match agent_opt.get(url).call() {
-        Ok(resp) => { return resp.status() as i32 },
-        Err(ureq::Error::Status(code, _)) => { return code as i32 },
-        Err(_) => { return 0i32 },
+// Core request driver. `method` is case-insensitive; `content_type`/`body`
+// may be empty for bodyless verbs. Always returns a Response (status 0 +
+// error text in `body` on a transport error).
+func Response fetch(method: &str, url: &str, content_type: &str, body: &str) {
+    mut ct = content_type.to_string()
+    if ct.is_empty() {
+        ct.push_str("text/plain")
+    }
+    mut agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    mut upper = method.to_uppercase()
+    if body.is_empty() {
+        match agent.request(&upper, url).call() {
+            Ok(resp) => {
+                mut st = resp.status() as i64
+                mut tx = resp.into_string().unwrap_or_default()
+                return Response { status: st, body: tx, ok: st >= 200 && st < 300 }
+            },
+            Err(ureq::Error::Status(code, resp)) => {
+                mut st = code as i64
+                mut tx = resp.into_string().unwrap_or_default()
+                return Response { status: st, body: tx, ok: false }
+            },
+            Err(e) => {
+                return Response { status: 0, body: format!("{e}"), ok: false }
+            },
+        }
+    }
+    match agent.request(&upper, url).set("Content-Type", &ct).send_string(body) {
+        Ok(resp) => {
+            mut st = resp.status() as i64
+            mut tx = resp.into_string().unwrap_or_default()
+            return Response { status: st, body: tx, ok: st >= 200 && st < 300 }
+        },
+        Err(ureq::Error::Status(code, resp)) => {
+            mut st = code as i64
+            mut tx = resp.into_string().unwrap_or_default()
+            return Response { status: st, body: tx, ok: false }
+        },
+        Err(e) => {
+            return Response { status: 0, body: format!("{e}"), ok: false }
+        },
     }
 }
 
-/// True when the status is 2xx.
+// GET `url`.
+func Response get(url: &str) {
+    return fetch("GET", url, "", "")
+}
+
+// POST `body` with an explicit `content_type`.
+func Response post(url: &str, content_type: &str, body: &str) {
+    return fetch("POST", url, content_type, body)
+}
+
+// POST a JSON string body (`Content-Type: application/json`).
+func Response post_json(url: &str, json_body: &str) {
+    return fetch("POST", url, "application/json", json_body)
+}
+
+// PUT `body` with an explicit `content_type`.
+func Response put(url: &str, content_type: &str, body: &str) {
+    return fetch("PUT", url, content_type, body)
+}
+
+// DELETE `url`.
+func Response delete(url: &str) {
+    return fetch("DELETE", url, "", "")
+}
+
+// Generic request. `method` is case-insensitive ("GET"/"POST"/...).
+func Response request(method: &str, url: &str, content_type: &str, body: &str) {
+    return fetch(method, url, content_type, body)
+}
+
+// GET `url`, return only the HTTP status code (e.g. 200, 404). 0 on a
+// transport error.
+func i64 get_status(url: &str) {
+    return get(url).status
+}
+
+// True when GET `url` returns a 2xx status.
 func bool ok(url: &str) {
-    mut s = get_status(url)
-    return s >= 200 && s < 300
+    return get(url).ok
 }
 
-/// POST `body` with an explicit `content_type`; return the response body.
-func String post(url: &str, content_type: &str, body: &str) {
-    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
-    match agent_opt.post(url).set("Content-Type", content_type).send_string(body) {
-        Ok(resp) => { return resp.into_string().unwrap_or_default() },
-        Err(ureq::Error::Status(_, resp)) => { return resp.into_string().unwrap_or_default() },
-        Err(_) => { return String::new() },
-    }
-}
-
-/// POST a JSON string body (`Content-Type: application/json`).
-func String post_json(url: &str, json_body: &str) {
-    return post(url, "application/json", json_body)
-}
-
-/// PUT `body` with an explicit `content_type`; return the response body.
-func String put(url: &str, content_type: &str, body: &str) {
-    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
-    match agent_opt.put(url).set("Content-Type", content_type).send_string(body) {
-        Ok(resp) => { return resp.into_string().unwrap_or_default() },
-        Err(ureq::Error::Status(_, resp)) => { return resp.into_string().unwrap_or_default() },
-        Err(_) => { return String::new() },
-    }
-}
-
-/// DELETE `url`; return the response body.
-func String delete(url: &str) {
-    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
-    match agent_opt.delete(url).call() {
-        Ok(resp) => { return resp.into_string().unwrap_or_default() },
-        Err(ureq::Error::Status(_, resp)) => { return resp.into_string().unwrap_or_default() },
-        Err(_) => { return String::new() },
-    }
-}
-
-/// Read one response header (case-insensitive name). "" if absent/error.
+// Read one response header (case-insensitive name). "" if absent/error.
 func String get_header(url: &str, name: &str) {
-    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
-    match agent_opt.get(url).call() {
+    mut agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    match agent.get(url).call() {
         Ok(resp) => { return resp.header(name).unwrap_or("").to_string() },
         Err(_) => { return String::new() },
     }
 }
 
-/// Stream `url` to a local file at `path`. Returns true on success.
+// Stream `url` to a local file at `path`. Returns true on success.
 func bool download(url: &str, path: &str) {
-    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
-    mut call_res = agent_opt.get(url).call()
-    if call_res.is_err() { return false }
+    mut agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    mut call_res = agent.get(url).call()
+    if call_res.is_err() {
+        return false
+    }
     mut resp = call_res.unwrap()
     mut reader = resp.into_reader()
     mut file_res = std::fs::File::create(path)
-    if file_res.is_err() { return false }
+    if file_res.is_err() {
+        return false
+    }
     mut file = file_res.unwrap()
     mut buf = vec![0u8; 8192]
     loop {
         mut n_res = std::io::Read::read(&mut reader, &mut buf)
-        if n_res.is_err() { return false }
+        if n_res.is_err() {
+            return false
+        }
         mut n = n_res.unwrap()
-        if n == 0 { break }
+        if n == 0 {
+            break
+        }
         mut sl: &[u8] = &buf[..n]
-        if std::io::Write::write_all(&mut file, sl).is_err() { return false }
-    }
-    return true
-}
-
-/// Generic request. `method` is case-insensitive ("GET"/"POST"/...).
-/// Returns "status\n<body>" — the numeric status on the first line,
-/// the body after the first newline.
-func String request(method: &str, url: &str, content_type: &str, body: &str) {
-    mut ct = content_type.to_string()
-    if ct.is_empty() { ct.push_str("text/plain") }
-    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
-    mut upper = method.to_uppercase()
-    if body.is_empty() {
-        match agent_opt.request(&upper, url).call() {
-            Ok(resp) => { mut status = resp.status(); mut text = resp.into_string().unwrap_or_default(); return format!("{status}\n{text}") },
-            Err(ureq::Error::Status(code, resp)) => { mut text = resp.into_string().unwrap_or_default(); return format!("{code}\n{text}") },
-            Err(e) => { return format!("0\n{e}") },
+        if std::io::Write::write_all(&mut file, sl).is_err() {
+            return false
         }
     }
-    match agent_opt.request(&upper, url).set("Content-Type", &ct).send_string(body) {
-        Ok(resp) => { mut status = resp.status(); mut text = resp.into_string().unwrap_or_default(); return format!("{status}\n{text}") },
-        Err(ureq::Error::Status(code, resp)) => { mut text = resp.into_string().unwrap_or_default(); return format!("{code}\n{text}") },
-        Err(e) => { return format!("0\n{e}") },
-    }
+    return true
 }

@@ -651,13 +651,20 @@ impl Tokenizer {
                     // control-flow block (`if x {`, `for i in xs {`) or a match
                     // body. The `expect_block_brace` flag disambiguates the
                     // `Identifier {` case where the identifier is a condition.
+                    // A trailing `>` can close a generic type (`Vec<T> {`) OR be
+                    // the tail of a `=>` fat arrow (a match arm body `=> {`).
+                    // Only the former is a struct literal; the latter opens a
+                    // normal block whose statements need `;`. `=>` lexes as two
+                    // tokens (`=` then `>`), so detect the fat arrow by looking
+                    // one token further back.
+                    let prev_gt_closes_generic = matches!(
+                        self.last_token().map(|t| (t.kind, t.value.clone())),
+                        Some((TokenKind::Operator, v)) if v == ">"
+                    ) && self.second_last_nonws_value().as_deref() != Some("=");
                     let prev_is_type_name = matches!(
                         self.last_token().map(|t| (t.kind, t.value.clone())),
                         Some((TokenKind::Identifier, _)) | Some((TokenKind::ReturnType, _))
-                    ) || matches!(
-                        self.last_token().map(|t| (t.kind, t.value.clone())),
-                        Some((TokenKind::Operator, v)) if v == ">"
-                    );
+                    ) || prev_gt_closes_generic;
                     let opens_struct =
                         prev_is_type_name && !opens_match_body && !self.expect_block_brace;
                     self.brace_is_struct.push(opens_struct);
@@ -845,6 +852,13 @@ impl Tokenizer {
                 // `X::from`, `.from(`, a variable named `from`) it must fall
                 // through to the normal identifier-resolution path below.
                 && (value != "from" || self.seen_import)
+                // `json`/`xml`/`toml` are data-type keywords only in type
+                // position. As a method/field name (`resp.json(...)`) or a
+                // function name / call (`func String json(...)`, `json(...)`)
+                // they must be plain identifiers — fall through like `from`.
+                && !(matches!(value.as_str(), "json" | "xml" | "toml")
+                    && (matches!(self.last_token().map(|t| t.kind), Some(TokenKind::Dot))
+                        || self.current_char() == '('))
             {
                 match value.as_str() {
                     "import" => {
