@@ -750,6 +750,33 @@ impl Parser {
                         return Consumed::consume(1);
                     }
                 }
+                // Bang-less call form: `println(...)`. Rust's print macros
+                // need a format string as the first argument. If the call
+                // already passes one (a string / interpolated literal first
+                // arg) we leave it alone — the interpolated case renders as
+                // macro args via `is_inside_macro_call`. Otherwise inject a
+                // `"{} {} ...", ` format string (one `{}` per top-level
+                // argument) so `println(x)` → `println!("{}", x)` and
+                // `println(a, b)` → `println!("{} {}", a, b)`, both valid Rust.
+                if self.peek_kind() == Some(TokenKind::ParenthesesStart) {
+                    if let Some((first_is_fmt, argc)) = self.scan_macro_call_args(self.current + 1) {
+                        if !first_is_fmt && argc > 0 {
+                            let mut fmt = String::with_capacity(argc * 3 + 4);
+                            fmt.push_str(rust); // e.g. "println!"
+                            fmt.push('(');
+                            fmt.push('"');
+                            for i in 0..argc {
+                                if i > 0 { fmt.push(' '); }
+                                fmt.push_str("{}");
+                            }
+                            fmt.push_str("\", ");
+                            self.append(&fmt, AppendMode::Append);
+                            // Consumed the macro name + the '(' — the args and
+                            // closing ')' emit through the normal token path.
+                            return Consumed::consume(2);
+                        }
+                    }
+                }
                 // Next token is not !, so add the ! suffix
                 self.append(rust, AppendMode::Append);
                 return Consumed::consume(1);
@@ -949,6 +976,65 @@ impl Parser {
     /// the `(` that opens the call we're inside (if any). If that `(` is
     /// preceded by an `!` operator, we're inside a Rust macro call and
     /// interpolated strings should expand to raw `"fmt", args` form.
+    /// Scan a parenthesised argument list for a bang-less macro call.
+    /// `paren_idx` is the index of the opening `(` (a ParenthesesStart).
+    /// Returns `(first_arg_is_format_string, top_level_arg_count)`:
+    ///   * `first_arg_is_format_string` — the first argument's leading token
+    ///     is a string / interpolated-string literal, i.e. the call already
+    ///     supplies a format string and needs no injection.
+    ///   * `top_level_arg_count` — number of comma-separated arguments at
+    ///     paren depth 1 (0 for an empty `()`).
+    /// Returns `None` if `paren_idx` isn't an open paren or the list is
+    /// unterminated.
+    fn scan_macro_call_args(&self, paren_idx: usize) -> Option<(bool, usize)> {
+        let open = self.tokens.get(paren_idx)?;
+        if !matches!(
+            open.kind,
+            TokenKind::ParenthesesStart | TokenKind::ParametersStart
+        ) {
+            return None;
+        }
+        let mut depth: usize = 1;
+        let mut argc: usize = 0;
+        let mut seen_arg_token = false;
+        let mut first_is_fmt = false;
+        let mut first_token_seen = false;
+        let mut i = paren_idx + 1;
+        while i < self.tokens.len() {
+            let tok = &self.tokens[i];
+            match tok.kind {
+                TokenKind::ParenthesesStart | TokenKind::ParametersStart => depth += 1,
+                TokenKind::ParenthesesEnd | TokenKind::ParametersEnd => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if seen_arg_token {
+                            argc += 1;
+                        }
+                        return Some((first_is_fmt, argc));
+                    }
+                }
+                TokenKind::Comma if depth == 1 => {
+                    argc += 1;
+                    seen_arg_token = false;
+                }
+                TokenKind::Newline | TokenKind::Comment => {}
+                _ if depth == 1 => {
+                    if !first_token_seen {
+                        first_token_seen = true;
+                        first_is_fmt = matches!(
+                            tok.kind,
+                            TokenKind::String | TokenKind::InterpolatedString
+                        );
+                    }
+                    seen_arg_token = true;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
     fn is_inside_macro_call(&self) -> bool {
         let mut depth: usize = 0;
         let mut i = self.current;
@@ -967,7 +1053,19 @@ impl Parser {
                             return false;
                         }
                         let prev = &self.tokens[i - 1];
-                        return prev.kind == TokenKind::Operator && prev.value == "!";
+                        // A `!` immediately before the paren is the explicit
+                        // Rust-macro form (`println!(...)`). Copper also lets
+                        // you call the known format macros without the bang
+                        // (`println("Hi $name")`) — the bang is injected at
+                        // emit time by RUST_MACROS, so it isn't in the token
+                        // stream yet. Recognise those names here too, so the
+                        // interpolated string renders as macro args
+                        // (`"Hi {}", name`) instead of a nested
+                        // `format!(...)`.
+                        if prev.kind == TokenKind::Operator && prev.value == "!" {
+                            return true;
+                        }
+                        return RUST_MACROS.iter().any(|(copper, _)| *copper == prev.value);
                     }
                     depth -= 1;
                 }
