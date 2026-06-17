@@ -13,24 +13,20 @@ const CSTD_SOURCE: &str = include_str!("../../../../std/cstd.crs");
 
 /// Native-Rust helpers for things Copper cannot yet express cleanly
 /// (multi-line method chains, `&[T]`, `cfg!(target_os=...)`).
-const CSTD_NATIVE: &str = include_str!("../../../../std/cstd_native.rs");
 
 // Additional native std modules, bundled on demand when imported
 // (`import { ... } from net` / `from http`). Each has a Copper-written
 // `.crs` surface plus a native `.rs` of helpers.
 const NET_SOURCE: &str = include_str!("../../../../std/net.crs");
-const NET_NATIVE: &str = include_str!("../../../../std/net_native.rs");
 const HTTP_SOURCE: &str = include_str!("../../../../std/http.crs");
 const HTTP_NATIVE: &str = include_str!("../../../../std/http_native.rs");
 const URL_SOURCE: &str = include_str!("../../../../std/url.crs");
-const URL_NATIVE: &str = include_str!("../../../../std/url_native.rs");
 const JSON_SOURCE: &str = include_str!("../../../../std/json.crs");
 const JSON_NATIVE: &str = include_str!("../../../../std/json_native.rs");
 const CRYPTO_SOURCE: &str = include_str!("../../../../std/crypto.crs");
 const CRYPTO_NATIVE: &str = include_str!("../../../../std/crypto_native.rs");
 const TIME_SOURCE: &str = include_str!("../../../../std/time.crs");
 const FS_SOURCE: &str = include_str!("../../../../std/fs.crs");
-const FS_NATIVE: &str = include_str!("../../../../std/fs_native.rs");
 const WS_SOURCE: &str = include_str!("../../../../std/ws.crs");
 const WS_NATIVE: &str = include_str!("../../../../std/ws_native.rs");
 const REFLECT_SOURCE: &str = include_str!("../../../../std/reflect.crs");
@@ -2840,7 +2836,7 @@ impl Parser {
     /// upgrade every top-level `fn` to `pub fn`, and wrap the lot in
     /// `pub mod cstd { ... }` so user code can `use cstd::{input};`.
     fn transpile_cstd_module() -> String {
-        Self::transpile_std_module("cstd", CSTD_SOURCE, CSTD_NATIVE)
+        Self::transpile_std_module("cstd", CSTD_SOURCE, "")
     }
 
     /// True for native std modules selectable via `import { ... } from <name>`
@@ -2852,13 +2848,13 @@ impl Parser {
     /// (crs surface, native helpers) for a native std module name.
     fn std_module_sources(name: &str) -> Option<(&'static str, &'static str)> {
         match name {
-            "net" => Some((NET_SOURCE, NET_NATIVE)),
+            "net" => Some((NET_SOURCE, "")),
             "http" => Some((HTTP_SOURCE, HTTP_NATIVE)),
-            "url" => Some((URL_SOURCE, URL_NATIVE)),
+            "url" => Some((URL_SOURCE, "")),
             "json" => Some((JSON_SOURCE, JSON_NATIVE)),
             "crypto" => Some((CRYPTO_SOURCE, CRYPTO_NATIVE)),
             "time" => Some((TIME_SOURCE, "")),
-            "fs" => Some((FS_SOURCE, FS_NATIVE)),
+            "fs" => Some((FS_SOURCE, "")),
             "ws" => Some((WS_SOURCE, WS_NATIVE)),
             "reflect" => Some((REFLECT_SOURCE, REFLECT_NATIVE)),
             _ => None,

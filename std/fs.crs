@@ -16,3 +16,62 @@
 //   fs::size(path)             -> i64 (bytes, -1 on error)
 //   fs::list(path)             -> newline-joined entry paths
 //   fs::read_lines(path)       -> the file (use .lines() / split on "\n")
+
+func String read(path: &str) {
+    return std::fs::read_to_string(path).unwrap_or_default()
+}
+
+func bool write(path: &str, content: &str) {
+    return std::fs::write(path, content).is_ok()
+}
+
+func bool append(path: &str, content: &str) {
+    return std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut f| std::io::Write::write_all(&mut f, content.as_bytes())).is_ok()
+}
+
+func bool exists(path: &str) {
+    return std::path::Path::new(path).exists()
+}
+
+func bool is_file(path: &str) {
+    return std::path::Path::new(path).is_file()
+}
+
+func bool is_dir(path: &str) {
+    return std::path::Path::new(path).is_dir()
+}
+
+func bool mkdir(path: &str) {
+    return std::fs::create_dir_all(path).is_ok()
+}
+
+func bool remove_file(path: &str) {
+    return std::fs::remove_file(path).is_ok()
+}
+
+func bool remove_dir(path: &str) {
+    return std::fs::remove_dir_all(path).is_ok()
+}
+
+func bool copy(src: &str, dst: &str) {
+    return std::fs::copy(src, dst).is_ok()
+}
+
+func bool rename(src: &str, dst: &str) {
+    return std::fs::rename(src, dst).is_ok()
+}
+
+func i64 size(path: &str) {
+    return std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(-1)
+}
+
+func String list(path: &str) {
+    return match std::fs::read_dir(path) {
+        Ok(it) => { mut entries: Vec<String> = it.filter_map(|e| e.ok()).map(|e| e.path().display().to_string()).collect(); entries.sort(); entries.join("\n") },
+        Err(_) => String::new()
+    }
+}
+
+func String read_lines(path: &str) {
+    return read(path)
+}
