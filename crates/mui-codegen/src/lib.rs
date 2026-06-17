@@ -655,6 +655,29 @@ fn emit_node(
                     for r in reads.iter().filter(|r| sigs.var(r).is_some()) {
                         emit_structural_subscribe(e, sigs, r);
                     }
+                    // Validate arm patterns BEFORE emitting the match. Only
+                    // string/int literals and the `_` wildcard are supported; an
+                    // unsupported pattern (e.g. `Some(x)`) gets a standalone
+                    // `compile_error!` emitted in STATEMENT position (before the
+                    // match), and is then skipped so the surrounding `match` stays
+                    // syntactically valid. Emitting the macro in arm position would
+                    // itself be a syntax error ("expected `=>`") that masks the real
+                    // message — mirror the unsupported-scrutinee path, which emits
+                    // the error instead of the match.
+                    let pat_is_valid = |pat: &str| {
+                        pat == "_"
+                            || (pat.starts_with('"') && pat.ends_with('"'))
+                            || pat.parse::<i64>().is_ok()
+                    };
+                    for arm in arms {
+                        let pat = arm.pattern.trim();
+                        if !pat_is_valid(pat) {
+                            // {:?} escaping so quotes/backslashes in the pattern
+                            // can't break out of the macro call.
+                            let __m = format!("mui: unsupported match arm pattern: {}", pat);
+                            e.line(&format!("compile_error!({:?});", __m));
+                        }
+                    }
                     // String scrutinee: match on &str so literal-string arm patterns work.
                     let scrut_is_str = reads.iter().any(|r| sigs.kind(r) == Some(crate::eval::SigKind::Str));
                     if scrut_is_str {
@@ -666,22 +689,13 @@ fn emit_node(
                     let mut saw_wildcard = false;
                     for arm in arms {
                         let pat = arm.pattern.trim();
+                        // Skip unsupported arms (the standalone compile_error! above
+                        // already fails the build with the real message).
+                        if !pat_is_valid(pat) {
+                            continue;
+                        }
                         if pat == "_" {
                             saw_wildcard = true;
-                        }
-                        // Validate: only string/int literals and `_` wildcard are supported.
-                        let pat_is_valid = pat == "_"
-                            || (pat.starts_with('"') && pat.ends_with('"'))
-                            || pat.parse::<i64>().is_ok();
-                        if !pat_is_valid {
-                            // Emit the error as a standalone statement (NOT in pattern
-                            // position — a macro call is not a valid pattern). Use {:?}
-                            // escaping so quotes/backslashes in the pattern can't break
-                            // the macro call. Skip emitting this arm entirely so the
-                            // surrounding `match` remains syntactically valid.
-                            let __m = format!("mui: unsupported match arm pattern: {}", pat);
-                            e.line(&format!("compile_error!({:?});", __m));
-                            continue;
                         }
                         e.line(&format!("{pat} => {{"));
                         e.indent();
@@ -3520,6 +3534,64 @@ view V() {
         assert!(code.contains("match (__sig_status.borrow().get()).as_str() {"), "match scrutinee:\n{code}");
         assert!(code.contains("\"on\" =>"), "literal arm:\n{code}");
         assert!(code.contains("_ =>"), "wildcard arm:\n{code}");
+    }
+
+    #[test]
+    fn unsupported_match_arm_emits_compile_error_before_match_not_in_arm_position() {
+        // An arm pattern that is neither a literal nor `_` (here `Some(x)`) is
+        // unsupported. The generated `compile_error!` must be a standalone
+        // STATEMENT before the `match` (so it's not in arm position, which would
+        // itself be a syntax error masking the real message). The surrounding
+        // `match` must stay syntactically valid (only the literal `_` arm + the
+        // injected wildcard fallback).
+        let src = r#"
+app { name: "M" width: 200 height: 200 entry: V }
+view V() {
+  mut n = signal(0)
+  match n {
+    Some(x) => { Text("a") }
+    _ => { Text("b") }
+  }
+}
+"#;
+        let code = crate::generate_from_str(src).expect("codegen");
+        // The macro is emitted at all.
+        assert!(
+            code.contains("compile_error!("),
+            "expected a compile_error! for the unsupported arm:\n{code}"
+        );
+        // It must NOT be in arm position: the `compile_error!` line must not
+        // itself be an arm (no `=>` on it), must be a self-contained statement,
+        // the NEXT non-empty line must NOT be an arm (`=>`), and the macro must
+        // be emitted before (not inside) the `match` it guards.
+        let lines: Vec<&str> = code.lines().collect();
+        let err_idx = lines
+            .iter()
+            .position(|l| l.contains("compile_error!("))
+            .expect("compile_error! line present");
+        let err_line = lines[err_idx];
+        assert!(
+            !err_line.contains("=>"),
+            "compile_error! is in arm position (same line as `=>`):\n{err_line}"
+        );
+        assert!(
+            err_line.trim_end().ends_with(");"),
+            "compile_error! is not a standalone statement:\n{err_line}"
+        );
+        // The next non-empty line must not be an arm (`=>`); it should be the
+        // guarded `match` line (statement position confirmed).
+        let next = lines[err_idx + 1..]
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .expect("a line follows compile_error!");
+        assert!(
+            !next.contains("=>"),
+            "compile_error! is immediately followed by an arm (`=>`):\n{next}"
+        );
+        assert!(
+            next.trim_start().starts_with("match "),
+            "compile_error! is not followed by the guarded match:\n{next}"
+        );
     }
 }
 
