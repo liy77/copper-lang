@@ -30,7 +30,8 @@ mod eval;
 
 /// Generate a complete Rust program from a MUI source string.
 /// Returns `Err(msg)` if the source has parse errors.
-pub fn generate_from_str(src: &str) -> Result<String, String> {
+#[cfg(test)]
+pub(crate) fn generate_from_str(src: &str) -> Result<String, String> {
     let doc = mui_syntax::parse(src);
     if !doc.errors.is_empty() {
         return Err(format!("parse errors: {:?}", doc.errors));
@@ -605,7 +606,8 @@ fn emit_node(
                 }
                 _ => {
                     // Unsupported condition: fail loudly in generated code.
-                    e.line(&format!("compile_error!(\"mui: unsupported if condition: {}\");", cond_raw.replace('"', "'")));
+                    let msg = format!("mui: unsupported if condition: {}", cond_raw);
+                    e.line(&format!("compile_error!({:?});", msg));
                 }
             }
         }
