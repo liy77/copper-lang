@@ -699,6 +699,10 @@ impl Parser {
                         return Consumed::consume(0);
                     }
 
+                    // Lower Copper aliases inside the (possibly generic) type,
+                    // e.g. `Vec<int>` -> `Vec<i64>`. The head was already
+                    // converted; convert_type is idempotent on it.
+                    let full_type = convert_type(&full_type);
                     if prev_is_decl {
                         self.append(
                             &format!("{var_name}: {full_type}"),
@@ -2909,7 +2913,10 @@ impl Parser {
                             }
                         }
 
-                        self.result.return_type(full);
+                        // Run the assembled `Name<...>` through convert_type so
+                        // Copper aliases inside the generic args are lowered
+                        // (`Result<int, string>` -> `Result<i64, String>`).
+                        self.result.return_type(convert_type(&full));
                         for _ in 0..consumed {
                             self.next();
                         }

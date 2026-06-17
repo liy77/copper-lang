@@ -64,6 +64,27 @@ pub fn convert_type(value: &str) -> String {
             .filter(|p| !p.is_empty())
             .collect();
         format!("({})", converted.join(", "))
+    } else if base.ends_with('>') && base.contains('<') {
+        // Generic type — convert the head alias and recurse into each arg so
+        // Copper aliases inside `<...>` are lowered too:
+        // `Rc<RefCell<int>>` -> `Rc<RefCell<i64>>`, `Vec<string>` -> `Vec<String>`,
+        // `Reflected<int>` -> `Reflected<i64>`.
+        let lt = base.find('<').unwrap();
+        let head = base[..lt].trim();
+        let inner = &base[lt + 1..base.len() - 1];
+        let mut head_kind = head.to_string();
+        for (copper, rust) in COPPER_TYPES {
+            if head == *copper {
+                head_kind = (*rust).to_string();
+                break;
+            }
+        }
+        let args: Vec<String> = split_at_top_level_commas(inner)
+            .iter()
+            .map(|p| convert_type(p.trim()))
+            .filter(|p| !p.is_empty())
+            .collect();
+        format!("{}<{}>", head_kind, args.join(", "))
     } else {
         let mut kind = base.to_string();
         for (copper, rust) in COPPER_TYPES {
@@ -139,3 +160,19 @@ pub const BOOL: &[&str] = &["true", "false"];
 /// Logical operators that the tokenizer may emit either fused (`&&`) or, in
 /// some contexts, as two single tokens (`&` `&`). Parsers must coalesce.
 pub const LOGICAL_PAIRS: &[(&str, &str)] = &[("&", "&"), ("|", "|")];
+
+#[cfg(test)]
+mod generic_type_tests {
+    use super::convert_type;
+
+    #[test]
+    fn converts_aliases_inside_generic_args() {
+        assert_eq!(convert_type("Vec<int>"), "Vec<i64>");
+        assert_eq!(convert_type("Rc<RefCell<int>>"), "Rc<RefCell<i64>>");
+        assert_eq!(convert_type("Result<int, string>"), "Result<i64, String>");
+        assert_eq!(convert_type("HashMap<string, int>"), "HashMap<String, i64>");
+        // user types and Rust-native names pass through unchanged
+        assert_eq!(convert_type("Reflected<Obj>"), "Reflected<Obj>");
+        assert_eq!(convert_type("Signal<i32>"), "Signal<i32>");
+    }
+}
