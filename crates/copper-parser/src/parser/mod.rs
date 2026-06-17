@@ -1834,6 +1834,14 @@ impl Parser {
             let mut reflect_fields: Vec<String> = Vec::new();
             let has_generics = !generics.is_empty();
 
+            // Nesting depth inside the CURRENT field's type, counting
+            // `<`/`(`/`[` opens. While > 0 we are inside a generic/tuple/array
+            // type (`Vec<(String, int)>`): a `,` is a tuple/generic-arg
+            // separator (not a field boundary) and an identifier is a type
+            // component (not a new field name). Without this the field flush
+            // mis-fires inside the type, yielding `Vec<(, String, int)>`.
+            let mut type_depth = 0usize;
+
             while brace_count > 0 && consumed < self.tokens.len() - self.current {
                 if let Some(tok) = self.select(self.current + consumed) {
                     consumed += 1;
@@ -1863,7 +1871,8 @@ impl Parser {
                             // between) starts a NEW field on the same line. Flush
                             // the complete field first, then read this token as
                             // the new field name.
-                            if !in_field_name
+                            if type_depth == 0
+                                && !in_field_name
                                 && seen_type
                                 && !current_field.trim().is_empty()
                             {
@@ -1956,8 +1965,40 @@ impl Parser {
                             //     _ => {}
                             // }
                         }
+                        // Track nesting of the current field's type so commas
+                        // and identifiers inside `<...>`/`(...)`/`[...]` are not
+                        // mistaken for field boundaries. `<`/`>` arrive as
+                        // Operator tokens; parens/brackets as their own kinds.
+                        TokenKind::Operator if tok.value == "<" => {
+                            type_depth += 1;
+                            current_field.push('<');
+                        }
+                        TokenKind::Operator if tok.value == ">" => {
+                            type_depth = type_depth.saturating_sub(1);
+                            current_field.push('>');
+                        }
+                        TokenKind::ParenthesesStart => {
+                            type_depth += 1;
+                            current_field.push('(');
+                        }
+                        TokenKind::ParenthesesEnd => {
+                            type_depth = type_depth.saturating_sub(1);
+                            current_field.push(')');
+                        }
+                        TokenKind::BracketStart => {
+                            type_depth += 1;
+                            current_field.push('[');
+                        }
+                        TokenKind::BracketEnd => {
+                            type_depth = type_depth.saturating_sub(1);
+                            current_field.push(']');
+                        }
                         TokenKind::Comma => {
-                            if !current_field.trim().is_empty() {
+                            if type_depth > 0 {
+                                // Separator inside a tuple/generic field type
+                                // (`Vec<(String, int)>`) — not a field boundary.
+                                current_field.push_str(", ");
+                            } else if !current_field.trim().is_empty() {
                                 if let Some(name) = Self::reflect_field_name(&current_field) {
                                     reflect_fields.push(name);
                                 }
@@ -1978,7 +2019,10 @@ impl Parser {
                             // `first: Tsecond: T`. Only flush once a field is
                             // complete (name + type seen); a blank line or the
                             // newline right after `{` leaves nothing to emit.
-                            if !in_field_name && !current_field.trim().is_empty() {
+                            if type_depth == 0
+                                && !in_field_name
+                                && !current_field.trim().is_empty()
+                            {
                                 if let Some(name) = Self::reflect_field_name(&current_field) {
                                     reflect_fields.push(name);
                                 }
