@@ -13,29 +13,19 @@ const CSTD_SOURCE: &str = include_str!("../../../../std/cstd.crs");
 
 /// Native-Rust helpers for things Copper cannot yet express cleanly
 /// (multi-line method chains, `&[T]`, `cfg!(target_os=...)`).
-const CSTD_NATIVE: &str = include_str!("../../../../std/cstd_native.rs");
 
 // Additional native std modules, bundled on demand when imported
 // (`import { ... } from net` / `from http`). Each has a Copper-written
 // `.crs` surface plus a native `.rs` of helpers.
 const NET_SOURCE: &str = include_str!("../../../../std/net.crs");
-const NET_NATIVE: &str = include_str!("../../../../std/net_native.rs");
 const HTTP_SOURCE: &str = include_str!("../../../../std/http.crs");
-const HTTP_NATIVE: &str = include_str!("../../../../std/http_native.rs");
 const URL_SOURCE: &str = include_str!("../../../../std/url.crs");
-const URL_NATIVE: &str = include_str!("../../../../std/url_native.rs");
 const JSON_SOURCE: &str = include_str!("../../../../std/json.crs");
-const JSON_NATIVE: &str = include_str!("../../../../std/json_native.rs");
 const CRYPTO_SOURCE: &str = include_str!("../../../../std/crypto.crs");
-const CRYPTO_NATIVE: &str = include_str!("../../../../std/crypto_native.rs");
 const TIME_SOURCE: &str = include_str!("../../../../std/time.crs");
-const TIME_NATIVE: &str = include_str!("../../../../std/time_native.rs");
 const FS_SOURCE: &str = include_str!("../../../../std/fs.crs");
-const FS_NATIVE: &str = include_str!("../../../../std/fs_native.rs");
 const WS_SOURCE: &str = include_str!("../../../../std/ws.crs");
-const WS_NATIVE: &str = include_str!("../../../../std/ws_native.rs");
 const REFLECT_SOURCE: &str = include_str!("../../../../std/reflect.crs");
-const REFLECT_NATIVE: &str = include_str!("../../../../std/reflect_native.rs");
 pub mod result;
 pub mod scope;
 pub mod scope_manager;
@@ -690,10 +680,15 @@ impl Parser {
                     // struct-literal field (`Vec2 { x: self.x }`), which must
                     // pass through untouched — otherwise `x: self.x` becomes
                     // `let x: self; .x`. It's a struct field when the name
-                    // follows a `,` (a later field) or the value after the type
-                    // continues as an expression (`.`/`(`/`[`/`,`/operator/`::`).
-                    let name_follows_comma =
-                        self.current > 0 && self.tokens[self.current - 1].kind == TokenKind::Comma;
+                    // follows a `,` (a later field), follows the literal's
+                    // opening `{` (the first field, e.g. `V { n: x }`), or the
+                    // value after the type continues as an expression
+                    // (`.`/`(`/`[`/`,`/operator/`::`).
+                    let name_follows_comma = self.current > 0
+                        && matches!(
+                            self.tokens[self.current - 1].kind,
+                            TokenKind::Comma | TokenKind::BraceStart
+                        );
                     let value_continues = match self.select(self.current + 3 + extra as usize) {
                         Some(t) => {
                             matches!(
@@ -1033,6 +1028,10 @@ impl Parser {
                 | Some(TokenKind::ParametersEnd)
                 | Some(TokenKind::ParenthesesEnd)
                 | Some(TokenKind::BracketEnd)
+                // An identifier in argument position is tokenized as `Param`
+                // (`g(v[i])`); it still names a value, so a following `[` is an
+                // index access, not a list literal.
+                | Some(TokenKind::Param)
         );
         // A `[` immediately after `!` is the body of a macro invocation
         // (`vec![...]`, `assert![...]`, ...) — never a literal. Don't add a
@@ -1834,6 +1833,14 @@ impl Parser {
             let mut reflect_fields: Vec<String> = Vec::new();
             let has_generics = !generics.is_empty();
 
+            // Nesting depth inside the CURRENT field's type, counting
+            // `<`/`(`/`[` opens. While > 0 we are inside a generic/tuple/array
+            // type (`Vec<(String, int)>`): a `,` is a tuple/generic-arg
+            // separator (not a field boundary) and an identifier is a type
+            // component (not a new field name). Without this the field flush
+            // mis-fires inside the type, yielding `Vec<(, String, int)>`.
+            let mut type_depth = 0usize;
+
             while brace_count > 0 && consumed < self.tokens.len() - self.current {
                 if let Some(tok) = self.select(self.current + consumed) {
                     consumed += 1;
@@ -1863,7 +1870,8 @@ impl Parser {
                             // between) starts a NEW field on the same line. Flush
                             // the complete field first, then read this token as
                             // the new field name.
-                            if !in_field_name
+                            if type_depth == 0
+                                && !in_field_name
                                 && seen_type
                                 && !current_field.trim().is_empty()
                             {
@@ -1956,8 +1964,40 @@ impl Parser {
                             //     _ => {}
                             // }
                         }
+                        // Track nesting of the current field's type so commas
+                        // and identifiers inside `<...>`/`(...)`/`[...]` are not
+                        // mistaken for field boundaries. `<`/`>` arrive as
+                        // Operator tokens; parens/brackets as their own kinds.
+                        TokenKind::Operator if tok.value == "<" => {
+                            type_depth += 1;
+                            current_field.push('<');
+                        }
+                        TokenKind::Operator if tok.value == ">" => {
+                            type_depth = type_depth.saturating_sub(1);
+                            current_field.push('>');
+                        }
+                        TokenKind::ParenthesesStart => {
+                            type_depth += 1;
+                            current_field.push('(');
+                        }
+                        TokenKind::ParenthesesEnd => {
+                            type_depth = type_depth.saturating_sub(1);
+                            current_field.push(')');
+                        }
+                        TokenKind::BracketStart => {
+                            type_depth += 1;
+                            current_field.push('[');
+                        }
+                        TokenKind::BracketEnd => {
+                            type_depth = type_depth.saturating_sub(1);
+                            current_field.push(']');
+                        }
                         TokenKind::Comma => {
-                            if !current_field.trim().is_empty() {
+                            if type_depth > 0 {
+                                // Separator inside a tuple/generic field type
+                                // (`Vec<(String, int)>`) — not a field boundary.
+                                current_field.push_str(", ");
+                            } else if !current_field.trim().is_empty() {
                                 if let Some(name) = Self::reflect_field_name(&current_field) {
                                     reflect_fields.push(name);
                                 }
@@ -1978,7 +2018,10 @@ impl Parser {
                             // `first: Tsecond: T`. Only flush once a field is
                             // complete (name + type seen); a blank line or the
                             // newline right after `{` leaves nothing to emit.
-                            if !in_field_name && !current_field.trim().is_empty() {
+                            if type_depth == 0
+                                && !in_field_name
+                                && !current_field.trim().is_empty()
+                            {
                                 if let Some(name) = Self::reflect_field_name(&current_field) {
                                     reflect_fields.push(name);
                                 }
@@ -2053,22 +2096,37 @@ impl Parser {
 
             let mut consumed = 1; // count the 'impl'
 
-            // Generics for impl (optional)
+            // Generics for impl (optional). The tokenizer emits `<`/`>` as
+            // `Operator` (the comparison rule fires before AngleStart/End), so
+            // accept both forms and track `<` depth for nested generics.
             let mut impl_generics = String::new();
             if let Some(tok) = self.select(self.current + consumed) {
-                if tok.kind == TokenKind::AngleStart {
+                if tok.kind == TokenKind::AngleStart
+                    || (tok.kind == TokenKind::Operator && tok.value == "<")
+                {
                     consumed += 1;
                     impl_generics.push('<');
-
+                    let mut depth = 1usize;
                     while let Some(tok) = self.select(self.current + consumed) {
                         consumed += 1;
-                        if tok.kind == TokenKind::AngleEnd {
+                        let is_open = tok.kind == TokenKind::AngleStart
+                            || (tok.kind == TokenKind::Operator && tok.value == "<");
+                        let is_close = tok.kind == TokenKind::AngleEnd
+                            || (tok.kind == TokenKind::Operator && tok.value == ">");
+                        if is_open {
+                            depth += 1;
+                            impl_generics.push('<');
+                        } else if is_close {
+                            depth -= 1;
                             impl_generics.push('>');
-                            break;
-                        }
-                        impl_generics.push_str(&tok.value);
-                        if tok.value == "," {
-                            impl_generics.push(' ');
+                            if depth == 0 {
+                                break;
+                            }
+                        } else {
+                            impl_generics.push_str(&tok.value);
+                            if tok.value == "," {
+                                impl_generics.push(' ');
+                            }
                         }
                     }
                 }
@@ -2086,23 +2144,46 @@ impl Parser {
                 return Consumed::consume(0);
             };
 
-            // Type generics (optional)
+            // Type generics (optional). As with impl generics, `<`/`>` may
+            // arrive as `Operator` tokens; accept both and track depth so
+            // nested generics close correctly. Copper aliases inside the args
+            // (`<int>` -> `<i64>`) are lowered via `convert_type`.
             let mut type_generics = String::new();
             if let Some(tok) = self.select(self.current + consumed) {
-                if tok.kind == TokenKind::AngleStart {
+                if tok.kind == TokenKind::AngleStart
+                    || (tok.kind == TokenKind::Operator && tok.value == "<")
+                {
                     consumed += 1;
                     type_generics.push('<');
-
+                    let mut depth = 1usize;
                     while let Some(tok) = self.select(self.current + consumed) {
                         consumed += 1;
-                        if tok.kind == TokenKind::AngleEnd {
+                        let is_open = tok.kind == TokenKind::AngleStart
+                            || (tok.kind == TokenKind::Operator && tok.value == "<");
+                        let is_close = tok.kind == TokenKind::AngleEnd
+                            || (tok.kind == TokenKind::Operator && tok.value == ">");
+                        if is_open {
+                            depth += 1;
+                            type_generics.push('<');
+                        } else if is_close {
+                            depth -= 1;
                             type_generics.push('>');
-                            break;
+                            if depth == 0 {
+                                break;
+                            }
+                        } else {
+                            type_generics.push_str(&tok.value);
+                            if tok.value == "," {
+                                type_generics.push(' ');
+                            }
                         }
-                        type_generics.push_str(&tok.value);
-                        if tok.value == "," {
-                            type_generics.push(' ');
-                        }
+                    }
+                    // Lower Copper type aliases inside the generic args without
+                    // altering the (trait/type) head: wrap in a dummy head,
+                    // convert, then strip it back off.
+                    let lowered = convert_type(&format!("__CopperGeneric{}", type_generics));
+                    if let Some(stripped) = lowered.strip_prefix("__CopperGeneric") {
+                        type_generics = stripped.to_string();
                     }
                 }
             }
@@ -2120,10 +2201,66 @@ impl Parser {
                             consumed += 1;
                             let actual_target = tok.value.clone();
                             self.current_impl_target = Some(actual_target.clone());
+
+                            // Optional generics on the target type itself
+                            // (`impl Trait<X> for Foo<Y>`). The generics parsed
+                            // above (`type_generics`) belong to the *trait*
+                            // (the name before `for`); read a fresh set for the
+                            // concrete target after it.
+                            let mut target_generics = String::new();
+                            if let Some(tok) = self.select(self.current + consumed) {
+                                if tok.kind == TokenKind::AngleStart
+                                    || (tok.kind == TokenKind::Operator && tok.value == "<")
+                                {
+                                    consumed += 1;
+                                    target_generics.push('<');
+                                    let mut depth = 1usize;
+                                    while let Some(tok) = self.select(self.current + consumed) {
+                                        consumed += 1;
+                                        let is_open = tok.kind == TokenKind::AngleStart
+                                            || (tok.kind == TokenKind::Operator
+                                                && tok.value == "<");
+                                        let is_close = tok.kind == TokenKind::AngleEnd
+                                            || (tok.kind == TokenKind::Operator
+                                                && tok.value == ">");
+                                        if is_open {
+                                            depth += 1;
+                                            target_generics.push('<');
+                                        } else if is_close {
+                                            depth -= 1;
+                                            target_generics.push('>');
+                                            if depth == 0 {
+                                                break;
+                                            }
+                                        } else {
+                                            target_generics.push_str(&tok.value);
+                                            if tok.value == "," {
+                                                target_generics.push(' ');
+                                            }
+                                        }
+                                    }
+                                    let lowered = convert_type(&format!(
+                                        "__CopperGeneric{}",
+                                        target_generics
+                                    ));
+                                    if let Some(stripped) =
+                                        lowered.strip_prefix("__CopperGeneric")
+                                    {
+                                        target_generics = stripped.to_string();
+                                    }
+                                }
+                            }
+
+                            // `type_generics` (parsed before `for`) belongs to
+                            // the trait; `target_generics` to the concrete type.
                             self.append(
                                 &format!(
-                                    "impl{} {} for {}{} {{",
-                                    impl_generics, trait_name, actual_target, type_generics
+                                    "impl{} {}{} for {}{} {{",
+                                    impl_generics,
+                                    trait_name,
+                                    type_generics,
+                                    actual_target,
+                                    target_generics
                                 ),
                                 AppendMode::ForceAppendWithSpace,
                             );
@@ -2335,9 +2472,20 @@ impl Parser {
                     let mut param_end = param_start + 1;
                     let mut paren_count = 1;
                     while param_end < tokens.len() && paren_count > 0 {
+                        // Count BOTH paren flavours symmetrically. A tuple in a
+                        // param type (`pairs: Vec<(String, Value)>`) lexes its
+                        // inner `(`/`)` as `ParenthesesStart`/`ParenthesesEnd`,
+                        // while the param list's closing `)` is `ParametersEnd`.
+                        // Decrementing only on `ParametersEnd` left the tuple's
+                        // open paren unbalanced, so `param_end` ran past the
+                        // method body — the whole method was silently dropped.
                         match tokens[param_end].kind {
-                            TokenKind::ParenthesesStart => paren_count += 1,
-                            TokenKind::ParametersEnd => paren_count -= 1,
+                            TokenKind::ParenthesesStart | TokenKind::ParametersStart => {
+                                paren_count += 1
+                            }
+                            TokenKind::ParenthesesEnd | TokenKind::ParametersEnd => {
+                                paren_count -= 1
+                            }
                             _ => {}
                         }
                         param_end += 1;
@@ -2418,16 +2566,57 @@ impl Parser {
                             if i_param + 2 < param_tokens.len()
                                 && param_tokens[i_param + 1].kind == TokenKind::Colon
                             {
-                                let (mut param_type, data_type) = utils::convert_type_with_marking(
-                                    &param_tokens[i_param + 2].value,
+                                // Reference prefix on the param type. `&str`,
+                                // `&mut String`, `&[u8]` arrive as separate
+                                // tokens (`&` is an Operator, `mut` a keyword,
+                                // the referenced type the following token(s));
+                                // reading only the single `&` token would drop
+                                // the referenced type (`v: &str` -> `v: &`). The
+                                // free-function param path keeps the whole
+                                // reference by accumulating tokens — mirror that
+                                // by consuming the leading `&`/`&mut` here, then
+                                // letting the type read below pick up the
+                                // referenced type token(s).
+                                let mut k_type = i_param + 2;
+                                let mut ref_prefix = String::new();
+                                while k_type < param_tokens.len()
+                                    && param_tokens[k_type].kind == TokenKind::Operator
+                                    && (param_tokens[k_type].value == "&"
+                                        || param_tokens[k_type].value == "&&")
+                                {
+                                    ref_prefix.push_str(&param_tokens[k_type].value);
+                                    k_type += 1;
+                                    if k_type < param_tokens.len()
+                                        && param_tokens[k_type].value == "mut"
+                                    {
+                                        ref_prefix.push_str("mut ");
+                                        k_type += 1;
+                                    }
+                                }
+
+                                if k_type >= param_tokens.len() {
+                                    break;
+                                }
+
+                                let (converted, data_type) = utils::convert_type_with_marking(
+                                    &param_tokens[k_type].value,
                                 );
+                                let mut param_type = format!("{}{}", ref_prefix, converted);
 
                                 // Gobble generic arguments on the param type too
                                 // (`Vec<GameObject>`, `Option<i32>`), mirroring
                                 // the return-type handling above. Without this
                                 // the `<...>` tokens leak and the comma inside
                                 // `HashMap<K, V>` is mistaken for a param break.
-                                let mut k = i_param + 3;
+                                // Balance `(`/`)` and `[`/`]` alongside `<`/`>`
+                                // so a tuple or slice nested in the generic args
+                                // (`Vec<(String, Value)>`) keeps its internal
+                                // commas — otherwise the tuple's `,` is taken as
+                                // a parameter separator and the rest of the
+                                // signature (and the whole method) is dropped.
+                                // This mirrors the struct-field tuple fix in
+                                // `parse_struct_definition`.
+                                let mut k = k_type + 1;
                                 if k < param_tokens.len() && is_open(param_tokens[k]) {
                                     let mut depth = 0usize;
                                     while k < param_tokens.len() {
@@ -2443,12 +2632,25 @@ impl Parser {
                                                 break;
                                             }
                                             continue;
+                                        } else if t.value == "(" || t.value == "[" {
+                                            depth += 1;
+                                            param_type.push_str(&t.value);
+                                        } else if t.value == ")" || t.value == "]" {
+                                            depth = depth.saturating_sub(1);
+                                            param_type.push_str(&t.value);
                                         } else {
                                             param_type.push_str(&t.value);
                                         }
                                         k += 1;
                                     }
                                 }
+
+                                // Lower Copper type aliases that appear inside
+                                // the assembled type (`Vec<(String, int)>` ->
+                                // `Vec<(String, i64)>`); the per-token
+                                // `convert_type_with_marking` above only saw the
+                                // base head.
+                                param_type = convert_type(&param_type);
 
                                 if let Some(dt) = data_type {
                                     self.uses_data_types = true;
@@ -2544,8 +2746,12 @@ impl Parser {
                     let mut paren_count = 1;
                     while param_end < tokens.len() && paren_count > 0 {
                         match tokens[param_end].kind {
-                            TokenKind::ParenthesesStart => paren_count += 1,
-                            TokenKind::ParametersEnd => paren_count -= 1,
+                            TokenKind::ParenthesesStart | TokenKind::ParametersStart => {
+                                paren_count += 1
+                            }
+                            TokenKind::ParenthesesEnd | TokenKind::ParametersEnd => {
+                                paren_count -= 1
+                            }
                             _ => {}
                         }
                         param_end += 1;
@@ -2841,7 +3047,7 @@ impl Parser {
     /// upgrade every top-level `fn` to `pub fn`, and wrap the lot in
     /// `pub mod cstd { ... }` so user code can `use cstd::{input};`.
     fn transpile_cstd_module() -> String {
-        Self::transpile_std_module("cstd", CSTD_SOURCE, CSTD_NATIVE)
+        Self::transpile_std_module("cstd", CSTD_SOURCE, "")
     }
 
     /// True for native std modules selectable via `import { ... } from <name>`
@@ -2853,15 +3059,15 @@ impl Parser {
     /// (crs surface, native helpers) for a native std module name.
     fn std_module_sources(name: &str) -> Option<(&'static str, &'static str)> {
         match name {
-            "net" => Some((NET_SOURCE, NET_NATIVE)),
-            "http" => Some((HTTP_SOURCE, HTTP_NATIVE)),
-            "url" => Some((URL_SOURCE, URL_NATIVE)),
-            "json" => Some((JSON_SOURCE, JSON_NATIVE)),
-            "crypto" => Some((CRYPTO_SOURCE, CRYPTO_NATIVE)),
-            "time" => Some((TIME_SOURCE, TIME_NATIVE)),
-            "fs" => Some((FS_SOURCE, FS_NATIVE)),
-            "ws" => Some((WS_SOURCE, WS_NATIVE)),
-            "reflect" => Some((REFLECT_SOURCE, REFLECT_NATIVE)),
+            "net" => Some((NET_SOURCE, "")),
+            "http" => Some((HTTP_SOURCE, "")),
+            "url" => Some((URL_SOURCE, "")),
+            "json" => Some((JSON_SOURCE, "")),
+            "crypto" => Some((CRYPTO_SOURCE, "")),
+            "time" => Some((TIME_SOURCE, "")),
+            "fs" => Some((FS_SOURCE, "")),
+            "ws" => Some((WS_SOURCE, "")),
+            "reflect" => Some((REFLECT_SOURCE, "")),
             _ => None,
         }
     }
@@ -2877,16 +3083,59 @@ impl Parser {
 
         let body = raw.replace("fn main() {}", "").trim_end().to_string();
 
+        // Promote module functions to `pub fn` so `mod::{X}` resolves — but
+        // ONLY where `pub` is legal. A `fn` inside a `trait` body or a trait
+        // `impl ... for ...` block must NOT be `pub` (rustc E0449). A `fn` at
+        // module top level, or inside an inherent `impl Type { }` (whose
+        // methods are called externally, e.g. `r.keys()`), DOES need `pub`.
+        // Track a stack of enclosing blocks; `no_promote` is true inside a
+        // trait / trait-impl block. Brace bookkeeping is line-granular, which
+        // suits the one-construct-per-line generated Rust.
+        let mut no_promote_stack: Vec<bool> = Vec::new();
         let promoted = body
             .lines()
             .map(|line| {
                 let trimmed = line.trim_start();
-                if let Some(rest) = trimmed.strip_prefix("fn ") {
-                    let indent_len = line.len() - trimmed.len();
-                    format!("{}pub fn {}", &line[..indent_len], rest)
+                let depth = no_promote_stack.len();
+                let in_no_promote = no_promote_stack.iter().any(|&x| x);
+                let indent = &line[..line.len() - trimmed.len()];
+                // What needs `pub` to be reachable as `mod::X`:
+                //  - `fn`: at module top level OR inside an inherent `impl`
+                //    (methods called externally) — never inside trait/trait-impl.
+                //  - type/const decls (`struct`/`enum`/`trait`/`type`/`const`/
+                //    `static`): ONLY at module top level (depth 0) — a local
+                //    `static`/`const` inside a fn body must stay private.
+                let promote = if trimmed.starts_with("pub ") {
+                    false
+                } else if trimmed.starts_with("fn ") {
+                    !in_no_promote
+                } else if depth == 0 {
+                    trimmed.starts_with("struct ")
+                        || trimmed.starts_with("enum ")
+                        || trimmed.starts_with("trait ")
+                        || trimmed.starts_with("type ")
+                        || trimmed.starts_with("const ")
+                        || trimmed.starts_with("static ")
+                } else {
+                    false
+                };
+                let out = if promote {
+                    format!("{}pub {}", indent, trimmed)
                 } else {
                     line.to_string()
+                };
+                // A brace that OPENS a block records whether it is a no-promote
+                // zone (trait body or `impl ... for ...`); closing braces pop.
+                let opens_no_promote = trimmed.starts_with("trait ")
+                    || (trimmed.starts_with("impl") && trimmed.contains(" for "));
+                for ch in line.chars() {
+                    if ch == '{' {
+                        no_promote_stack.push(opens_no_promote);
+                    } else if ch == '}' {
+                        no_promote_stack.pop();
+                    }
                 }
+                out
             })
             .collect::<Vec<_>>()
             .join("\n");

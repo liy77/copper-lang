@@ -4,11 +4,6 @@
 // Loaded when a program does `import { ... } from net`. The compiler wraps
 // this file + `std/net_native.rs` into a single `pub mod net { ... }`.
 //
-// The substantive logic lives in `std/net_native.rs` because it needs
-// `&[u8]` slices, multi-line builder chains and timeouts that Copper's
-// surface syntax doesn't express directly. This file documents the public
-// surface; the native side implements it:
-//
 //   net::resolve(host)               -> first resolved "ip:port" or ""
 //   net::is_port_open(host, port)    -> bool (TCP connect, 2s timeout)
 //   net::tcp_request(addr, payload)  -> response bytes as a String
@@ -18,3 +13,91 @@
 //   net::local_ip()                  -> best-guess outbound local IP
 //
 // `addr` is "host:port" (e.g. "example.com:80", "127.0.0.1:6379").
+
+// Resolve a host (or "host:port") to its first socket address as a string
+// ("93.184.216.34:80"). Returns "" when resolution fails. A bare host with
+// no port resolves against port 0 (so the IP is still useful).
+func String resolve(host: &str) {
+    if host.contains(':') {
+        return <str as std::net::ToSocketAddrs>::to_socket_addrs(host).ok().and_then(|mut it| it.next()).map(|a| a.to_string()).unwrap_or_default()
+    }
+    mut target = format!("{}:0", host)
+    return <str as std::net::ToSocketAddrs>::to_socket_addrs(&target).ok().and_then(|mut it| it.next()).map(|a| a.to_string()).unwrap_or_default()
+}
+
+// True if a TCP connection to `host:port` succeeds within 2 seconds.
+func bool is_port_open(host: &str, port: u16) {
+    mut addr = format!("{}:{}", host, port)
+    mut addrs_opt = <str as std::net::ToSocketAddrs>::to_socket_addrs(&addr).ok()
+    if addrs_opt.is_none() { return false }
+    mut sa_opt = addrs_opt.unwrap().next()
+    if sa_opt.is_none() { return false }
+    return std::net::TcpStream::connect_timeout(&sa_opt.unwrap(), std::time::Duration::from_secs(2)).is_ok()
+}
+
+// Connect to `addr` ("host:port"), send `payload`, read the full response
+// until the peer closes (or a 10s read timeout), and return it as a
+// lossy-UTF-8 String. Returns "" on any connection/IO error.
+func String tcp_request(addr: &str, payload: &str) {
+    mut stream_opt = std::net::TcpStream::connect(addr).ok()
+    if stream_opt.is_none() { return String::new() }
+    mut stream = stream_opt.unwrap()
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok()
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(10))).ok()
+    if std::io::Write::write_all(&mut stream, payload.as_bytes()).is_err() { return String::new() }
+    std::io::Write::flush(&mut stream).ok()
+    mut out: Vec<u8> = Vec::new()
+    mut buf = vec![0u8; 4096]
+    loop {
+        match std::io::Read::read(&mut stream, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => { mut sl: &[u8] = &buf[..n]; out.extend_from_slice(sl) },
+            Err(_) => break,
+        }
+    }
+    return String::from_utf8_lossy(&out).into_owned()
+}
+
+// Fire-and-forget: connect, write `payload`, close. Returns true on success.
+func bool tcp_send(addr: &str, payload: &str) {
+    mut stream_opt = std::net::TcpStream::connect(addr).ok()
+    if stream_opt.is_none() { return false }
+    mut stream = stream_opt.unwrap()
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(10))).ok()
+    if std::io::Write::write_all(&mut stream, payload.as_bytes()).is_err() { return false }
+    return std::io::Write::flush(&mut stream).is_ok()
+}
+
+// Send a single UDP datagram to `addr`. Returns true on success.
+func bool udp_send(addr: &str, payload: &str) {
+    mut sock_opt = std::net::UdpSocket::bind("0.0.0.0:0").ok()
+    if sock_opt.is_none() { return false }
+    return sock_opt.unwrap().send_to(payload.as_bytes(), addr).is_ok()
+}
+
+// Send a UDP datagram to `addr` and wait (up to 5s) for one reply datagram,
+// returned as a lossy-UTF-8 String. "" on timeout/error.
+func String udp_request(addr: &str, payload: &str) {
+    mut sock_opt = std::net::UdpSocket::bind("0.0.0.0:0").ok()
+    if sock_opt.is_none() { return String::new() }
+    mut sock = sock_opt.unwrap()
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok()
+    if sock.send_to(payload.as_bytes(), addr).is_err() { return String::new() }
+    mut buf = vec![0u8; 65535]
+    mut recv_opt = sock.recv_from(&mut buf).ok()
+    if recv_opt.is_none() { return String::new() }
+    mut n = recv_opt.unwrap().0
+    mut sl: &[u8] = &buf[..n]
+    return String::from_utf8_lossy(sl).into_owned()
+}
+
+// Best-effort local outbound IP: opens a UDP socket "connected" to a public
+// address (no packets are sent) and reads back the chosen local interface.
+// Returns "" if it can't be determined.
+func String local_ip() {
+    mut sock_opt = std::net::UdpSocket::bind("0.0.0.0:0").ok()
+    if sock_opt.is_none() { return String::new() }
+    mut sock = sock_opt.unwrap()
+    if sock.connect("8.8.8.8:80").is_err() { return String::new() }
+    return sock.local_addr().map(|a| a.ip().to_string()).unwrap_or_default()
+}

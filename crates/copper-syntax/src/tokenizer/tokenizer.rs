@@ -839,7 +839,13 @@ impl Tokenizer {
 
             if BOOL.contains(&value.as_str()) {
                 kind = TokenKind::Keyword;
-            } else if COPPER_KEYWORDS.contains(&value.as_str()) {
+            } else if COPPER_KEYWORDS.contains(&value.as_str())
+                // `from` is contextual: it is only the import keyword while an
+                // import statement is in progress. Anywhere else (`From` trait,
+                // `X::from`, `.from(`, a variable named `from`) it must fall
+                // through to the normal identifier-resolution path below.
+                && (value != "from" || self.seen_import)
+            {
                 match value.as_str() {
                     "import" => {
                         self.seen_import = true;
@@ -1146,6 +1152,36 @@ impl Tokenizer {
         // Check if it's not a comment (//)
         if self.peek() == '/' {
             return Consumed::consume(0);
+        }
+
+        // Division vs. regex disambiguation (JS-style): a `/` is the DIVISION
+        // operator when it follows an operand — an identifier, number, string,
+        // or a closing `)` / `]`. A regex literal `/.../ ` is only recognised
+        // when a value is expected (start of expression: after `=`, `(`, `,`,
+        // an operator, `return`, etc.). Without this, `a / b` lexed `/ b /...`
+        // as a regex and arithmetic division was broken.
+        let last_significant = self.tokens.iter().rev().find(|t| {
+            !matches!(
+                t.kind,
+                TokenKind::Whitespace
+                    | TokenKind::Newline
+                    | TokenKind::Comment
+                    | TokenKind::DocComment
+            )
+        });
+        if let Some(prev) = last_significant {
+            if matches!(
+                prev.kind,
+                TokenKind::Identifier
+                    | TokenKind::Number
+                    | TokenKind::String
+                    | TokenKind::InterpolatedString
+                    | TokenKind::ParenthesesEnd
+                    | TokenKind::BracketEnd
+            ) {
+                // Division — let operator_token handle the `/`.
+                return Consumed::consume(0);
+            }
         }
 
         // Process only from current position in chunk. Cloned so we can

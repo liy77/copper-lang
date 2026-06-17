@@ -491,9 +491,35 @@ Prefer `std/cstd.crs` (Copper). Constraints to keep in mind:
 - **`pub func` doesn't work.** The `pub` leaks to the next statement. The
   promotion to `pub fn` happens automatically on injection.
 
-If a helper hits these limitations, drop it into `std/cstd_native.rs` as
-plain Rust. Both files are bundled via `include_str!` in
-`src/parser/mod.rs`, so just rebuild cforge.
+## Standard-library policy: the std libs are written in Copper, not Rust
+
+**Rule: every standard-library module (`std/*.crs`) is authored in Copper.**
+The Copper standard library must be *self-hosting* — it is written in the
+language it ships with. The `std/*_native.rs` Rust escape-hatch files are
+**deprecated and being eliminated**; do not add new `_native.rs` code.
+
+When a std lib needs something Copper cannot yet express (a tokenizer
+ambiguity, a missing construct, a codegen gap), the fix is to **extend the
+Copper transpiler so the construct works**, then write the helper in
+`.crs` — NOT to fall back to raw Rust. This is the same north-star as the
+rest of the language: anything you can do in Rust must be doable in Copper.
+A `.crs` may freely use Rust-native type spellings (`i64`, `String`),
+fully-qualified paths (`std::time::SystemTime::now()`), method chains,
+generics, and `format!` specifiers (`{x:02}`) — those all transpile
+through; reach for them instead of a native file.
+
+Recent transpiler work landed specifically to make the std libs Copper-only:
+division `/` is now correctly disambiguated from regex literals, and
+`format!` format specifiers tokenize correctly. Remaining gaps surfaced
+while converting (multi-line method chains, `use` statements mangling to
+`usestd`, type aliases not lowering inside `static`/`as` casts) are
+transpiler bugs to fix — work around them with one-line chains and
+fully-qualified inline paths until fixed, never by dropping to Rust.
+
+If you genuinely cannot express something yet, STOP and fix the transpiler
+or flag it — do not reintroduce a `_native.rs` file. Both the `.crs`
+sources are bundled via `include_str!` in `src/parser/mod.rs`; rebuild
+cforge after editing.
 
 ## `unsafe` support
 

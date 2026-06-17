@@ -23,3 +23,107 @@
 //   json::get(body, "items.0.id")
 //   json::get_int(body, "page.total")
 // An empty path returns / refers to the whole document.
+
+// Resolve a dotted/indexed `path` against the JSON in `s` and return the
+// located node re-serialised as compact JSON text. Empty path -> the whole
+// document. None when `s` is invalid or the path is missing.
+func Option<String> locate(s: &str, path: &str) {
+    mut root = serde_json::from_str::<serde_json::Value>(s).ok()?
+    if path.is_empty() {
+        return serde_json::to_string(&root).ok()
+    }
+    mut ptr = format!("/{}", path.replace('.', "/"))
+    mut node = root.pointer(&ptr)?
+    return serde_json::to_string(node).ok()
+}
+
+/// True when `s` is well-formed JSON.
+func bool is_valid(s: &str) {
+    return serde_json::from_str::<serde_json::Value>(s).is_ok()
+}
+
+/// Scalar at `path` as a String. Strings come back unquoted; numbers/bools
+/// are stringified; objects/arrays are re-serialised compactly; missing or
+/// null -> "".
+func String get(s: &str, path: &str) {
+    mut frag_opt = locate(s, path)
+    if frag_opt.is_none() { return String::new() }
+    mut frag = frag_opt.unwrap()
+    return match serde_json::from_str::<serde_json::Value>(&frag) {
+        Ok(serde_json::Value::String(v)) => v,
+        Ok(serde_json::Value::Null) => String::new(),
+        Ok(v) => v.to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Integer at `path`. Accepts JSON numbers and numeric strings. 0 otherwise.
+func i64 get_int(s: &str, path: &str) {
+    mut frag_opt = locate(s, path)
+    if frag_opt.is_none() { return 0 }
+    mut frag = frag_opt.unwrap()
+    return match serde_json::from_str::<serde_json::Value>(&frag) {
+        Ok(serde_json::Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).unwrap_or(0),
+        Ok(serde_json::Value::String(v)) => v.trim().parse().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// Float at `path`. 0.0 if missing/non-numeric.
+func f64 get_float(s: &str, path: &str) {
+    mut frag_opt = locate(s, path)
+    if frag_opt.is_none() { return 0.0 }
+    mut frag = frag_opt.unwrap()
+    return match serde_json::from_str::<serde_json::Value>(&frag) {
+        Ok(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+        Ok(serde_json::Value::String(v)) => v.trim().parse().unwrap_or(0.0),
+        _ => 0.0,
+    }
+}
+
+/// Bool at `path`. JSON `true`, the string "true", and non-zero numbers are
+/// true; everything else (incl. missing) is false.
+func bool get_bool(s: &str, path: &str) {
+    mut frag_opt = locate(s, path)
+    if frag_opt.is_none() { return false }
+    mut frag = frag_opt.unwrap()
+    return match serde_json::from_str::<serde_json::Value>(&frag) {
+        Ok(serde_json::Value::Bool(b)) => b,
+        Ok(serde_json::Value::String(v)) => v.eq_ignore_ascii_case("true"),
+        Ok(serde_json::Value::Number(n)) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// True if `path` resolves to a present (non-null) value.
+func bool has(s: &str, path: &str) {
+    mut frag_opt = locate(s, path)
+    if frag_opt.is_none() { return false }
+    return frag_opt.unwrap() != "null"
+}
+
+/// Length of the array/object at `path` (0 for scalars/missing).
+func i64 len(s: &str, path: &str) {
+    mut frag_opt = locate(s, path)
+    if frag_opt.is_none() { return 0 }
+    mut frag = frag_opt.unwrap()
+    return match serde_json::from_str::<serde_json::Value>(&frag) {
+        Ok(serde_json::Value::Array(a)) => a.len() as i64,
+        Ok(serde_json::Value::Object(o)) => o.len() as i64,
+        _ => 0,
+    }
+}
+
+/// Re-indent JSON. "" if `s` is invalid.
+func String pretty(s: &str) {
+    mut v_opt = serde_json::from_str::<serde_json::Value>(s).ok()
+    if v_opt.is_none() { return String::new() }
+    return serde_json::to_string_pretty(&v_opt.unwrap()).unwrap_or_default()
+}
+
+/// Strip insignificant whitespace. "" if `s` is invalid.
+func String minify(s: &str) {
+    mut v_opt = serde_json::from_str::<serde_json::Value>(s).ok()
+    if v_opt.is_none() { return String::new() }
+    return serde_json::to_string(&v_opt.unwrap()).unwrap_or_default()
+}

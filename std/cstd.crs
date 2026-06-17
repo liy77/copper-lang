@@ -67,3 +67,85 @@ func void panic_if(cond: bool, msg: &str) {
         panic!("{}", msg)
     }
 }
+
+// --- Ported from cstd_native.rs ---
+
+func i64 read_int(prompt: &str) {
+    loop {
+        print!("{}", prompt)
+        std::io::Write::flush(&mut std::io::stdout()).ok()
+        mut buf = String::new()
+        std::io::stdin().read_line(&mut buf).expect("failed to read stdin")
+        return match buf.trim().parse::<i64>() {
+            Ok(n) => n,
+            Err(_) => { eprintln!("invalid integer, try again"); continue }
+        }
+    }
+}
+
+func f64 read_float(prompt: &str) {
+    loop {
+        print!("{}", prompt)
+        std::io::Write::flush(&mut std::io::stdout()).ok()
+        mut buf = String::new()
+        std::io::stdin().read_line(&mut buf).expect("failed to read stdin")
+        return match buf.trim().parse::<f64>() {
+            Ok(n) => n,
+            Err(_) => { eprintln!("invalid number, try again"); continue }
+        }
+    }
+}
+
+func i64 now_ms() {
+    return std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+func Vec<String> args() {
+    return std::env::args().skip(1).collect()
+}
+
+func void append_file(path: &str, content: &str) {
+    std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut f| std::io::Write::write_all(&mut f, content.as_bytes())).unwrap_or_else(|e| panic!("append_file({}): {}", path, e))
+}
+
+func Vec<String> list_dir(path: &str) {
+    return match std::fs::read_dir(path) {
+        Ok(it) => it.filter_map(|e| e.ok()).map(|e| e.path().display().to_string()).collect(),
+        Err(_) => Vec::new()
+    }
+}
+
+// NOTE: run() uses sh -c (Unix only); cfg!(target_os = "windows") cannot be
+// expressed in Copper, so the Windows/cmd branch from cstd_native.rs is omitted.
+func String run(cmd: &str) {
+    return match std::process::Command::new("sh").args(["-c", cmd]).output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => String::new()
+    }
+}
+
+func Vec<String> split(s: &str, sep: &str) {
+    return s.split(sep).map(|p| p.to_string()).collect()
+}
+
+// NOTE: param changed from &[String] to Vec<String> — Copper does not support &[T] slice params.
+func String join(parts: Vec<String>, sep: &str) {
+    return parts.join(sep)
+}
+
+func Option<i64> to_int(s: &str) {
+    return s.trim().parse::<i64>().ok()
+}
+
+func Option<f64> to_float(s: &str) {
+    return s.trim().parse::<f64>().ok()
+}
+
+func i64 rand_int(min: i64, max: i64) {
+    mut x: u64 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0xCAFEBABE)
+    x ^= x << 13
+    x ^= x >> 7
+    x ^= x << 17
+    mut span: u64 = (max - min).max(1) as u64
+    return min + (x % span) as i64
+}

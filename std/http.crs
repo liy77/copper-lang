@@ -21,3 +21,117 @@
 //
 // `url` may be http:// or https://. All calls are blocking with a 30s
 // timeout and follow redirects (ureq's default).
+
+/// GET `url`, return the response body. "" on any network/HTTP error.
+func String get(url: &str) {
+    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    match agent_opt.get(url).call() {
+        Ok(resp) => { return resp.into_string().unwrap_or_default() },
+        Err(_) => { return String::new() },
+    }
+}
+
+/// GET `url`, return only the HTTP status code (e.g. 200, 404). 0 on a
+/// transport error. ureq treats 4xx/5xx as Err(Status), so we unwrap both.
+func i32 get_status(url: &str) {
+    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    match agent_opt.get(url).call() {
+        Ok(resp) => { return resp.status() as i32 },
+        Err(ureq::Error::Status(code, _)) => { return code as i32 },
+        Err(_) => { return 0i32 },
+    }
+}
+
+/// True when the status is 2xx.
+func bool ok(url: &str) {
+    mut s = get_status(url)
+    return s >= 200 && s < 300
+}
+
+/// POST `body` with an explicit `content_type`; return the response body.
+func String post(url: &str, content_type: &str, body: &str) {
+    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    match agent_opt.post(url).set("Content-Type", content_type).send_string(body) {
+        Ok(resp) => { return resp.into_string().unwrap_or_default() },
+        Err(ureq::Error::Status(_, resp)) => { return resp.into_string().unwrap_or_default() },
+        Err(_) => { return String::new() },
+    }
+}
+
+/// POST a JSON string body (`Content-Type: application/json`).
+func String post_json(url: &str, json_body: &str) {
+    return post(url, "application/json", json_body)
+}
+
+/// PUT `body` with an explicit `content_type`; return the response body.
+func String put(url: &str, content_type: &str, body: &str) {
+    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    match agent_opt.put(url).set("Content-Type", content_type).send_string(body) {
+        Ok(resp) => { return resp.into_string().unwrap_or_default() },
+        Err(ureq::Error::Status(_, resp)) => { return resp.into_string().unwrap_or_default() },
+        Err(_) => { return String::new() },
+    }
+}
+
+/// DELETE `url`; return the response body.
+func String delete(url: &str) {
+    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    match agent_opt.delete(url).call() {
+        Ok(resp) => { return resp.into_string().unwrap_or_default() },
+        Err(ureq::Error::Status(_, resp)) => { return resp.into_string().unwrap_or_default() },
+        Err(_) => { return String::new() },
+    }
+}
+
+/// Read one response header (case-insensitive name). "" if absent/error.
+func String get_header(url: &str, name: &str) {
+    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    match agent_opt.get(url).call() {
+        Ok(resp) => { return resp.header(name).unwrap_or("").to_string() },
+        Err(_) => { return String::new() },
+    }
+}
+
+/// Stream `url` to a local file at `path`. Returns true on success.
+func bool download(url: &str, path: &str) {
+    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    mut call_res = agent_opt.get(url).call()
+    if call_res.is_err() { return false }
+    mut resp = call_res.unwrap()
+    mut reader = resp.into_reader()
+    mut file_res = std::fs::File::create(path)
+    if file_res.is_err() { return false }
+    mut file = file_res.unwrap()
+    mut buf = vec![0u8; 8192]
+    loop {
+        mut n_res = std::io::Read::read(&mut reader, &mut buf)
+        if n_res.is_err() { return false }
+        mut n = n_res.unwrap()
+        if n == 0 { break }
+        mut sl: &[u8] = &buf[..n]
+        if std::io::Write::write_all(&mut file, sl).is_err() { return false }
+    }
+    return true
+}
+
+/// Generic request. `method` is case-insensitive ("GET"/"POST"/...).
+/// Returns "status\n<body>" — the numeric status on the first line,
+/// the body after the first newline.
+func String request(method: &str, url: &str, content_type: &str, body: &str) {
+    mut ct = content_type.to_string()
+    if ct.is_empty() { ct.push_str("text/plain") }
+    mut agent_opt = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build()
+    mut upper = method.to_uppercase()
+    if body.is_empty() {
+        match agent_opt.request(&upper, url).call() {
+            Ok(resp) => { mut status = resp.status(); mut text = resp.into_string().unwrap_or_default(); return format!("{status}\n{text}") },
+            Err(ureq::Error::Status(code, resp)) => { mut text = resp.into_string().unwrap_or_default(); return format!("{code}\n{text}") },
+            Err(e) => { return format!("0\n{e}") },
+        }
+    }
+    match agent_opt.request(&upper, url).set("Content-Type", &ct).send_string(body) {
+        Ok(resp) => { mut status = resp.status(); mut text = resp.into_string().unwrap_or_default(); return format!("{status}\n{text}") },
+        Err(ureq::Error::Status(code, resp)) => { mut text = resp.into_string().unwrap_or_default(); return format!("{code}\n{text}") },
+        Err(e) => { return format!("0\n{e}") },
+    }
+}

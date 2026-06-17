@@ -12,3 +12,415 @@
 // `wss://` (TLS) is NOT supported in this dependency-free build — it would
 // require a TLS crate; use the `http` module for HTTPS request/response, or
 // a TLS-terminating proxy in front of the socket.
+
+// Parse "ws://host:port/path" -> (ok, host:port, path). Defaults: port 80,
+// path "/". ok is false for non-ws schemes (e.g. wss://).
+func (bool, String, String) parse_ws_url(url: &str) {
+    if !url.starts_with("ws://") {
+        return (false, String::new(), String::new())
+    }
+    mut rest: &str = &url[5..]
+    mut authority = rest.to_string()
+    mut path = "/".to_string()
+    mut slash = rest.find("/")
+    if slash.is_some() {
+        mut i: usize = slash.unwrap()
+        authority = rest[..i].to_string()
+        path = rest[i..].to_string()
+    }
+    mut hostport = authority.clone()
+    if !authority.contains(':') {
+        hostport = format!("{}:80", authority)
+    }
+    return (true, hostport, path)
+}
+
+// base64 of raw bytes (used for the 16-byte nonce key + the accept hash).
+func String b64(bytes: &[u8]) {
+    mut tbl: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    mut out = String::new()
+    mut i: usize = 0
+    mut n: usize = bytes.len()
+    while i < n {
+        mut b0: u32 = bytes[i] as u32
+        mut b1: u32 = 0
+        mut b2: u32 = 0
+        mut have1: bool = i + 1 < n
+        mut have2: bool = i + 2 < n
+        if have1 {
+            b1 = bytes[i + 1] as u32
+        }
+        if have2 {
+            b2 = bytes[i + 2] as u32
+        }
+        mut v: u32 = (b0 << 16) | (b1 << 8) | b2
+        out.push(tbl[((v >> 18) & 63) as usize] as char)
+        out.push(tbl[((v >> 12) & 63) as usize] as char)
+        if have1 {
+            out.push(tbl[((v >> 6) & 63) as usize] as char)
+        } else {
+            out.push('=')
+        }
+        if have2 {
+            out.push(tbl[(v & 63) as usize] as char)
+        } else {
+            out.push('=')
+        }
+        i = i + 3
+    }
+    return out
+}
+
+// Minimal SHA-1 (handshake accept key only — not a security primitive).
+// Returns the 20-byte digest as a Vec<u8>.
+func Vec<u8> sha1(data: &[u8]) {
+    mut h0: u32 = 0x67452301
+    mut h1: u32 = 0xEFCDAB89
+    mut h2: u32 = 0x98BADCFE
+    mut h3: u32 = 0x10325476
+    mut h4: u32 = 0xC3D2E1F0
+    mut ml: u64 = (data.len() as u64) * 8
+    mut msg: Vec<u8> = data.to_vec()
+    msg.push(0x80)
+    while msg.len() % 64 != 56 {
+        msg.push(0)
+    }
+    mut lenbytes = ml.to_be_bytes()
+    msg.extend_from_slice(&lenbytes)
+
+    mut msglen: usize = msg.len()
+    mut nblocks: usize = msglen / 64
+    mut bi: usize = 0
+    while bi < nblocks {
+        mut base: usize = bi * 64
+        mut w: Vec<u32> = vec![0u32; 80]
+        mut t: usize = 0
+        while t < 16 {
+            mut o: usize = base + t * 4
+            mut word: u32 = ((msg[o] as u32) << 24) | ((msg[o + 1] as u32) << 16) | ((msg[o + 2] as u32) << 8) | (msg[o + 3] as u32)
+            w[t] = word
+            t = t + 1
+        }
+        t = 16
+        while t < 80 {
+            mut x: u32 = w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16]
+            w[t] = x.rotate_left(1)
+            t = t + 1
+        }
+        mut a: u32 = h0
+        mut b: u32 = h1
+        mut c: u32 = h2
+        mut d: u32 = h3
+        mut e: u32 = h4
+        mut idx: usize = 0
+        while idx < 80 {
+            mut f: u32 = 0
+            mut k: u32 = 0
+            if idx < 20 {
+                f = (b & c) | ((!b) & d)
+                k = 0x5A827999u32
+            } else if idx < 40 {
+                f = b ^ c ^ d
+                k = 0x6ED9EBA1u32
+            } else if idx < 60 {
+                f = (b & c) | (b & d) | (c & d)
+                k = 0x8F1BBCDCu32
+            } else {
+                f = b ^ c ^ d
+                k = 0xCA62C1D6u32
+            }
+            mut tmp: u32 = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(w[idx])
+            e = d
+            d = c
+            c = b.rotate_left(30)
+            b = a
+            a = tmp
+            idx = idx + 1
+        }
+        h0 = h0.wrapping_add(a)
+        h1 = h1.wrapping_add(b)
+        h2 = h2.wrapping_add(c)
+        h3 = h3.wrapping_add(d)
+        h4 = h4.wrapping_add(e)
+        bi = bi + 1
+    }
+    mut out: Vec<u8> = Vec::new()
+    out.extend_from_slice(&h0.to_be_bytes())
+    out.extend_from_slice(&h1.to_be_bytes())
+    out.extend_from_slice(&h2.to_be_bytes())
+    out.extend_from_slice(&h3.to_be_bytes())
+    out.extend_from_slice(&h4.to_be_bytes())
+    return out
+}
+
+// The RFC 6455 magic GUID appended to the client key before hashing.
+func String ws_guid() {
+    return "258EAFA5-E914-47DA-95CA-C5AB0DC85B11".to_string()
+}
+
+// Compute the Sec-WebSocket-Accept value for a given client key:
+// base64(sha1(key + GUID)).
+func String accept_key(key: &str) {
+    mut joined = format!("{}{}", key, ws_guid())
+    return b64(&sha1(joined.as_bytes()))
+}
+
+// A weakly-random 16-byte nonce for Sec-WebSocket-Key (uniqueness, not
+// secrecy — std-only, no rng crate). xorshift seeded from the nanosecond
+// clock. Returns the 16 raw bytes as a Vec<u8>.
+func Vec<u8> nonce16() {
+    mut seed: u64 = 0x9E3779B97F4A7C15u64
+    mut dur_opt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()
+    if dur_opt.is_some() {
+        seed = seed ^ (dur_opt.unwrap().as_nanos() as u64)
+    }
+    if seed == 0 {
+        seed = 0x9E3779B97F4A7C15u64
+    }
+    mut out: Vec<u8> = Vec::new()
+    mut i: usize = 0
+    while i < 16 {
+        seed = seed ^ (seed << 13)
+        seed = seed ^ (seed >> 7)
+        seed = seed ^ (seed << 17)
+        out.push((seed & 0xFF) as u8)
+        i = i + 1
+    }
+    return out
+}
+
+// Encode a client text frame: FIN+text opcode, masked payload (RFC 6455
+// requires client frames to be masked). `mask` is a 4-byte masking key.
+func Vec<u8> encode_text_frame(payload: &[u8], mask: &[u8]) {
+    mut frame: Vec<u8> = Vec::new()
+    frame.push(0x81)
+    mut len: usize = payload.len()
+    if len < 126 {
+        frame.push(0x80 | (len as u8))
+    } else if len <= 0xFFFF {
+        frame.push(0x80 | 126)
+        frame.extend_from_slice(&((len as u16).to_be_bytes()))
+    } else {
+        frame.push(0x80 | 127)
+        frame.extend_from_slice(&((len as u64).to_be_bytes()))
+    }
+    frame.extend_from_slice(mask)
+    mut i: usize = 0
+    while i < len {
+        frame.push(payload[i] ^ mask[i % 4])
+        i = i + 1
+    }
+    return frame
+}
+
+// Parse one WebSocket data frame from a complete byte buffer and return its
+// text payload (handles 7/16/64-bit lengths and an optional mask). Returns ""
+// if the buffer is truncated. This is the pure counterpart of reading a frame
+// off the socket.
+func String parse_text_frame(buf: &[u8]) {
+    if buf.len() < 2 {
+        return String::new()
+    }
+    mut masked: bool = (buf[1] & 0x80) != 0
+    mut len: usize = (buf[1] & 0x7F) as usize
+    mut pos: usize = 2
+    if len == 126 {
+        if buf.len() < pos + 2 {
+            return String::new()
+        }
+        len = (((buf[pos] as usize) << 8) | (buf[pos + 1] as usize))
+        pos = pos + 2
+    } else if len == 127 {
+        if buf.len() < pos + 8 {
+            return String::new()
+        }
+        mut ext: u64 = 0
+        mut j: usize = 0
+        while j < 8 {
+            ext = (ext << 8) | (buf[pos + j] as u64)
+            j = j + 1
+        }
+        len = ext as usize
+        pos = pos + 8
+    }
+    mut mask: Vec<u8> = vec![0u8; 4]
+    if masked {
+        if buf.len() < pos + 4 {
+            return String::new()
+        }
+        mut m: usize = 0
+        while m < 4 {
+            mask[m] = buf[pos + m]
+            m = m + 1
+        }
+        pos = pos + 4
+    }
+    if buf.len() < pos + len {
+        return String::new()
+    }
+    mut payload: Vec<u8> = Vec::new()
+    mut i: usize = 0
+    while i < len {
+        mut byte: u8 = buf[pos + i]
+        if masked {
+            byte = byte ^ mask[i % 4]
+        }
+        payload.push(byte)
+        i = i + 1
+    }
+    return String::from_utf8_lossy(&payload).into_owned()
+}
+
+// Connect, send one text `message`, read one text reply, close. "" on error.
+// The connect + handshake + socket read are inlined here (the helper that
+// would otherwise return a live TcpStream cannot be a Copper return type).
+func String request(url: &str, message: &str) {
+    mut parsed = parse_ws_url(url)
+    if !parsed.0 {
+        return String::new()
+    }
+    mut hostport = parsed.1
+    mut path = parsed.2
+    mut host = hostport.split(':').next().unwrap_or("").to_string()
+
+    mut stream_opt = std::net::TcpStream::connect(&hostport).ok()
+    if stream_opt.is_none() {
+        return String::new()
+    }
+    mut stream = stream_opt.unwrap()
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok()
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(10))).ok()
+
+    mut key = b64(&nonce16())
+    mut req = format!("GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n", path, host, key)
+    if std::io::Write::write_all(&mut stream, req.as_bytes()).is_err() {
+        return String::new()
+    }
+    std::io::Write::flush(&mut stream).ok()
+
+    mut head_buf: Vec<u8> = Vec::new()
+    mut one: Vec<u8> = vec![0u8; 1]
+    mut ending: &[u8] = b"\r\n\r\n"
+    while !head_buf.ends_with(ending) {
+        match std::io::Read::read(&mut stream, &mut one) {
+            Ok(0) => break,
+            Ok(_) => { head_buf.push(one[0]) },
+            Err(_) => return String::new(),
+        }
+        if head_buf.len() > 8192 {
+            break
+        }
+    }
+    mut head = String::from_utf8_lossy(&head_buf).into_owned()
+    mut accept_expected = accept_key(&key)
+    if !head.contains("101") || !head.to_lowercase().contains(&accept_expected.to_lowercase()) {
+        return String::new()
+    }
+
+    mut maskbytes: Vec<u8> = nonce16()
+    mut mask4: &[u8] = &maskbytes[..4]
+    mut frame: Vec<u8> = encode_text_frame(message.as_bytes(), mask4)
+    if std::io::Write::write_all(&mut stream, &frame).is_err() {
+        return String::new()
+    }
+    std::io::Write::flush(&mut stream).ok()
+
+    // Read one server frame: 2-byte header, optional extended length, optional
+    // mask, then payload — assembled into a buffer parsed by parse_text_frame.
+    mut hdr: Vec<u8> = vec![0u8; 2]
+    if std::io::Read::read_exact(&mut stream, &mut hdr).is_err() {
+        return String::new()
+    }
+    mut full: Vec<u8> = Vec::new()
+    full.push(hdr[0])
+    full.push(hdr[1])
+    mut masked: bool = (hdr[1] & 0x80) != 0
+    mut len: usize = (hdr[1] & 0x7F) as usize
+    if len == 126 {
+        mut ext: Vec<u8> = vec![0u8; 2]
+        if std::io::Read::read_exact(&mut stream, &mut ext).is_err() {
+            return String::new()
+        }
+        len = (((ext[0] as usize) << 8) | (ext[1] as usize))
+        full.extend_from_slice(&ext)
+    } else if len == 127 {
+        mut ext: Vec<u8> = vec![0u8; 8]
+        if std::io::Read::read_exact(&mut stream, &mut ext).is_err() {
+            return String::new()
+        }
+        mut e64: u64 = 0
+        mut j: usize = 0
+        while j < 8 {
+            e64 = (e64 << 8) | (ext[j] as u64)
+            j = j + 1
+        }
+        len = e64 as usize
+        full.extend_from_slice(&ext)
+    }
+    if masked {
+        mut mk: Vec<u8> = vec![0u8; 4]
+        if std::io::Read::read_exact(&mut stream, &mut mk).is_err() {
+            return String::new()
+        }
+        full.extend_from_slice(&mk)
+    }
+    mut payload: Vec<u8> = vec![0u8; len]
+    if std::io::Read::read_exact(&mut stream, &mut payload).is_err() {
+        return String::new()
+    }
+    full.extend_from_slice(&payload)
+    return parse_text_frame(&full)
+}
+
+// Connect, send one text `message`, close. true on success.
+func bool send(url: &str, message: &str) {
+    mut parsed = parse_ws_url(url)
+    if !parsed.0 {
+        return false
+    }
+    mut hostport = parsed.1
+    mut path = parsed.2
+    mut host = hostport.split(':').next().unwrap_or("").to_string()
+
+    mut stream_opt = std::net::TcpStream::connect(&hostport).ok()
+    if stream_opt.is_none() {
+        return false
+    }
+    mut stream = stream_opt.unwrap()
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok()
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(10))).ok()
+
+    mut key = b64(&nonce16())
+    mut req = format!("GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n", path, host, key)
+    if std::io::Write::write_all(&mut stream, req.as_bytes()).is_err() {
+        return false
+    }
+    std::io::Write::flush(&mut stream).ok()
+
+    mut head_buf: Vec<u8> = Vec::new()
+    mut one: Vec<u8> = vec![0u8; 1]
+    mut ending: &[u8] = b"\r\n\r\n"
+    while !head_buf.ends_with(ending) {
+        match std::io::Read::read(&mut stream, &mut one) {
+            Ok(0) => break,
+            Ok(_) => { head_buf.push(one[0]) },
+            Err(_) => return false,
+        }
+        if head_buf.len() > 8192 {
+            break
+        }
+    }
+    mut head = String::from_utf8_lossy(&head_buf).into_owned()
+    mut accept_expected = accept_key(&key)
+    if !head.contains("101") || !head.to_lowercase().contains(&accept_expected.to_lowercase()) {
+        return false
+    }
+
+    mut maskbytes: Vec<u8> = nonce16()
+    mut mask4: &[u8] = &maskbytes[..4]
+    mut frame: Vec<u8> = encode_text_frame(message.as_bytes(), mask4)
+    if std::io::Write::write_all(&mut stream, &frame).is_err() {
+        return false
+    }
+    return std::io::Write::flush(&mut stream).is_ok()
+}
