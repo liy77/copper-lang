@@ -1,7 +1,7 @@
 // Copper `time` standard library — clocks, sleeping, timestamps.
 //
-// `import { ... } from time`. Pure Rust std, no dependencies. Bundled as
-// `pub mod time { ... }` with std/time_native.rs.
+// `import { ... } from time`. Pure Rust std, no dependencies. Authored in
+// Copper (self-hosting std lib); bundled as `pub mod time { ... }`.
 //
 //   time::now_ms()        -> Unix time in milliseconds (i64)
 //   time::now_secs()      -> Unix time in seconds (i64)
@@ -11,3 +11,70 @@
 //   time::mono_ms()       -> monotonic millis (for measuring durations)
 //   time::iso8601(secs)   -> "YYYY-MM-DDTHH:MM:SSZ" (UTC) for a Unix second
 //   time::now_iso()       -> iso8601 of the current time
+
+func i64 now_ms() {
+  return std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or(std::time::Duration::ZERO).as_millis() as i64
+}
+
+func i64 now_secs() {
+  return std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or(std::time::Duration::ZERO).as_secs() as i64
+}
+
+func i64 now_nanos() {
+  return std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or(std::time::Duration::ZERO).as_nanos() as i64
+}
+
+func void sleep_ms(ms: i64) {
+  if ms > 0 {
+    std::thread::sleep(std::time::Duration::from_millis(ms as u64))
+  }
+}
+
+func void sleep_secs(s: i64) {
+  if s > 0 {
+    std::thread::sleep(std::time::Duration::from_secs(s as u64))
+  }
+}
+
+func i64 mono_ms() {
+  static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new()
+  mut start = START.get_or_init(std::time::Instant::now)
+  return start.elapsed().as_millis() as i64
+}
+
+// Format a Unix-seconds timestamp as UTC "YYYY-MM-DDTHH:MM:SSZ".
+// Civil-from-days algorithm (Howard Hinnant); exact, no external crate.
+func string iso8601(secs: i64) {
+  mut days = secs.div_euclid(86400)
+  mut rem = secs.rem_euclid(86400)
+  mut hh = rem / 3600
+  mut mm = (rem % 3600) / 60
+  mut ss = rem % 60
+
+  mut z = days + 719468
+  mut era = z
+  if z < 0 {
+    era = z - 146096
+  }
+  era = era / 146097
+  mut doe = z - era * 146097
+  mut yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+  mut y = yoe + era * 400
+  mut doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+  mut mp = (5 * doy + 2) / 153
+  mut d = doy - (153 * mp + 2) / 5 + 1
+  mut m = mp + 3
+  if mp >= 10 {
+    m = mp - 9
+  }
+  mut year = y
+  if m <= 2 {
+    year = y + 1
+  }
+
+  return format!("{year:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+func string now_iso() {
+  return iso8601(now_secs())
+}

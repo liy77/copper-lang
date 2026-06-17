@@ -29,7 +29,6 @@ const JSON_NATIVE: &str = include_str!("../../../../std/json_native.rs");
 const CRYPTO_SOURCE: &str = include_str!("../../../../std/crypto.crs");
 const CRYPTO_NATIVE: &str = include_str!("../../../../std/crypto_native.rs");
 const TIME_SOURCE: &str = include_str!("../../../../std/time.crs");
-const TIME_NATIVE: &str = include_str!("../../../../std/time_native.rs");
 const FS_SOURCE: &str = include_str!("../../../../std/fs.crs");
 const FS_NATIVE: &str = include_str!("../../../../std/fs_native.rs");
 const WS_SOURCE: &str = include_str!("../../../../std/ws.crs");
@@ -2858,7 +2857,7 @@ impl Parser {
             "url" => Some((URL_SOURCE, URL_NATIVE)),
             "json" => Some((JSON_SOURCE, JSON_NATIVE)),
             "crypto" => Some((CRYPTO_SOURCE, CRYPTO_NATIVE)),
-            "time" => Some((TIME_SOURCE, TIME_NATIVE)),
+            "time" => Some((TIME_SOURCE, "")),
             "fs" => Some((FS_SOURCE, FS_NATIVE)),
             "ws" => Some((WS_SOURCE, WS_NATIVE)),
             "reflect" => Some((REFLECT_SOURCE, REFLECT_NATIVE)),
