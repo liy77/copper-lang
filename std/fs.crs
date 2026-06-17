@@ -1,0 +1,18 @@
+// Copper `fs` standard library — filesystem operations.
+//
+// `import { ... } from fs`. Pure Rust std, no dependencies. Bundled as
+// `pub mod fs { ... }` with std/fs_native.rs. A focused superset of the
+// file helpers in cstd, for programs that only need filesystem access.
+//
+//   fs::read(path)             -> file contents ("" on error)
+//   fs::write(path, content)   -> bool
+//   fs::append(path, content)  -> bool
+//   fs::exists(path) / is_file(path) / is_dir(path) -> bool
+//   fs::mkdir(path)            -> bool (recursive, create_dir_all)
+//   fs::remove_file(path)      -> bool
+//   fs::remove_dir(path)       -> bool (recursive)
+//   fs::copy(src, dst)         -> bool
+//   fs::rename(src, dst)       -> bool
+//   fs::size(path)             -> i64 (bytes, -1 on error)
+//   fs::list(path)             -> newline-joined entry paths
+//   fs::read_lines(path)       -> the file (use .lines() / split on "\n")

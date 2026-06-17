@@ -76,3 +76,37 @@ x = get(\"{}\", \"a\")
     assert!(rust.contains("pub fn get("), "get not promoted: {rust}");
     assert!(deps.iter().any(|d| d == "serde_json"), "serde_json dep missing: {deps:?}");
 }
+
+
+#[test]
+fn crypto_module_bundles_with_sha2_hmac() {
+    let (rust, deps) = transpile_with_deps(
+        "import { sha256, base64_encode } from crypto
+x = sha256(\"a\")
+",
+    );
+    assert!(rust.contains("pub mod crypto {"), "crypto not bundled: {rust}");
+    assert!(rust.contains("pub fn sha256("), "sha256 not promoted: {rust}");
+    assert!(deps.iter().any(|d| d == "sha2"), "sha2 dep missing: {deps:?}");
+    assert!(deps.iter().any(|d| d == "hmac"), "hmac dep missing: {deps:?}");
+}
+
+#[test]
+fn time_fs_ws_are_std_only() {
+    for (imp, fn_name, mod_name) in [
+        ("import { now_ms } from time
+x = now_ms()
+", "now_ms", "time"),
+        ("import { read } from fs
+x = read(\"a\")
+", "read", "fs"),
+        ("import { request } from ws
+x = request(\"ws://a/\", \"m\")
+", "request", "ws"),
+    ] {
+        let (rust, deps) = transpile_with_deps(imp);
+        assert!(rust.contains(&format!("pub mod {mod_name} {{")), "{mod_name} not bundled: {rust}");
+        assert!(rust.contains(&format!("pub fn {fn_name}(")), "{fn_name} not promoted: {rust}");
+        assert!(deps.is_empty(), "{mod_name} pulled a dep: {deps:?}");
+    }
+}

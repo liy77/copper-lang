@@ -1,0 +1,9 @@
+// `time` — clocks, sleeping, UTC timestamps (pure std).
+import { now_secs, now_ms, iso8601, now_iso, sleep_ms, mono_ms } from time
+
+println!("unix s = {}", now_secs())
+println!("iso    = {}", iso8601(1700000000))
+println!("now    = {}", now_iso())
+start = mono_ms()
+sleep_ms(20)
+println!("slept ~{}ms", mono_ms() - start)

@@ -1,0 +1,13 @@
+// Copper `time` standard library — clocks, sleeping, timestamps.
+//
+// `import { ... } from time`. Pure Rust std, no dependencies. Bundled as
+// `pub mod time { ... }` with std/time_native.rs.
+//
+//   time::now_ms()        -> Unix time in milliseconds (i64)
+//   time::now_secs()      -> Unix time in seconds (i64)
+//   time::now_nanos()     -> Unix time in nanoseconds (i64)
+//   time::sleep_ms(ms)    -> block for `ms` milliseconds
+//   time::sleep_secs(s)   -> block for `s` seconds
+//   time::mono_ms()       -> monotonic millis (for measuring durations)
+//   time::iso8601(secs)   -> "YYYY-MM-DDTHH:MM:SSZ" (UTC) for a Unix second
+//   time::now_iso()       -> iso8601 of the current time

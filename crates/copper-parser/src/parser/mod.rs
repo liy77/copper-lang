@@ -26,6 +26,14 @@ const URL_SOURCE: &str = include_str!("../../../../std/url.crs");
 const URL_NATIVE: &str = include_str!("../../../../std/url_native.rs");
 const JSON_SOURCE: &str = include_str!("../../../../std/json.crs");
 const JSON_NATIVE: &str = include_str!("../../../../std/json_native.rs");
+const CRYPTO_SOURCE: &str = include_str!("../../../../std/crypto.crs");
+const CRYPTO_NATIVE: &str = include_str!("../../../../std/crypto_native.rs");
+const TIME_SOURCE: &str = include_str!("../../../../std/time.crs");
+const TIME_NATIVE: &str = include_str!("../../../../std/time_native.rs");
+const FS_SOURCE: &str = include_str!("../../../../std/fs.crs");
+const FS_NATIVE: &str = include_str!("../../../../std/fs_native.rs");
+const WS_SOURCE: &str = include_str!("../../../../std/ws.crs");
+const WS_NATIVE: &str = include_str!("../../../../std/ws_native.rs");
 pub mod result;
 pub mod scope;
 pub mod scope_manager;
@@ -2707,7 +2715,7 @@ impl Parser {
     /// True for native std modules selectable via `import { ... } from <name>`
     /// (besides cstd, which keeps its own dedicated path).
     fn is_native_std_module(name: &str) -> bool {
-        matches!(name, "net" | "http" | "url" | "json")
+        matches!(name, "net" | "http" | "url" | "json" | "crypto" | "time" | "fs" | "ws")
     }
 
     /// (crs surface, native helpers) for a native std module name.
@@ -2717,6 +2725,10 @@ impl Parser {
             "http" => Some((HTTP_SOURCE, HTTP_NATIVE)),
             "url" => Some((URL_SOURCE, URL_NATIVE)),
             "json" => Some((JSON_SOURCE, JSON_NATIVE)),
+            "crypto" => Some((CRYPTO_SOURCE, CRYPTO_NATIVE)),
+            "time" => Some((TIME_SOURCE, TIME_NATIVE)),
+            "fs" => Some((FS_SOURCE, FS_NATIVE)),
+            "ws" => Some((WS_SOURCE, WS_NATIVE)),
             _ => None,
         }
     }

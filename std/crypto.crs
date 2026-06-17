@@ -1,0 +1,13 @@
+// Copper `crypto` standard library — hashing + encoding.
+//
+// `import { ... } from crypto`. base64/hex/crc32 are std-only; the SHA family
+// and HMAC pull the small `sha2` / `hmac` crates into the generated
+// Cargo.toml (only when this module is imported). Bundled as
+// `pub mod crypto { ... }` with std/crypto_native.rs.
+//
+//   crypto::base64_encode(s) / base64_decode(s)    -> standard base64
+//   crypto::hex_encode(s)    / hex_decode(s)        -> lower-case hex
+//   crypto::sha256(s)        -> 64-char hex digest
+//   crypto::sha512(s)        -> 128-char hex digest
+//   crypto::hmac_sha256(key, msg) -> hex HMAC (API signing, webhooks)
+//   crypto::crc32(s)         -> i64 (the unsigned CRC-32 value)

@@ -1,0 +1,7 @@
+// `ws` — minimal WebSocket client over plaintext ws:// (pure std, no deps).
+import { request, send } from ws
+
+reply = request("ws://127.0.0.1:9999/", "ping")
+println!("reply: {}", reply)
+ok = send("ws://127.0.0.1:9999/", "fire")
+println!("sent:  {}", ok)

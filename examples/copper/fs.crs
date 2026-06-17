@@ -1,0 +1,11 @@
+// `fs` — filesystem operations (pure std).
+import { mkdir, write, read, append, exists, size, list, remove_dir } from fs
+
+mkdir("/tmp/copper_fs_demo")
+write("/tmp/copper_fs_demo/note.txt", "line 1\n")
+append("/tmp/copper_fs_demo/note.txt", "line 2\n")
+println!("exists = {}", exists("/tmp/copper_fs_demo/note.txt"))
+println!("size   = {}", size("/tmp/copper_fs_demo/note.txt"))
+println!("body   =\n{}", read("/tmp/copper_fs_demo/note.txt"))
+println!("list   =\n{}", list("/tmp/copper_fs_demo"))
+remove_dir("/tmp/copper_fs_demo")

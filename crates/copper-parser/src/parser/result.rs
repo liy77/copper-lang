@@ -235,7 +235,11 @@ impl Result {
         if self.used_std_modules.contains("json") && !deps.contains(&"serde_json".to_string()) {
             deps.push("serde_json".to_string());
         }
-        // (the `net` and `url` modules are std-only — no dependency.)
+        if self.used_std_modules.contains("crypto") {
+            deps.push("sha2".to_string());
+            deps.push("hmac".to_string());
+        }
+        // (the `net`, `url`, `time`, `fs` and `ws` modules are std-only.)
 
         // External crates from `import { … } from <crate>`.
         for c in &self.external_crates {

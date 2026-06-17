@@ -1,0 +1,14 @@
+// Copper `ws` standard library — minimal WebSocket client.
+//
+// `import { ... } from ws`. Pure Rust std (no dependencies): the RFC 6455
+// handshake (Sec-WebSocket-Key / -Accept via inline SHA-1 + base64) and
+// client frame masking are hand-rolled over a std TcpStream. Bundled as
+// `pub mod ws { ... }` with std/ws_native.rs.
+//
+//   ws::request(url, message) -> first text reply (String, "" on error)
+//   ws::send(url, message)    -> bool (connect, send one text frame, close)
+//
+// `url` is a plaintext WebSocket URL: "ws://host:port/path". Secure
+// `wss://` (TLS) is NOT supported in this dependency-free build — it would
+// require a TLS crate; use the `http` module for HTTPS request/response, or
+// a TLS-terminating proxy in front of the socket.

@@ -1,0 +1,9 @@
+// `crypto` — hashing + encoding (base64/hex/crc32 std-only; sha/hmac via sha2+hmac).
+import { base64_encode, base64_decode, hex_encode, sha256, hmac_sha256, crc32 } from crypto
+
+println!("b64    = {}", base64_encode("hello copper"))
+println!("b64dec = {}", base64_decode("aGVsbG8gY29wcGVy"))
+println!("hex    = {}", hex_encode("abc"))
+println!("sha256 = {}", sha256("abc"))
+println!("hmac   = {}", hmac_sha256("secret", "payload"))
+println!("crc32  = {}", crc32("123456789"))
