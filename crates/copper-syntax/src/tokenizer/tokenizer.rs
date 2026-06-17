@@ -1148,6 +1148,36 @@ impl Tokenizer {
             return Consumed::consume(0);
         }
 
+        // Division vs. regex disambiguation (JS-style): a `/` is the DIVISION
+        // operator when it follows an operand — an identifier, number, string,
+        // or a closing `)` / `]`. A regex literal `/.../ ` is only recognised
+        // when a value is expected (start of expression: after `=`, `(`, `,`,
+        // an operator, `return`, etc.). Without this, `a / b` lexed `/ b /...`
+        // as a regex and arithmetic division was broken.
+        let last_significant = self.tokens.iter().rev().find(|t| {
+            !matches!(
+                t.kind,
+                TokenKind::Whitespace
+                    | TokenKind::Newline
+                    | TokenKind::Comment
+                    | TokenKind::DocComment
+            )
+        });
+        if let Some(prev) = last_significant {
+            if matches!(
+                prev.kind,
+                TokenKind::Identifier
+                    | TokenKind::Number
+                    | TokenKind::String
+                    | TokenKind::InterpolatedString
+                    | TokenKind::ParenthesesEnd
+                    | TokenKind::BracketEnd
+            ) {
+                // Division — let operator_token handle the `/`.
+                return Consumed::consume(0);
+            }
+        }
+
         // Process only from current position in chunk. Cloned so we can
         // re-borrow self mutably for `self.error(...)` if the regex is
         // unterminated.
