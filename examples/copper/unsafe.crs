@@ -37,9 +37,10 @@ class Greeting {
         self.name = name
     }
 
-    Sring greet() {
-        return "Hello, " + self.name + "!"
+    String greet() {
+        return "Hello, ${self.name}!"
     }
 }
 
-Greeting::new("Alice").greet()
+greeting = Greeting::new("Alice".to_string())
+println("${greeting.greet()}")

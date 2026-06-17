@@ -1,3 +1,5 @@
+import { input } from cstd
+
 /* Multi-line block comment.
    Verifies the tokenizer skips block comments while preserving line numbers. */
 

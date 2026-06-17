@@ -1374,9 +1374,12 @@ impl Parser {
                 }
             }
 
-            // Processes members and appends the generated Rust code
+            // Processes members and appends the generated Rust code at MODULE
+            // level (like structs/functions) — not inside main() — so sibling
+            // functions can reference the class type. ForceAppend routes to
+            // the module stream.
             let parsed = self.process_class_members(&class_tokens, &class_name);
-            self.append(&parsed, AppendMode::AppendWithSpace);
+            self.append(&parsed, AppendMode::ForceAppendWithSpace);
 
             // reset
             self.is_inside_class = false;
@@ -1437,14 +1440,25 @@ impl Parser {
                 // coleta params
                 let mut params = Vec::new();
                 let mut j = pos + 2;
-                while j + 2 < inner.len() && inner[j].kind == TokenKind::Param {
+                while j + 2 < inner.len()
+                    && (inner[j].kind == TokenKind::Param || inner[j].kind == TokenKind::Identifier)
+                {
                     let pname = inner[j].value.clone();
                     let sep = &inner[j + 1];
                     let ptyp = &inner[j + 2];
                     let ok_sep = (sep.kind == TokenKind::Operator || sep.kind == TokenKind::Colon)
                         && sep.value == ":";
-                    if ok_sep && ptyp.kind == TokenKind::ParamType {
-                        params.push((pname.clone(), ptyp.value.clone()));
+                    // A type can be a ParamType (`String`, `Vec<..>`), a
+                    // primitive Keyword (`i32`, `f64`, `bool`), or a plain
+                    // Identifier (a user type). Accept all and normalise via
+                    // convert_type (e.g. `int` -> `i64`).
+                    let is_type = matches!(
+                        ptyp.kind,
+                        TokenKind::ParamType | TokenKind::Keyword | TokenKind::Identifier
+                    );
+                    if ok_sep && is_type {
+                        let (rtype, _) = utils::convert_type_with_marking(&ptyp.value);
+                        params.push((pname.clone(), rtype));
                         j += 3;
                         if j < inner.len() && inner[j].value == "," {
                             j += 1;
@@ -1547,96 +1561,117 @@ impl Parser {
             }
         }
 
-        // Methods
+        // Methods: `RetType name(params) { body }`. Instance methods take an
+        // implicit `&self` (Copper bodies reference `self.field` without
+        // declaring `self`), so we emit `&self` and append any declared
+        // params (skipping an explicit `self`). The constructor
+        // (`ClassName(...)`) is handled above and skipped here.
         let mut k = 0;
-        while k < inner.len() {
-            if k + 3 < inner.len() {
-                let return_type = &inner[k];
-                let name_t = &inner[k + 1];
-                let pstart = &inner[k + 2];
+        while k + 2 < inner.len() {
+            let return_type = &inner[k];
+            let name_t = &inner[k + 1];
+            let pstart = &inner[k + 2];
 
-                let valid_return_type = return_type.kind == TokenKind::Identifier
-                    || return_type.kind == TokenKind::ParamType
-                    || return_type.kind == TokenKind::Keyword;
+            let valid_return_type = return_type.kind == TokenKind::Identifier
+                || return_type.kind == TokenKind::ParamType
+                || return_type.kind == TokenKind::Keyword;
 
-                if valid_return_type
-                    && name_t.kind == TokenKind::Identifier
-                    && pstart.kind == TokenKind::ParenthesesStart
+            let is_method_head = valid_return_type
+                && name_t.kind == TokenKind::Identifier
+                && name_t.value != class_name
+                && pstart.kind == TokenKind::ParenthesesStart;
+
+            if !is_method_head {
+                k += 1;
+                continue;
+            }
+
+            // Collect declared params between `(` and the matching close.
+            // An explicit `self` / `&self` / `mut self` is dropped — we
+            // always emit `&self`.
+            let mut params: Vec<String> = Vec::new();
+            let mut idx = k + 3;
+            while idx < inner.len() {
+                let t = &inner[idx];
+                if t.kind == TokenKind::ParametersEnd || t.kind == TokenKind::ParenthesesEnd {
+                    break;
+                }
+                if t.value == "self" || t.value == "&" || t.value == "mut" || t.value == "," {
+                    idx += 1;
+                    continue;
+                }
+                if (t.kind == TokenKind::Param || t.kind == TokenKind::Identifier)
+                    && idx + 2 < inner.len()
                 {
-                    let mut found_self = false;
-                    let mut idx = k + 3;
-                    while idx < inner.len() {
-                        let param = &inner[idx];
-                        if param.value == "self" {
-                            found_self = true;
-                        }
-                        if param.kind == TokenKind::ParametersEnd {
-                            break;
-                        }
-                        idx += 1;
-                    }
-
-                    if found_self
-                        && idx < inner.len()
-                        && inner[idx].kind == TokenKind::ParametersEnd
-                    {
-                        let mut body = Vec::new();
-                        idx += 1;
-                        while idx < inner.len() && inner[idx].kind != TokenKind::BraceStart {
-                            idx += 1;
-                        }
-
-                        if idx < inner.len() {
-                            let mut depth = 1;
-                            idx += 1;
-                            while idx < inner.len() && depth > 0 {
-                                let tt = &inner[idx];
-                                if tt.kind == TokenKind::BraceStart {
-                                    depth += 1;
-                                } else if tt.kind == TokenKind::BraceEnd {
-                                    depth -= 1;
-                                }
-                                if depth > 0 {
-                                    body.push(tt.value.clone());
-                                }
-                                idx += 1;
-                            }
-
-                            let body_str = body.join(" ");
-                            let (rust_type, data_type) =
-                                utils::convert_type_with_marking(&return_type.value);
-
-                            // Mark data type usage for function return types
-                            if let Some(dt) = data_type {
-                                self.uses_data_types = true;
-                                match dt.as_str() {
-                                    "json" => self.result.mark_json_usage(),
-                                    "xml" => self.result.mark_xml_usage(),
-                                    "toml" => self.result.mark_toml_usage(),
-                                    _ => {}
-                                }
-                            }
-
-                            if rust_type == "()" {
-                                output
-                                    .push_str(&format!("    pub fn {}(&self) {{\n", name_t.value));
-                            } else {
-                                output.push_str(&format!(
-                                    "    pub fn {}(&self) -> {} {{\n",
-                                    name_t.value, rust_type
-                                ));
-                            }
-                            output.push_str(&format!("        {}\n", body_str));
-                            output.push_str("    }\n\n");
-                        }
-                        k = idx;
+                    let sep = &inner[idx + 1];
+                    let typ = &inner[idx + 2];
+                    let ok_sep = (sep.kind == TokenKind::Operator || sep.kind == TokenKind::Colon)
+                        && sep.value == ":";
+                    if ok_sep {
+                        let (ptype, _) = utils::convert_type_with_marking(&typ.value);
+                        params.push(format!("{}: {}", t.value, ptype));
+                        idx += 3;
                         continue;
                     }
                 }
+                idx += 1;
             }
-            k += 1;
-        }
 
+            // Advance to the method body's opening brace.
+            while idx < inner.len() && inner[idx].kind != TokenKind::BraceStart {
+                idx += 1;
+            }
+            if idx >= inner.len() {
+                k += 1;
+                continue;
+            }
+
+            // Collect the balanced body.
+            let mut body = Vec::new();
+            let mut depth = 1;
+            idx += 1;
+            while idx < inner.len() && depth > 0 {
+                let tt = &inner[idx];
+                if tt.kind == TokenKind::BraceStart {
+                    depth += 1;
+                } else if tt.kind == TokenKind::BraceEnd {
+                    depth -= 1;
+                }
+                if depth > 0 {
+                    body.push(tt.value.clone());
+                }
+                idx += 1;
+            }
+
+            let body_str = body.join(" ");
+            let (rust_type, data_type) = utils::convert_type_with_marking(&return_type.value);
+            if let Some(dt) = data_type {
+                self.uses_data_types = true;
+                match dt.as_str() {
+                    "json" => self.result.mark_json_usage(),
+                    "xml" => self.result.mark_xml_usage(),
+                    "toml" => self.result.mark_toml_usage(),
+                    _ => {}
+                }
+            }
+
+            let self_and_params = if params.is_empty() {
+                "&self".to_string()
+            } else {
+                format!("&self, {}", params.join(", "))
+            };
+            if rust_type == "()" {
+                output.push_str(&format!("    pub fn {}({}) {{\n", name_t.value, self_and_params));
+            } else {
+                output.push_str(&format!(
+                    "    pub fn {}({}) -> {} {{\n",
+                    name_t.value, self_and_params, rust_type
+                ));
+            }
+            output.push_str(&format!("        {}\n", body_str));
+            output.push_str("    }\n\n");
+            k = idx;
+        }
         output.push_str("}\n");
         output
     }
