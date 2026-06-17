@@ -341,6 +341,10 @@ impl Result {
         // Native std modules with crate-backed implementations.
         if self.used_std_modules.contains("http") {
             deps.push("ureq".to_string());
+            // `Response::json(path)` parses the body with serde_json.
+            if !deps.contains(&"serde_json".to_string()) {
+                deps.push("serde_json".to_string());
+            }
         }
         if self.used_std_modules.contains("json") && !deps.contains(&"serde_json".to_string()) {
             deps.push("serde_json".to_string());

@@ -3091,24 +3091,34 @@ impl Parser {
         // Track a stack of enclosing blocks; `no_promote` is true inside a
         // trait / trait-impl block. Brace bookkeeping is line-granular, which
         // suits the one-construct-per-line generated Rust.
-        let mut no_promote_stack: Vec<bool> = Vec::new();
+        // Block-kind stack: 0 = ordinary block / inherent impl / fn body,
+        // 1 = no-promote (trait body or `impl ... for ...`), 2 = a top-level
+        // `struct` body (its fields must become `pub` for cross-module access).
+        const OTHER: u8 = 0;
+        const NO_PROMOTE: u8 = 1;
+        const STRUCT: u8 = 2;
+        let mut stack: Vec<u8> = Vec::new();
         let promoted = body
             .lines()
             .map(|line| {
                 let trimmed = line.trim_start();
-                let depth = no_promote_stack.len();
-                let in_no_promote = no_promote_stack.iter().any(|&x| x);
+                let depth = stack.len();
+                let in_no_promote = stack.iter().any(|&x| x == NO_PROMOTE);
+                let innermost_is_struct = stack.last() == Some(&STRUCT);
                 let indent = &line[..line.len() - trimmed.len()];
                 // What needs `pub` to be reachable as `mod::X`:
-                //  - `fn`: at module top level OR inside an inherent `impl`
-                //    (methods called externally) — never inside trait/trait-impl.
-                //  - type/const decls (`struct`/`enum`/`trait`/`type`/`const`/
-                //    `static`): ONLY at module top level (depth 0) — a local
-                //    `static`/`const` inside a fn body must stay private.
+                //  - `fn`: module top level OR inside an inherent `impl` (methods
+                //    called externally) — never inside a trait/trait-impl.
+                //  - type/const decls at module top level (depth 0).
+                //  - struct FIELDS directly inside a top-level `struct` body
+                //    (so `resp.status` works from another module).
                 let promote = if trimmed.starts_with("pub ") {
                     false
                 } else if trimmed.starts_with("fn ") {
                     !in_no_promote
+                } else if innermost_is_struct {
+                    // A field line (`name: Type,`); not the closing brace.
+                    trimmed.contains(':') && !trimmed.starts_with('}')
                 } else if depth == 0 {
                     trimmed.starts_with("struct ")
                         || trimmed.starts_with("enum ")
@@ -3124,15 +3134,23 @@ impl Parser {
                 } else {
                     line.to_string()
                 };
-                // A brace that OPENS a block records whether it is a no-promote
-                // zone (trait body or `impl ... for ...`); closing braces pop.
-                let opens_no_promote = trimmed.starts_with("trait ")
-                    || (trimmed.starts_with("impl") && trimmed.contains(" for "));
+                // Classify a brace that OPENS a block. `impl ... for ...` and
+                // `trait` are no-promote; a depth-0 `struct` is a field zone;
+                // everything else is ordinary.
+                let frame = if trimmed.starts_with("trait ")
+                    || (trimmed.starts_with("impl") && trimmed.contains(" for "))
+                {
+                    NO_PROMOTE
+                } else if depth == 0 && trimmed.starts_with("struct ") {
+                    STRUCT
+                } else {
+                    OTHER
+                };
                 for ch in line.chars() {
                     if ch == '{' {
-                        no_promote_stack.push(opens_no_promote);
+                        stack.push(frame);
                     } else if ch == '}' {
-                        no_promote_stack.pop();
+                        stack.pop();
                     }
                 }
                 out
