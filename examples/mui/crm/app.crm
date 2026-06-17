@@ -31,6 +31,6 @@ view App(title: string = "Todos") {
     }
 
     TextField(value: "", placeholder: "Add a todo", onChange: { |v| items = v })
-    Button("Add", onClick: { items = items })
+    Button("Add", onClick: { items.push("item") })
   }
 }

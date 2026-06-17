@@ -13,7 +13,7 @@ pub mod ast;
 pub mod loader;
 pub mod style;
 
-use ast::{Document, Element, Handler, MuiError, MuiValue, Node, Param, Prop, PropValue, View};
+use ast::{Document, Element, Handler, MatchArm, MuiError, MuiValue, Node, Param, Prop, PropValue, View};
 use copper_syntax::ast::Span;
 use copper_syntax::expr::Expr;
 use copper_syntax::tokenizer::kind::TokenKind;
@@ -765,6 +765,27 @@ impl Parser {
         self.toks.get(self.pos + 1).map(|t| t.value.as_str())
     }
 
+    /// Eat `=>` — the tokenizer may emit it as a single `=>` token or as two
+    /// tokens `=` and `>` (since `=` is in `SYMBOL_OPERATORS` and `>` is in
+    /// `COMPARE_SIGNS`). Mirror the strategy used by copper-syntax's own parser.
+    fn eat_fat_arrow(&mut self) -> bool {
+        if self.peek_val() == Some("=>") {
+            self.pos += 1;
+            return true;
+        }
+        if self.peek_val() == Some("=") && self.peek2_val() == Some(">") {
+            self.pos += 2;
+            return true;
+        }
+        false
+    }
+
+    /// True if the current token plus the next form a fat arrow (`=>`).
+    fn peek_fat_arrow(&self) -> bool {
+        self.peek_val() == Some("=>")
+            || (self.peek_val() == Some("=") && self.peek2_val() == Some(">"))
+    }
+
     fn prev_span(&self, fallback: Span) -> Span {
         self.toks
             .get(self.pos.saturating_sub(1))
@@ -946,16 +967,74 @@ impl Parser {
     fn parse_match_node(&mut self) -> Option<Node> {
         let start = span_of(self.toks.get(self.pos)?);
         self.eat("match");
-        // For this increment, capture the match structurally by skipping its
-        // body; arm-by-arm node parsing is the next step.
+        // Scrutinee: tokens up to the opening `{`.
+        let mut scrut_parts: Vec<String> = Vec::new();
         while let Some(v) = self.peek_val() {
             if v == "{" {
                 break;
             }
-            self.bump();
+            let tok = self.bump().unwrap().value;
+            if !tok.trim().is_empty() {
+                scrut_parts.push(tok);
+            }
         }
-        if self.peek_val() == Some("{") {
-            self.skip_balanced("{", "}");
+        let scrut_raw = scrut_parts.join(" ");
+        let scrutinee = copper_syntax::expr::parse_expr(&scrut_raw)
+            .0
+            .unwrap_or_else(raw_expr);
+        let mut arms: Vec<MatchArm> = Vec::new();
+        if self.eat("{") {
+            while let Some(v) = self.peek_val() {
+                if v == "}" {
+                    self.eat("}");
+                    break;
+                }
+                // Skip stray statement separators between arms.
+                if v == ";" || v == "," || self.is_newline() {
+                    self.bump();
+                    continue;
+                }
+                // Pattern: tokens up to `=>` (space-joined, preserves quotes).
+                // Note: `=>` may be tokenized as two tokens (`=` then `>`) so
+                // we test with `peek_fat_arrow()` and eat with `eat_fat_arrow()`.
+                let arm_start = span_of(self.toks.get(self.pos)?);
+                let mut pat_parts: Vec<String> = Vec::new();
+                while !self.peek_fat_arrow() {
+                    match self.peek_val() {
+                        None | Some("}") => break,
+                        _ => {}
+                    }
+                    if self.is_newline() {
+                        self.bump();
+                        continue;
+                    }
+                    let tok = self.bump().unwrap().value;
+                    if !tok.trim().is_empty() {
+                        pat_parts.push(tok);
+                    }
+                }
+                let pattern = pat_parts.join(" ");
+                self.eat_fat_arrow();
+                // Body: a `{ ... }` block (parse_block eats the braces), or a
+                // single node.
+                let body = if self.peek_val() == Some("{") {
+                    self.parse_block()
+                } else {
+                    self.parse_node().map(|n| vec![n]).unwrap_or_default()
+                };
+                // Optional trailing comma.
+                self.eat(",");
+                let arm_end = self
+                    .toks
+                    .get(self.pos.saturating_sub(1))
+                    .map(span_of)
+                    .unwrap_or(arm_start);
+                arms.push(MatchArm {
+                    pattern,
+                    body,
+                    span: Span::merge(arm_start, arm_end),
+                });
+            }
         }
         let end = self
             .toks
@@ -963,29 +1042,10 @@ impl Parser {
             .map(span_of)
             .unwrap_or(start);
         Some(Node::Match {
-            scrutinee: raw_expr(),
-            arms: Vec::new(),
+            scrutinee,
+            arms,
             span: Span::merge(start, end),
         })
-    }
-
-    fn skip_balanced(&mut self, open: &str, close: &str) {
-        if !self.eat(open) {
-            return;
-        }
-        let mut depth = 1i32;
-        while let Some(v) = self.peek_val() {
-            if v == open {
-                depth += 1;
-            } else if v == close {
-                depth -= 1;
-                if depth == 0 {
-                    self.bump();
-                    return;
-                }
-            }
-            self.bump();
-        }
     }
 
     fn expect_ident(&mut self, what: &str) -> String {
@@ -1461,5 +1521,27 @@ view Dashboard() { Text("hi") }
         assert_eq!(app.height, Some(520));
         assert_eq!(app.background, Some((0xf1, 0xf5, 0xf9, 255)));
         assert_eq!(app.entry.as_deref(), Some("Dashboard"));
+    }
+
+    #[test]
+    fn parses_match_arms_with_bodies() {
+        let src = r#"
+view V() {
+  match status {
+    "on" => { Text("ON") }
+    _ => { Text("OFF") }
+  }
+}
+"#;
+        let doc = parse(src);
+        let view = doc.views.iter().find(|v| v.name == "V").unwrap();
+        let m = view.body.iter().find_map(|n| match n {
+            Node::Match { arms, scrutinee, .. } => Some((arms.clone(), scrutinee.clone())),
+            _ => None,
+        }).expect("match node");
+        assert_eq!(m.0.len(), 2, "two arms");
+        assert_eq!(m.0[0].pattern, "\"on\"");
+        assert_eq!(m.0[1].pattern, "_");
+        assert_eq!(m.0[0].body.len(), 1, "first arm has one node");
     }
 }

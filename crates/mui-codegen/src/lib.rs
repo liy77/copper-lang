@@ -26,6 +26,19 @@ use mui_syntax::style::{self, Anchor, HAnchor, Rgba, ShadowSpec, VAnchor};
 mod emit;
 use emit::Emitter;
 
+mod eval;
+
+/// Generate a complete Rust program from a MUI source string.
+/// Returns `Err(msg)` if the source has parse errors.
+#[cfg(test)]
+pub(crate) fn generate_from_str(src: &str) -> Result<String, String> {
+    let doc = mui_syntax::parse(src);
+    if !doc.errors.is_empty() {
+        return Err(format!("parse errors: {:?}", doc.errors));
+    }
+    Ok(generate_program(&doc, "MUI"))
+}
+
 /// Generate a complete Rust program (`main.rs`) from a parsed MUI document.
 /// The entry view (the `app { entry: }` one, else the first) is mounted by
 /// `main()`, configured from the document's optional `app { }` block.
@@ -158,6 +171,7 @@ fn header() -> String {
 // Edit the .mui/.crm source, not this file; re-run `cforge build` to regenerate.
 #![allow(unused_imports, unused_variables, unused_mut, dead_code, clippy::all)]
 
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -172,16 +186,53 @@ use mocida::{
 
 type MuiResult<T> = Result<T, mocida::Error>;
 
+/// A snapshot of every live signal's value, keyed by source name. Carried
+/// across a whole-view rebuild so the new tree re-seeds from the old state
+/// (Task 4: seed/dirty/on_tick rebuild engine).
+#[derive(Clone, Default)]
+struct Seed {
+    ints: std::collections::HashMap<String, i32>,
+    strs: std::collections::HashMap<String, String>,
+    lists: std::collections::HashMap<String, Vec<String>>,
+}
+impl Seed {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn int(&self, k: &str) -> Option<i32> {
+        self.ints.get(k).copied()
+    }
+    fn str(&self, k: &str) -> Option<String> {
+        self.strs.get(k).cloned()
+    }
+    fn list(&self, k: &str) -> Option<Vec<String>> {
+        self.lists.get(k).cloned()
+    }
+}
+
 /// A built view: its widget tree plus the live reactive state (signals +
-/// subscriptions) that must stay alive for the whole app loop.
+/// subscriptions) that must stay alive for the whole app loop, plus a
+/// `snapshot` closure that captures the current signal values for a rebuild.
 struct BuiltView {
     children: Children,
+    /// Re-read every live signal into a fresh `Seed` (for the rebuild tick).
+    snapshot: Box<dyn Fn() -> Seed>,
     // Signals are kept alive (and shared with handlers) here.
     _signals: Vec<Rc<RefCell<Signal<i32>>>>,
+    _signals_str: Vec<Rc<RefCell<Signal<String>>>>,
+    _signals_list: Vec<Rc<RefCell<Vec<String>>>>,
     _subs: Vec<Subscription>,
     // `Audio` clips — kept alive so a one-shot sound finishes (a dropped
     // `Sound` stops playing).
     _sounds: Vec<Sound>,
+}
+
+impl BuiltView {
+    /// Take the children out as a raw pointer for `UIApp_SetChildren`, leaving
+    /// an empty `Children` behind so `self` stays fully owned (no partial move).
+    fn children_take(&mut self) -> *mut mocida::sys::UIChildren {
+        std::mem::replace(&mut self.children, Children::new(0).unwrap()).into_raw()
+    }
 }
 
 "
@@ -210,8 +261,13 @@ fn generate_view_fn(view: &View, comps: &Registry, win_w: f32, win_h: f32) -> St
                 param_type(p.ty.as_deref())
             )
         })
-        .collect::<Vec<_>>()
-        .join(", ");
+        .collect::<Vec<_>>();
+    // Components are inlined, so every view fn takes the rebuild plumbing
+    // (`__seed`, `__dirty`) uniformly after its own params (decision #3).
+    let mut sig_params = params.clone();
+    sig_params.push("__seed: &Seed".to_string());
+    sig_params.push("__dirty: Rc<Cell<bool>>".to_string());
+    let sig_params = sig_params.join(", ");
 
     e.line(&format!(
         "/// View `{}` — generated from MUI source.",
@@ -220,13 +276,15 @@ fn generate_view_fn(view: &View, comps: &Registry, win_w: f32, win_h: f32) -> St
     e.line(&format!(
         "fn {}({}) -> MuiResult<BuiltView> {{",
         view_fn_name(&view.name),
-        params
+        sig_params
     ));
     e.indent();
     e.line("let mut __children = Children::new(16)?;");
     e.line("let mut __y: f32 = 24.0;");
     e.line("let mut __subs: Vec<Subscription> = Vec::new();");
     e.line("let mut __keep: Vec<Rc<RefCell<Signal<i32>>>> = Vec::new();");
+    e.line("let mut __keep_str: Vec<Rc<RefCell<Signal<String>>>> = Vec::new();");
+    e.line("let mut __keep_list: Vec<Rc<RefCell<Vec<String>>>> = Vec::new();");
     e.line("#[allow(unused_mut)]");
     e.line("let mut __sounds: Vec<Sound> = Vec::new();");
 
@@ -238,12 +296,16 @@ fn generate_view_fn(view: &View, comps: &Registry, win_w: f32, win_h: f32) -> St
     let mut sigs = SignalScope::default();
     declare_signals(&mut e, &view.body, &env, &mut sigs);
 
+    // Snapshot closure: clone every signal Rc and re-read it on demand into a
+    // fresh Seed (so the rebuild tick re-seeds the new tree from live state).
+    emit_snapshot_closure(&mut e, &sigs);
+
     for node in &view.body {
         emit_node(&mut e, node, &env, &sigs, comps, "__children");
     }
 
     e.line(
-        "Ok(BuiltView { children: __children, _signals: __keep, _subs: __subs, _sounds: __sounds })",
+        "Ok(BuiltView { children: __children, snapshot: Box::new(__snap), _signals: __keep, _signals_str: __keep_str, _signals_list: __keep_list, _subs: __subs, _sounds: __sounds })",
     );
     e.dedent();
     e.line("}");
@@ -325,22 +387,42 @@ fn generate_main(
     }
     e.line("mocida::text::search_fonts();");
     e.line("let _ = mocida::text::get_font(\"Arial\");");
-    let args = entry
+    let mut arg_parts = entry
         .params
         .iter()
         .map(|p| default_arg(p.default.as_ref(), p.ty.as_deref()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    e.line(&format!(
-        "let view = {}({})?;",
-        view_fn_name(&entry.name),
-        args
-    ));
-    e.line("app.set_children(view.children);");
+        .collect::<Vec<_>>();
+    // Thread the rebuild plumbing into the entry view call (decision #3: only
+    // the entry call passes real `__seed`/`__dirty` args; inlined components
+    // inherit them from the enclosing fn).
+    arg_parts.push("&__seed".to_string());
+    arg_parts.push("__dirty.clone()".to_string());
+    let args = arg_parts.join(", ");
+    let view_fn = view_fn_name(&entry.name);
+
+    // Seed/dirty/on_tick whole-view rebuild engine (Task 4).
+    e.line("let __dirty = Rc::new(Cell::new(false));");
+    e.line("#[allow(unused_mut)]");
+    e.line("let mut __seed = Seed::new();");
+    e.line(&format!("let mut __view = {view_fn}({args})?;"));
+    e.line("let __app_ptr = app.as_ptr();");
+    e.line("unsafe { mocida::sys::UIApp_SetChildren(__app_ptr, __view.children_take()); }");
+    e.line("app.on_tick(move || {");
+    e.indent();
+    e.line("if __dirty.replace(false) {");
+    e.indent();
+    e.line("__seed = (__view.snapshot)();");
+    e.line(&format!("if let Ok(__v) = {view_fn}({args}) {{"));
+    e.indent();
+    e.line("__view = __v;");
+    e.line("unsafe { mocida::sys::UIApp_SetChildren(__app_ptr, __view.children_take()); }");
+    e.dedent();
+    e.line("}");
+    e.dedent();
+    e.line("}");
+    e.dedent();
+    e.line("});");
     e.line("app.show().run();");
-    // Keep the signals + subscriptions alive across the whole loop.
-    e.line("drop(view._subs);");
-    e.line("drop(view._signals);");
     e.line("Ok(())");
     e.dedent();
     e.line("}");
@@ -355,13 +437,16 @@ fn generate_main(
 /// variable that holds each (an `Rc<RefCell<Signal<i32>>>`).
 #[derive(Default, Clone)]
 struct SignalScope {
-    /// name → generated var (e.g. `count` → `__sig_count`).
-    vars: std::collections::HashMap<String, String>,
+    /// name → (generated var, kind). e.g. `count` → (`__sig_count`, Int).
+    vars: std::collections::HashMap<String, (String, crate::eval::SigKind)>,
 }
 
 impl SignalScope {
     fn var(&self, name: &str) -> Option<&str> {
-        self.vars.get(name).map(String::as_str)
+        self.vars.get(name).map(|(v, _)| v.as_str())
+    }
+    fn kind(&self, name: &str) -> Option<crate::eval::SigKind> {
+        self.vars.get(name).map(|(_, k)| *k)
     }
 }
 
@@ -369,6 +454,7 @@ impl SignalScope {
 /// `mut name = signal(...)` binding in `nodes`, registering it in `scope` and
 /// pushing a clone into `__keep` so it outlives the window.
 fn declare_signals(e: &mut Emitter, nodes: &[Node], env: &Env, scope: &mut SignalScope) {
+    use crate::eval::SigKind;
     for n in nodes {
         if let Node::Let {
             name,
@@ -379,16 +465,73 @@ fn declare_signals(e: &mut Emitter, nodes: &[Node], env: &Env, scope: &mut Signa
             if scope.vars.contains_key(name) {
                 continue;
             }
-            if let Some(init) = signal_init(expr, env) {
-                let var = format!("__sig_{}", sanitize_ident(name));
-                e.line(&format!(
-                    "let {var} = Rc::new(RefCell::new(Signal::<i32>::new({init})?));"
-                ));
-                e.line(&format!("__keep.push({var}.clone());"));
-                scope.vars.insert(name.clone(), var);
+            // Only `signal(...)` initializers become live signals.
+            let Some(inner) = signal_call_arg(expr) else {
+                continue;
+            };
+            let kind = signal_kind(inner);
+            let var = format!("__sig_{}", sanitize_ident(name));
+            match kind {
+                SigKind::Int => {
+                    let init = signal_init(expr, env).unwrap_or_else(|| "0".to_string());
+                    e.line(&format!(
+                        "let {var} = Rc::new(RefCell::new(Signal::<i32>::new(__seed.int({name:?}).unwrap_or({init}))?));"
+                    ));
+                    e.line(&format!("__keep.push({var}.clone());"));
+                }
+                SigKind::Str => {
+                    let init = signal_str_init(inner).unwrap_or_default();
+                    e.line(&format!(
+                        "let {var} = Rc::new(RefCell::new(Signal::<String>::new(__seed.str({name:?}).unwrap_or_else(|| {init:?}.to_string()))?));"
+                    ));
+                    e.line(&format!("__keep_str.push({var}.clone());"));
+                }
+                SigKind::List => {
+                    // List signals are a plain shared `Vec<String>` (no Signal<T>
+                    // wrapper): structural `for` re-reads it on rebuild.
+                    e.line(&format!(
+                        "let {var} = match __seed.list({name:?}) {{ Some(__v) => Rc::new(RefCell::new(__v)), None => Rc::new(RefCell::new(Vec::<String>::new())) }};"
+                    ));
+                    e.line(&format!("__keep_list.push({var}.clone());"));
+                }
             }
+            scope.vars.insert(name.clone(), (var, kind));
         }
     }
+}
+
+/// Emit `let __snap = { <clone each signal Rc>; move || { <read into Seed> } };`
+/// — a closure that captures the live signals and re-reads their current values
+/// into a fresh `Seed` whenever the rebuild tick calls it.
+fn emit_snapshot_closure(e: &mut Emitter, sigs: &SignalScope) {
+    use crate::eval::SigKind;
+    e.line("let __snap = {");
+    e.indent();
+    // Clone each signal Rc into the closure's captured environment.
+    for (var, _) in sigs.vars.values() {
+        e.line(&format!("let {var} = {var}.clone();"));
+    }
+    e.line("move || {");
+    e.indent();
+    e.line("let mut __s = Seed::new();");
+    for (name, (var, kind)) in sigs.vars.iter() {
+        match kind {
+            SigKind::Int => e.line(&format!(
+                "__s.ints.insert({name:?}.to_string(), {var}.borrow().get());"
+            )),
+            SigKind::Str => e.line(&format!(
+                "__s.strs.insert({name:?}.to_string(), {var}.borrow().get());"
+            )),
+            SigKind::List => e.line(&format!(
+                "__s.lists.insert({name:?}.to_string(), {var}.borrow().clone());"
+            )),
+        }
+    }
+    e.line("__s");
+    e.dedent();
+    e.line("}");
+    e.dedent();
+    e.line("};");
 }
 
 // ---------------------------------------------------------------------------
@@ -420,7 +563,10 @@ fn emit_node(
                 e.line("// effect { ... } (no interpretable statements yet)");
             }
             for action in actions {
-                if let Some(v) = sigs.var(action.name()) {
+                // Effects run once at build time; only the int-signal mutation
+                // path is interpreted here (str/list effects await the evaluator).
+                if sigs.kind(action.name()) == Some(crate::eval::SigKind::Int) {
+                    let v = sigs.var(action.name()).unwrap();
                     let update = action_update_expr(&action);
                     e.line("{");
                     e.indent();
@@ -432,21 +578,169 @@ fn emit_node(
                 }
             }
         }
-        Node::If { then, .. } => {
-            e.line("// if cond { ... } — static lowering renders the `then` branch");
-            for n in then {
-                emit_node(e, n, env, sigs, comps, sink);
+        Node::If { cond_raw, then, els, .. } => {
+            let parsed = copper_syntax::expr::parse_expr(cond_raw).0;
+            let sig_lookup = |n: &str| sigs.kind(n);
+            let env_lookup = |n: &str| env.get(n).map(|s| s.to_string());
+            match parsed.as_ref().map(|c| crate::eval::expr_to_rust(c, &sig_lookup, &env_lookup)) {
+                Some(Ok(rust_cond)) => {
+                    // Subscribe structural signals to dirty (once each).
+                    if let Some(c) = &parsed {
+                        let mut reads = Vec::new();
+                        crate::eval::collect_reads(c, &mut reads);
+                        for r in reads.iter().filter(|r| sigs.var(r).is_some()) {
+                            emit_structural_subscribe(e, sigs, r);
+                        }
+                    }
+                    e.line(&format!("if {rust_cond} {{"));
+                    e.indent();
+                    for n in then { emit_node(e, n, env, sigs, comps, sink); }
+                    e.dedent();
+                    if let Some(els) = els {
+                        e.line("} else {");
+                        e.indent();
+                        for n in els { emit_node(e, n, env, sigs, comps, sink); }
+                        e.dedent();
+                    }
+                    e.line("}");
+                }
+                _ => {
+                    // Unsupported condition: fail loudly in generated code.
+                    let msg = format!("mui: unsupported if condition: {}", cond_raw);
+                    e.line(&format!("compile_error!({:?});", msg));
+                }
             }
         }
-        Node::For { body, .. } => {
-            e.line("// for ... { } — static lowering renders one iteration");
-            for n in body {
-                emit_node(e, n, env, sigs, comps, sink);
+        Node::For { pattern, iter, body, .. } => {
+            let sig_lookup = |n: &str| sigs.kind(n);
+            let env_lookup = |n: &str| env.get(n).map(|s| s.to_string());
+            match crate::eval::expr_to_rust(iter, &sig_lookup, &env_lookup) {
+                Ok(rust_iter) => {
+                    // Make the iterable structural: a List's dirtiness already
+                    // comes from its mutating handlers (emit_structural_subscribe
+                    // only emits a comment for it); Int/Str iterables subscribe to
+                    // `__dirty`. The loop var is NOT a signal — never subscribe it.
+                    let mut reads = Vec::new();
+                    crate::eval::collect_reads(iter, &mut reads);
+                    for r in reads.iter().filter(|r| sigs.var(r).is_some()) {
+                        emit_structural_subscribe(e, sigs, r);
+                    }
+                    let var = sanitize_ident(pattern);
+                    e.line(&format!("for {var} in {rust_iter} {{"));
+                    e.indent();
+                    // Bind the loop var so `${item}` lowers to the Rust local
+                    // `item` (a build-time format arg), not a literal/signal.
+                    let mut child_env = env.clone();
+                    child_env.loop_vars.insert(pattern.clone(), var.clone());
+                    for n in body {
+                        emit_node(e, n, &child_env, sigs, comps, sink);
+                    }
+                    e.dedent();
+                    e.line("}");
+                }
+                Err(msg) => {
+                    let m = format!("mui: unsupported for iterable: {msg}");
+                    e.line(&format!("compile_error!({m:?});"));
+                }
             }
         }
-        Node::Match { .. } => e.line("// match { ... } (not yet executed)"),
+        Node::Match { scrutinee, arms, .. } => {
+            let sig_lookup = |n: &str| sigs.kind(n);
+            let env_lookup = |n: &str| env.get(n).map(|s| s.to_string());
+            match crate::eval::expr_to_rust(scrutinee, &sig_lookup, &env_lookup) {
+                Ok(rust_scrut) => {
+                    // Subscribe each signal read by the scrutinee to dirty the view on change.
+                    let mut reads = Vec::new();
+                    crate::eval::collect_reads(scrutinee, &mut reads);
+                    for r in reads.iter().filter(|r| sigs.var(r).is_some()) {
+                        emit_structural_subscribe(e, sigs, r);
+                    }
+                    // Validate arm patterns BEFORE emitting the match. Only
+                    // string/int literals and the `_` wildcard are supported; an
+                    // unsupported pattern (e.g. `Some(x)`) gets a standalone
+                    // `compile_error!` emitted in STATEMENT position (before the
+                    // match), and is then skipped so the surrounding `match` stays
+                    // syntactically valid. Emitting the macro in arm position would
+                    // itself be a syntax error ("expected `=>`") that masks the real
+                    // message — mirror the unsupported-scrutinee path, which emits
+                    // the error instead of the match.
+                    let pat_is_valid = |pat: &str| {
+                        pat == "_"
+                            || (pat.starts_with('"') && pat.ends_with('"'))
+                            || pat.parse::<i64>().is_ok()
+                    };
+                    for arm in arms {
+                        let pat = arm.pattern.trim();
+                        if !pat_is_valid(pat) {
+                            // {:?} escaping so quotes/backslashes in the pattern
+                            // can't break out of the macro call.
+                            let __m = format!("mui: unsupported match arm pattern: {}", pat);
+                            e.line(&format!("compile_error!({:?});", __m));
+                        }
+                    }
+                    // String scrutinee: match on &str so literal-string arm patterns work.
+                    let scrut_is_str = reads.iter().any(|r| sigs.kind(r) == Some(crate::eval::SigKind::Str));
+                    if scrut_is_str {
+                        e.line(&format!("match ({rust_scrut}).as_str() {{"));
+                    } else {
+                        e.line(&format!("match {rust_scrut} {{"));
+                    }
+                    e.indent();
+                    let mut saw_wildcard = false;
+                    for arm in arms {
+                        let pat = arm.pattern.trim();
+                        // Skip unsupported arms (the standalone compile_error! above
+                        // already fails the build with the real message).
+                        if !pat_is_valid(pat) {
+                            continue;
+                        }
+                        if pat == "_" {
+                            saw_wildcard = true;
+                        }
+                        e.line(&format!("{pat} => {{"));
+                        e.indent();
+                        for n in &arm.body {
+                            emit_node(e, n, env, sigs, comps, sink);
+                        }
+                        e.dedent();
+                        e.line("}");
+                    }
+                    // Rust requires exhaustiveness; append a catch-all if not present.
+                    if !saw_wildcard {
+                        e.line("_ => {}");
+                    }
+                    e.dedent();
+                    e.line("}");
+                }
+                Err(msg) => {
+                    let __m = format!("mui: unsupported match scrutinee: {}", msg);
+                    e.line(&format!("compile_error!({:?});", __m));
+                }
+            }
+        }
         Node::Expr(_) => {}
     }
+}
+
+/// Emit a one-shot subscription that flips `__dirty` when signal `name` changes.
+fn emit_structural_subscribe(e: &mut Emitter, sigs: &SignalScope, name: &str) {
+    let var = sigs.var(name).unwrap();
+    let kind = sigs.kind(name).unwrap();
+    e.line("{");
+    e.indent();
+    e.line("let __d = __dirty.clone();");
+    match kind {
+        crate::eval::SigKind::List => {
+            // Lists are Rc<RefCell<Vec>>, not Signal — handler mutation already
+            // sets dirty explicitly (see handler emission); nothing to subscribe.
+            e.line("// list structural dep — dirty set by its mutating handler");
+        }
+        _ => e.line(&format!(
+            "if let Ok(__sub) = {var}.borrow_mut().subscribe(move |_| __d.set(true)) {{ __subs.push(__sub); }}"
+        )),
+    }
+    e.dedent();
+    e.line("}");
 }
 
 fn emit_element(
@@ -565,6 +859,19 @@ fn emit_component(e: &mut Emitter, el: &Element, env: &Env, comps: &Registry, si
     let inner_comps = Registry::new();
     let mut inner_sigs = SignalScope::default();
     declare_signals(e, &view.body, &comp_env, &mut inner_sigs);
+    // KNOWN LIMITATION (depth-1 inline): a component-local signal is seeded from
+    // the ENTRY view's `__seed`, which never carries this component's names, so
+    // its state is re-seeded (reset) on every whole-view structural rebuild.
+    // Folding inlined-component signals into the snapshot closure would fix this
+    // but risks a name collision in the seed map (entry `count` vs component
+    // `count`) and needs an emission-ordering restructure — deferred. We make the
+    // limitation loud here so it's discoverable in the generated output rather
+    // than silently losing state. See the spec's "Known limitations" section.
+    for (name, _) in inner_sigs.vars.iter() {
+        e.line(&format!(
+            "// NOTE: component-local signal `{name}` is re-seeded on rebuild (depth-1 inline limit); its state does not survive a structural rebuild."
+        ));
+    }
     for node in &view.body {
         emit_node(e, node, &comp_env, &inner_sigs, &inner_comps, &var);
     }
@@ -912,11 +1219,24 @@ fn emit_text(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink:
         .unwrap_or_default();
     let (w, h) = text_extent(&label, size);
 
+    // A label referencing an in-scope loop var must be computed at runtime from
+    // the Rust loop local, not baked as a literal. `loop_label` is the runtime
+    // `format!(...)` expression (a `String`); when present it overrides the
+    // literal first arg to `Text::new`.
+    let loop_label = el
+        .positional
+        .as_ref()
+        .and_then(|x| loop_var_format(x, env));
+
     e.line("{");
     e.indent();
+    let label_arg = match &loop_label {
+        Some(fmt) => format!("&{fmt}"),
+        None => format!("{label:?}"),
+    };
     e.line(&format!(
-        "let mut __t = Text::new({:?}, {})?.color({});",
-        label,
+        "let mut __t = Text::new({}, {})?.color({});",
+        label_arg,
         fmt_f32(size),
         color
     ));
@@ -1049,14 +1369,15 @@ fn emit_button(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sin
 
     // Wire onClick to a signal mutation when interpretable.
     if let Some(action) = onclick_action(el) {
-        if let Some(v) = sigs.var(action.name()) {
+        if let Some(kind) = sigs.kind(action.name()) {
+            let v = sigs.var(action.name()).unwrap();
             e.line(&format!("let __h = {v}.clone();"));
-            let update = action_update_expr(&action);
+            if action_needs_dirty(&action) {
+                e.line("let __dirty_h = __dirty.clone();");
+            }
             e.line("__b = __b.on_click(move |_| {");
             e.indent();
-            e.line("let __cur = __h.borrow().get();");
-            e.line(&format!("let __next = {update};"));
-            e.line("let _ = __h.borrow_mut().set(__next);");
+            emit_action_body(e, &action, kind);
             e.dedent();
             e.line("});");
         }
@@ -2295,7 +2616,71 @@ fn action_update_expr(action: &HandlerAction) -> String {
             }
         }
         HandlerAction::SetInt { value, .. } => format!("{value}"),
+        // Non-int actions don't use the `__cur`/`__next` i32 path; they are
+        // emitted by `emit_action` directly. Provide a harmless fallback so the
+        // match stays exhaustive.
+        HandlerAction::SetStr { .. }
+        | HandlerAction::SetList { .. }
+        | HandlerAction::PushList { .. }
+        | HandlerAction::ClearList { .. } => "__cur".to_string(),
     }
+}
+
+/// Emit the body of a click/change handler that mutates the signal held in the
+/// captured Rc `__h` according to `action`, dispatching on the signal's `kind`.
+/// Sets `__dirty` so a structural rebuild picks up list/str mutations. The
+/// caller has already opened the `move |_| {` closure and captured `__h` (and
+/// `__dirty_h` for the dirty flag).
+fn emit_action_body(e: &mut Emitter, action: &HandlerAction, kind: crate::eval::SigKind) {
+    use crate::eval::SigKind;
+    match (action, kind) {
+        (HandlerAction::AddAssign { .. } | HandlerAction::SetInt { .. }, SigKind::Int) => {
+            let update = action_update_expr(action);
+            e.line("let __cur = __h.borrow().get();");
+            e.line(&format!("let __next = {update};"));
+            e.line("let _ = __h.borrow_mut().set(__next);");
+        }
+        (HandlerAction::SetStr { value, .. }, SigKind::Str) => {
+            e.line(&format!(
+                "let _ = __h.borrow_mut().set({value:?}.to_string());"
+            ));
+        }
+        (HandlerAction::SetList { values, .. }, SigKind::List) => {
+            let items = values
+                .iter()
+                .map(|v| format!("{v:?}.to_string()"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            e.line(&format!("*__h.borrow_mut() = vec![{items}];"));
+            e.line("__dirty_h.set(true);");
+        }
+        (HandlerAction::PushList { value, .. }, SigKind::List) => {
+            e.line(&format!("__h.borrow_mut().push({value:?}.to_string());"));
+            e.line("__dirty_h.set(true);");
+        }
+        (HandlerAction::ClearList { .. }, SigKind::List) => {
+            e.line("__h.borrow_mut().clear();");
+            e.line("__dirty_h.set(true);");
+        }
+        // Kind/action mismatch (e.g. SetStr on an int signal): skip — the source
+        // is malformed for this signal; emitting nothing keeps codegen sound.
+        // Leave a marker so a mistyped handler is discoverable in the generated
+        // output rather than silently dropped.
+        _ => {
+            e.line("// mui: handler action/signal-kind mismatch — ignored");
+        }
+    }
+}
+
+/// Whether `action` mutates a list signal (and so needs the `__dirty` flag
+/// captured into the handler closure).
+fn action_needs_dirty(action: &HandlerAction) -> bool {
+    matches!(
+        action,
+        HandlerAction::SetList { .. }
+            | HandlerAction::PushList { .. }
+            | HandlerAction::ClearList { .. }
+    )
 }
 
 /// A named handler prop parsed into an action (int-signal subset).
@@ -2347,7 +2732,7 @@ fn emit_key_handler(e: &mut Emitter, el: &Element, sigs: &SignalScope, wvar: &st
         .vars
         .iter()
         .filter(|(name, _)| toks.contains(&name.as_str()))
-        .map(|(n, v)| (n.clone(), v.clone()))
+        .map(|(n, (v, _))| (n.clone(), v.clone()))
         .collect();
     let body = lower_key_body(&raw, &param);
 
@@ -2436,14 +2821,15 @@ fn operand_value(e: &Expr, env: &Env) -> String {
 /// when its handler is an interpretable int-signal action. No-op otherwise.
 fn emit_control_onchange(e: &mut Emitter, var: &str, el: &Element, sigs: &SignalScope) {
     if let Some(action) = control_action(el) {
-        if let Some(v) = sigs.var(action.name()) {
+        if let Some(kind) = sigs.kind(action.name()) {
+            let v = sigs.var(action.name()).unwrap();
             e.line(&format!("let __h = {v}.clone();"));
-            let update = action_update_expr(&action);
+            if action_needs_dirty(&action) {
+                e.line("let __dirty_h = __dirty.clone();");
+            }
             e.line(&format!("{var} = {var}.on_change(move |_| {{"));
             e.indent();
-            e.line("let __cur = __h.borrow().get();");
-            e.line(&format!("let __next = {update};"));
-            e.line("let _ = __h.borrow_mut().set(__next);");
+            emit_action_body(e, &action, kind);
             e.dedent();
             e.line("});");
         }
@@ -2457,6 +2843,13 @@ fn emit_control_onchange(e: &mut Emitter, var: &str, el: &Element, sigs: &Signal
 #[derive(Default, Clone)]
 struct Env {
     vars: std::collections::HashMap<String, String>,
+    /// Loop variables bound by an enclosing `for <pattern> in ...`. Maps the
+    /// MUI pattern name (e.g. `item`) to the Rust loop local it lowers to (a
+    /// `String` in scope). A `${item}` interpolation resolves to this bare
+    /// identifier — a build-time `format!` argument, NOT a literal or signal —
+    /// because the loop var is fixed within one iteration (the whole list
+    /// rebuilds on change via the engine, so it needs no reactive subscription).
+    loop_vars: std::collections::HashMap<String, String>,
 }
 
 impl Env {
@@ -2518,6 +2911,75 @@ fn resolve_name(name: &str, env: &Env) -> String {
     env.get(name)
         .map(str::to_string)
         .unwrap_or_else(|| format!("{{{name}}}"))
+}
+
+/// If `e` (a `Text`/`Button` positional) references any in-scope loop variable,
+/// build the runtime Rust `format!(...)` expression that computes its label from
+/// the loop locals. Loop-var interpolations become bare-identifier args; any
+/// other interpolation resolves through `env` (folded literal) — keeping the
+/// build-time value for params/signal initials. Returns `None` when no loop var
+/// is referenced (so the caller keeps the existing literal/reactive path).
+fn loop_var_format(e: &Expr, env: &Env) -> Option<String> {
+    if env.loop_vars.is_empty() {
+        return None;
+    }
+    // Collect (template, ordered interpolation idents) for the two label shapes.
+    let (tmpl, idents): (String, Vec<Option<String>>) = match &e.kind {
+        ExprKind::Literal(Literal::Str(t)) => {
+            let mut tmpl = String::new();
+            let mut idents = Vec::new();
+            for part in &t.parts {
+                match part {
+                    StrPart::Lit(s) => tmpl.push_str(&s.replace('{', "{{").replace('}', "}}")),
+                    StrPart::Expr(ex) => {
+                        tmpl.push_str("{}");
+                        idents.push(match &ex.kind {
+                            ExprKind::Ident(n) => Some(n.clone()),
+                            _ => None,
+                        });
+                    }
+                }
+            }
+            (tmpl, idents)
+        }
+        ExprKind::Ident(n) => ("{}".to_string(), vec![Some(n.clone())]),
+        ExprKind::Call { callee, args, .. } if is_format_call(callee) => {
+            let tmpl = match args.first().map(|a| &a.kind) {
+                Some(ExprKind::Literal(Literal::Str(t))) => render_template_raw(t),
+                _ => return None,
+            };
+            let idents = args[1..]
+                .iter()
+                .map(|a| match &a.kind {
+                    ExprKind::Ident(n) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect();
+            (tmpl, idents)
+        }
+        _ => return None,
+    };
+    // Only take over the label when a loop var is actually referenced.
+    let refs_loop_var = idents
+        .iter()
+        .flatten()
+        .any(|n| env.loop_vars.contains_key(n));
+    if !refs_loop_var {
+        return None;
+    }
+    // Each interpolation: a loop var → its Rust local; else the env literal
+    // (param default / signal initial), defaulting to an empty string.
+    let arg_exprs: Vec<String> = idents
+        .iter()
+        .map(|maybe| match maybe {
+            Some(n) => match env.loop_vars.get(n) {
+                Some(local) => local.clone(),
+                None => format!("{:?}", env.get(n).unwrap_or("")),
+            },
+            None => "\"\"".to_string(),
+        })
+        .collect();
+    Some(format!("format!({tmpl:?}, {})", arg_exprs.join(", ")))
 }
 
 fn is_format_call(callee: &Expr) -> bool {
@@ -2628,6 +3090,38 @@ fn signal_init(e: &Expr, env: &Env) -> Option<String> {
     }
 }
 
+/// The single argument expression of a `signal(<arg>)` call, or `None` if `e`
+/// isn't a `signal(...)` initializer.
+fn signal_call_arg(e: &Expr) -> Option<&Expr> {
+    let ExprKind::Call { callee, args, .. } = &e.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(n) if n == "signal") {
+        return None;
+    }
+    args.first()
+}
+
+/// Classify a `signal(<init>)` initializer's element by its argument:
+/// int literal → Int, string literal → Str, `[...]` array → List. Anything
+/// else defaults to Int (the historical behavior).
+fn signal_kind(arg: &Expr) -> crate::eval::SigKind {
+    use crate::eval::SigKind;
+    match &arg.kind {
+        ExprKind::Literal(Literal::Str(_)) => SigKind::Str,
+        ExprKind::Array(_) => SigKind::List,
+        _ => SigKind::Int,
+    }
+}
+
+/// The initial text of a string-literal `signal("...")` initializer.
+fn signal_str_init(arg: &Expr) -> Option<String> {
+    match &arg.kind {
+        ExprKind::Literal(Literal::Str(t)) => str_template_literal(t),
+        _ => None,
+    }
+}
+
 /// Identifier names an expression reads (for finding which signals a label
 /// depends on). Walks the `format(tmpl, args...)` shape + bare idents.
 fn names_read(e: &Expr) -> Vec<String> {
@@ -2665,7 +3159,12 @@ trait ActionName {
 impl ActionName for HandlerAction {
     fn name(&self) -> &str {
         match self {
-            HandlerAction::AddAssign { name, .. } | HandlerAction::SetInt { name, .. } => name,
+            HandlerAction::AddAssign { name, .. }
+            | HandlerAction::SetInt { name, .. }
+            | HandlerAction::SetStr { name, .. }
+            | HandlerAction::SetList { name, .. }
+            | HandlerAction::PushList { name, .. }
+            | HandlerAction::ClearList { name, .. } => name,
         }
     }
 }
@@ -2757,7 +3256,7 @@ fn to_snake(s: &str) -> String {
 
 /// Keep only identifier-safe characters (defensive — view/param names come
 /// from the parser, but never trust unchecked text in generated code).
-fn sanitize_ident(s: &str) -> String {
+pub(crate) fn sanitize_ident(s: &str) -> String {
     let mut out: String = s
         .chars()
         .map(|c| {
@@ -2777,6 +3276,22 @@ fn sanitize_ident(s: &str) -> String {
         out.insert(0, '_');
     }
     out
+}
+
+/// Return `Some(s)` when `t` is a single plain-text literal with no
+/// interpolation; `None` for any template that contains `${}` expressions.
+pub(crate) fn str_template_literal(t: &StrTemplate) -> Option<String> {
+    // An empty `""` literal has zero parts — classify it cleanly as the empty
+    // string rather than failing the "is a plain literal" check.
+    if t.parts.is_empty() {
+        return Some(String::new());
+    }
+    if t.parts.len() == 1 {
+        if let StrPart::Lit(s) = &t.parts[0] {
+            return Some(s.clone());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -2841,11 +3356,17 @@ mod tests {
     #[test]
     fn emits_view_fn_and_main() {
         let code = gen("view Hello(name: string = \"world\") { Text(\"Hi, ${name}!\", size: 28) }");
-        assert!(code.contains("fn build_hello(name: &str) -> MuiResult<BuiltView>"));
+        // View fns now take the rebuild plumbing after their own params.
+        assert!(code.contains(
+            "fn build_hello(name: &str, __seed: &Seed, __dirty: Rc<Cell<bool>>) -> MuiResult<BuiltView>"
+        ));
         assert!(code.contains("fn main() -> MuiResult<()>"));
         assert!(code.contains("App::new("));
-        // The entry call uses the default.
-        assert!(code.contains("build_hello(\"world\")"), "code:\n{code}");
+        // The entry call uses the default plus the threaded seed/dirty args.
+        assert!(
+            code.contains("build_hello(\"world\", &__seed, __dirty.clone())"),
+            "code:\n{code}"
+        );
     }
 
     #[test]
@@ -2853,10 +3374,11 @@ mod tests {
         let code = gen(
             "view C(start: int = 0) {\n  mut count = signal(start)\n  Stack {\n    Text(\"Count: ${count}\")\n    Button(\"+\", onClick: { count = count + 1 })\n  }\n}",
         );
-        // A real signal initialised from the param default.
+        // A real signal initialised from the param default, now seedable so a
+        // whole-view rebuild can re-seed it from the previous state.
         assert!(
-            code.contains("Signal::<i32>::new(0)"),
-            "signal init from param default:\n{code}"
+            code.contains("Signal::<i32>::new(__seed.int(\"count\").unwrap_or(0))"),
+            "signal init from param default (seedable):\n{code}"
         );
         // Reactive text: subscribes + updates via pointer.
         assert!(code.contains(".subscribe("), "text subscribes:\n{code}");
@@ -2922,6 +3444,50 @@ mod tests {
     }
 
     #[test]
+    fn declares_string_and_list_signals() {
+        let src = r#"
+app { name: "S" width: 200 height: 200 entry: V }
+view V() {
+  mut status = signal("on")
+  mut items = signal([])
+  Text("${status}")
+}
+"#;
+        let code = gen(src);
+        assert!(
+            code.contains("Signal::<String>::new"),
+            "string signal:\n{code}"
+        );
+        assert!(
+            code.contains("Rc::new(RefCell::new(Vec::<String>::new()))"),
+            "list signal:\n{code}"
+        );
+    }
+
+    #[test]
+    fn main_installs_rebuild_tick() {
+        let src = r#"
+app { name: "R" width: 200 height: 200 entry: V }
+view V() {
+  mut count = signal(0)
+  if count > 0 { Text("pos") } else { Text("zero") }
+  Button("inc", onClick: { count = count + 1 })
+}
+"#;
+        let code = gen(src);
+        assert!(
+            code.contains("Rc::new(Cell::new(false))"),
+            "dirty flag:\n{code}"
+        );
+        assert!(code.contains(".on_tick("), "tick installed:\n{code}");
+        assert!(
+            code.contains("UIApp_SetChildren"),
+            "swap via raw ptr:\n{code}"
+        );
+        assert!(code.contains("__seed"), "seed threaded:\n{code}");
+    }
+
+    #[test]
     fn signal_of_param_resolves_through_env() {
         // The reported bug: `${count}` showed `{count}` because `count =
         // signal(start)` resolves through the *param* `start`, and the binding
@@ -2937,4 +3503,117 @@ mod tests {
             "no unresolved placeholder:\n{code}"
         );
     }
+
+    #[test]
+    fn lowers_reactive_if() {
+        let src = r#"
+app { name: "I" width: 200 height: 200 entry: V }
+view V() {
+  mut count = signal(0)
+  if count > 0 { Text("pos") } else { Text("zero") }
+  Button("inc", onClick: { count = count + 1 })
 }
+"#;
+        let code = crate::generate_from_str(src).expect("codegen");
+        assert!(code.contains("if (__sig_count.borrow().get() > 0) {"), "real cond:\n{code}");
+        assert!(code.contains("} else {"), "else branch:\n{code}");
+        // structural subscribe marks dirty:
+        assert!(code.contains("__dirty"), "dirty subscribe:\n{code}");
+        assert!(!code.contains("static lowering renders the `then` branch"), "placeholder gone");
+    }
+
+    #[test]
+    fn lowers_reactive_for() {
+        let src = r#"
+app { name: "F" width: 200 height: 200 entry: App }
+view App(title: string = "Todos") {
+  mut items = signal([])
+  Stack(orientation: vertical) {
+    for item in items {
+      Text("${item}")
+    }
+  }
+}
+"#;
+        let code = crate::generate_from_str(src).expect("codegen");
+        assert!(code.contains("for item in __sig_items.borrow().clone() {"), "dynamic loop:\n{code}");
+        assert!(!code.contains("renders one iteration"), "placeholder gone:\n{code}");
+    }
+
+    #[test]
+    fn lowers_reactive_match() {
+        let src = r#"
+app { name: "M" width: 200 height: 200 entry: V }
+view V() {
+  mut status = signal("on")
+  match status {
+    "on" => { Text("ON") }
+    _ => { Text("OFF") }
+  }
+}
+"#;
+        let code = crate::generate_from_str(src).expect("codegen");
+        assert!(code.contains("match (__sig_status.borrow().get()).as_str() {"), "match scrutinee:\n{code}");
+        assert!(code.contains("\"on\" =>"), "literal arm:\n{code}");
+        assert!(code.contains("_ =>"), "wildcard arm:\n{code}");
+    }
+
+    #[test]
+    fn unsupported_match_arm_emits_compile_error_before_match_not_in_arm_position() {
+        // An arm pattern that is neither a literal nor `_` (here `Some(x)`) is
+        // unsupported. The generated `compile_error!` must be a standalone
+        // STATEMENT before the `match` (so it's not in arm position, which would
+        // itself be a syntax error masking the real message). The surrounding
+        // `match` must stay syntactically valid (only the literal `_` arm + the
+        // injected wildcard fallback).
+        let src = r#"
+app { name: "M" width: 200 height: 200 entry: V }
+view V() {
+  mut n = signal(0)
+  match n {
+    Some(x) => { Text("a") }
+    _ => { Text("b") }
+  }
+}
+"#;
+        let code = crate::generate_from_str(src).expect("codegen");
+        // The macro is emitted at all.
+        assert!(
+            code.contains("compile_error!("),
+            "expected a compile_error! for the unsupported arm:\n{code}"
+        );
+        // It must NOT be in arm position: the `compile_error!` line must not
+        // itself be an arm (no `=>` on it), must be a self-contained statement,
+        // the NEXT non-empty line must NOT be an arm (`=>`), and the macro must
+        // be emitted before (not inside) the `match` it guards.
+        let lines: Vec<&str> = code.lines().collect();
+        let err_idx = lines
+            .iter()
+            .position(|l| l.contains("compile_error!("))
+            .expect("compile_error! line present");
+        let err_line = lines[err_idx];
+        assert!(
+            !err_line.contains("=>"),
+            "compile_error! is in arm position (same line as `=>`):\n{err_line}"
+        );
+        assert!(
+            err_line.trim_end().ends_with(");"),
+            "compile_error! is not a standalone statement:\n{err_line}"
+        );
+        // The next non-empty line must not be an arm (`=>`); it should be the
+        // guarded `match` line (statement position confirmed).
+        let next = lines[err_idx + 1..]
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .expect("a line follows compile_error!");
+        assert!(
+            !next.contains("=>"),
+            "compile_error! is immediately followed by an arm (`=>`):\n{next}"
+        );
+        assert!(
+            next.trim_start().starts_with("match "),
+            "compile_error! is not followed by the guarded match:\n{next}"
+        );
+    }
+}
+
