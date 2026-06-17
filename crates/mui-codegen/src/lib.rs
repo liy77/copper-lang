@@ -673,11 +673,17 @@ fn emit_node(
                         let pat_is_valid = pat == "_"
                             || (pat.starts_with('"') && pat.ends_with('"'))
                             || pat.parse::<i64>().is_ok();
-                        if pat_is_valid {
-                            e.line(&format!("{pat} => {{"));
-                        } else {
-                            e.line(&format!("compile_error!(\"mui: unsupported match arm pattern: {pat}\") => {{"));
+                        if !pat_is_valid {
+                            // Emit the error as a standalone statement (NOT in pattern
+                            // position — a macro call is not a valid pattern). Use {:?}
+                            // escaping so quotes/backslashes in the pattern can't break
+                            // the macro call. Skip emitting this arm entirely so the
+                            // surrounding `match` remains syntactically valid.
+                            let __m = format!("mui: unsupported match arm pattern: {}", pat);
+                            e.line(&format!("compile_error!({:?});", __m));
+                            continue;
                         }
+                        e.line(&format!("{pat} => {{"));
                         e.indent();
                         for n in &arm.body {
                             emit_node(e, n, env, sigs, comps, sink);
@@ -693,8 +699,8 @@ fn emit_node(
                     e.line("}");
                 }
                 Err(msg) => {
-                    let escaped = msg.replace('"', "'");
-                    e.line(&format!("compile_error!(\"mui: unsupported match scrutinee: {escaped}\");"));
+                    let __m = format!("mui: unsupported match scrutinee: {}", msg);
+                    e.line(&format!("compile_error!({:?});", __m));
                 }
             }
         }
@@ -3511,8 +3517,7 @@ view V() {
 }
 "#;
         let code = crate::generate_from_str(src).expect("codegen");
-        assert!(code.contains("match (__sig_status.borrow().get()).as_str() {")
-             || code.contains("match __sig_status.borrow().get() {"), "match scrutinee:\n{code}");
+        assert!(code.contains("match (__sig_status.borrow().get()).as_str() {"), "match scrutinee:\n{code}");
         assert!(code.contains("\"on\" =>"), "literal arm:\n{code}");
         assert!(code.contains("_ =>"), "wildcard arm:\n{code}");
     }
