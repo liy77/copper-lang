@@ -2477,9 +2477,20 @@ impl Parser {
                     let mut param_end = param_start + 1;
                     let mut paren_count = 1;
                     while param_end < tokens.len() && paren_count > 0 {
+                        // Count BOTH paren flavours symmetrically. A tuple in a
+                        // param type (`pairs: Vec<(String, Value)>`) lexes its
+                        // inner `(`/`)` as `ParenthesesStart`/`ParenthesesEnd`,
+                        // while the param list's closing `)` is `ParametersEnd`.
+                        // Decrementing only on `ParametersEnd` left the tuple's
+                        // open paren unbalanced, so `param_end` ran past the
+                        // method body — the whole method was silently dropped.
                         match tokens[param_end].kind {
-                            TokenKind::ParenthesesStart => paren_count += 1,
-                            TokenKind::ParametersEnd => paren_count -= 1,
+                            TokenKind::ParenthesesStart | TokenKind::ParametersStart => {
+                                paren_count += 1
+                            }
+                            TokenKind::ParenthesesEnd | TokenKind::ParametersEnd => {
+                                paren_count -= 1
+                            }
                             _ => {}
                         }
                         param_end += 1;
@@ -2560,16 +2571,57 @@ impl Parser {
                             if i_param + 2 < param_tokens.len()
                                 && param_tokens[i_param + 1].kind == TokenKind::Colon
                             {
-                                let (mut param_type, data_type) = utils::convert_type_with_marking(
-                                    &param_tokens[i_param + 2].value,
+                                // Reference prefix on the param type. `&str`,
+                                // `&mut String`, `&[u8]` arrive as separate
+                                // tokens (`&` is an Operator, `mut` a keyword,
+                                // the referenced type the following token(s));
+                                // reading only the single `&` token would drop
+                                // the referenced type (`v: &str` -> `v: &`). The
+                                // free-function param path keeps the whole
+                                // reference by accumulating tokens — mirror that
+                                // by consuming the leading `&`/`&mut` here, then
+                                // letting the type read below pick up the
+                                // referenced type token(s).
+                                let mut k_type = i_param + 2;
+                                let mut ref_prefix = String::new();
+                                while k_type < param_tokens.len()
+                                    && param_tokens[k_type].kind == TokenKind::Operator
+                                    && (param_tokens[k_type].value == "&"
+                                        || param_tokens[k_type].value == "&&")
+                                {
+                                    ref_prefix.push_str(&param_tokens[k_type].value);
+                                    k_type += 1;
+                                    if k_type < param_tokens.len()
+                                        && param_tokens[k_type].value == "mut"
+                                    {
+                                        ref_prefix.push_str("mut ");
+                                        k_type += 1;
+                                    }
+                                }
+
+                                if k_type >= param_tokens.len() {
+                                    break;
+                                }
+
+                                let (converted, data_type) = utils::convert_type_with_marking(
+                                    &param_tokens[k_type].value,
                                 );
+                                let mut param_type = format!("{}{}", ref_prefix, converted);
 
                                 // Gobble generic arguments on the param type too
                                 // (`Vec<GameObject>`, `Option<i32>`), mirroring
                                 // the return-type handling above. Without this
                                 // the `<...>` tokens leak and the comma inside
                                 // `HashMap<K, V>` is mistaken for a param break.
-                                let mut k = i_param + 3;
+                                // Balance `(`/`)` and `[`/`]` alongside `<`/`>`
+                                // so a tuple or slice nested in the generic args
+                                // (`Vec<(String, Value)>`) keeps its internal
+                                // commas — otherwise the tuple's `,` is taken as
+                                // a parameter separator and the rest of the
+                                // signature (and the whole method) is dropped.
+                                // This mirrors the struct-field tuple fix in
+                                // `parse_struct_definition`.
+                                let mut k = k_type + 1;
                                 if k < param_tokens.len() && is_open(param_tokens[k]) {
                                     let mut depth = 0usize;
                                     while k < param_tokens.len() {
@@ -2585,12 +2637,25 @@ impl Parser {
                                                 break;
                                             }
                                             continue;
+                                        } else if t.value == "(" || t.value == "[" {
+                                            depth += 1;
+                                            param_type.push_str(&t.value);
+                                        } else if t.value == ")" || t.value == "]" {
+                                            depth = depth.saturating_sub(1);
+                                            param_type.push_str(&t.value);
                                         } else {
                                             param_type.push_str(&t.value);
                                         }
                                         k += 1;
                                     }
                                 }
+
+                                // Lower Copper type aliases that appear inside
+                                // the assembled type (`Vec<(String, int)>` ->
+                                // `Vec<(String, i64)>`); the per-token
+                                // `convert_type_with_marking` above only saw the
+                                // base head.
+                                param_type = convert_type(&param_type);
 
                                 if let Some(dt) = data_type {
                                     self.uses_data_types = true;
@@ -2686,8 +2751,12 @@ impl Parser {
                     let mut paren_count = 1;
                     while param_end < tokens.len() && paren_count > 0 {
                         match tokens[param_end].kind {
-                            TokenKind::ParenthesesStart => paren_count += 1,
-                            TokenKind::ParametersEnd => paren_count -= 1,
+                            TokenKind::ParenthesesStart | TokenKind::ParametersStart => {
+                                paren_count += 1
+                            }
+                            TokenKind::ParenthesesEnd | TokenKind::ParametersEnd => {
+                                paren_count -= 1
+                            }
                             _ => {}
                         }
                         param_end += 1;

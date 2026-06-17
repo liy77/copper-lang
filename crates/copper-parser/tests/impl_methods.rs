@@ -113,6 +113,40 @@ fn for_loop_over_identifier_uses_semicolons_not_commas() {
 }
 
 #[test]
+fn reference_and_tuple_generic_param_types_survive() {
+    // Two pre-existing param-type lowering bugs in the impl-method reader:
+    //   1. a `&str` / `&mut T` param dropped the referenced type
+    //      (`v: &str` -> `v: &`, "expected type, found `)`").
+    //   2. a tuple inside a generic param type (`Vec<(String, i64)>`)
+    //      unbalanced the param-list parens, so the whole method vanished.
+    let rust = transpile(
+        "struct Bag { items: Vec<(String, i64)> }\n\
+         impl Bag {\n\
+             func String label(self, prefix: &str) {\n\
+                 return format!(\"{}:{}\", prefix, self.items.len())\n\
+             }\n\
+             func Bag make(pairs: Vec<(String, i64)>) {\n\
+                 return Bag { items: pairs }\n\
+             }\n\
+         }\n",
+    );
+    // Bug 1: the reference param keeps its referenced type.
+    assert!(
+        rust.contains("prefix: &str"),
+        "`&str` param lost its referenced type:\n{rust}"
+    );
+    assert!(
+        !rust.contains("prefix: &)") && !rust.contains("prefix: &,"),
+        "`&str` param collapsed to `&`:\n{rust}"
+    );
+    // Bug 2: the tuple-generic param method survives, with its type lowered.
+    assert!(
+        rust.contains("fn make(") && rust.contains("pairs: Vec<(String, i64)>"),
+        "tuple-generic param method was dropped:\n{rust}"
+    );
+}
+
+#[test]
 fn operator_continued_lines_do_not_get_semicolons() {
     // A line ending in `&&` is a continuation, not a statement end.
     let rust = transpile(
