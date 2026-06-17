@@ -186,6 +186,24 @@ a follow-up).
 - **Expression coverage gaps** — unsupported operators error at codegen time
   rather than miscompiling.
 
+## Known limitations
+
+- **Component-local signal state is not preserved across rebuilds.** Only the
+  entry view's signals are folded into the snapshot/seed, so they survive a
+  whole-view structural rebuild. A signal declared inside an *inlined* imported
+  component (`mut x = signal(...)` in a depth-1 inline) is re-seeded from the
+  entry view's `Seed` — which never carries the component's names — on every
+  rebuild, so its state silently resets. The generated output emits a
+  `// NOTE: component-local signal ... does not survive a structural rebuild`
+  comment at each such declaration to make this discoverable.
+  - *Why deferred:* a full fix folds inlined-component signals into the snapshot
+    closure, which requires restructuring emission ordering and risks a
+    name-collision in the seed map (entry `count` vs component `count`). That is
+    a larger architectural change tracked as a follow-up; for now the limitation
+    is made loud rather than fixed.
+  - *Workaround:* keep reactive state that must survive rebuilds in the entry
+    view and pass it into components as params.
+
 ## Out of scope (explicit)
 
 General generics/turbofish, `Signal<Struct>`, `add_event::<E>()`, in-place region

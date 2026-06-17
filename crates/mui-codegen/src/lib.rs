@@ -859,6 +859,19 @@ fn emit_component(e: &mut Emitter, el: &Element, env: &Env, comps: &Registry, si
     let inner_comps = Registry::new();
     let mut inner_sigs = SignalScope::default();
     declare_signals(e, &view.body, &comp_env, &mut inner_sigs);
+    // KNOWN LIMITATION (depth-1 inline): a component-local signal is seeded from
+    // the ENTRY view's `__seed`, which never carries this component's names, so
+    // its state is re-seeded (reset) on every whole-view structural rebuild.
+    // Folding inlined-component signals into the snapshot closure would fix this
+    // but risks a name collision in the seed map (entry `count` vs component
+    // `count`) and needs an emission-ordering restructure — deferred. We make the
+    // limitation loud here so it's discoverable in the generated output rather
+    // than silently losing state. See the spec's "Known limitations" section.
+    for (name, _) in inner_sigs.vars.iter() {
+        e.line(&format!(
+            "// NOTE: component-local signal `{name}` is re-seeded on rebuild (depth-1 inline limit); its state does not survive a structural rebuild."
+        ));
+    }
     for node in &view.body {
         emit_node(e, node, &comp_env, &inner_sigs, &inner_comps, &var);
     }
