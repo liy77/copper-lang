@@ -197,4 +197,36 @@ mod tests {
         collect_reads(&e, &mut v);
         assert!(v.contains(&"count".to_string()) && v.contains(&"status".to_string()));
     }
+
+    #[test]
+    fn lowers_array_literal() {
+        let e = parse_expr("[1, 2, 3]").0.unwrap();
+        let rust = expr_to_rust(&e, &sig, &env).unwrap();
+        assert_eq!(rust, "vec![1, 2, 3]");
+    }
+
+    #[test]
+    fn lowers_exclusive_range() {
+        let e = parse_expr("0..count").0.unwrap();
+        let rust = expr_to_rust(&e, &sig, &env).unwrap();
+        assert_eq!(rust, "(0..__sig_count.borrow().get())");
+    }
+
+    #[test]
+    fn lowers_inclusive_range() {
+        let e = parse_expr("1..=3").0.unwrap();
+        let rust = expr_to_rust(&e, &sig, &env).unwrap();
+        assert_eq!(rust, "(1..=3)");
+    }
+
+    #[test]
+    fn lowers_index() {
+        // `items[count]` → indexed clone with the int signal coerced to usize.
+        let e = parse_expr("items[count]").0.unwrap();
+        let rust = expr_to_rust(&e, &sig, &env).unwrap();
+        assert_eq!(
+            rust,
+            "__sig_items.borrow().clone()[(__sig_count.borrow().get()) as usize].clone()"
+        );
+    }
 }

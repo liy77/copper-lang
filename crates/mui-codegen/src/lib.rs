@@ -2664,7 +2664,11 @@ fn emit_action_body(e: &mut Emitter, action: &HandlerAction, kind: crate::eval::
         }
         // Kind/action mismatch (e.g. SetStr on an int signal): skip — the source
         // is malformed for this signal; emitting nothing keeps codegen sound.
-        _ => {}
+        // Leave a marker so a mistyped handler is discoverable in the generated
+        // output rather than silently dropped.
+        _ => {
+            e.line("// mui: handler action/signal-kind mismatch — ignored");
+        }
     }
 }
 
@@ -3277,6 +3281,11 @@ pub(crate) fn sanitize_ident(s: &str) -> String {
 /// Return `Some(s)` when `t` is a single plain-text literal with no
 /// interpolation; `None` for any template that contains `${}` expressions.
 pub(crate) fn str_template_literal(t: &StrTemplate) -> Option<String> {
+    // An empty `""` literal has zero parts — classify it cleanly as the empty
+    // string rather than failing the "is a plain literal" check.
+    if t.parts.is_empty() {
+        return Some(String::new());
+    }
     if t.parts.len() == 1 {
         if let StrPart::Lit(s) = &t.parts[0] {
             return Some(s.clone());
