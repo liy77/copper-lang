@@ -644,7 +644,60 @@ fn emit_node(
                 }
             }
         }
-        Node::Match { .. } => e.line("// match { ... } (not yet executed)"),
+        Node::Match { scrutinee, arms, .. } => {
+            let sig_lookup = |n: &str| sigs.kind(n);
+            let env_lookup = |n: &str| env.get(n).map(|s| s.to_string());
+            match crate::eval::expr_to_rust(scrutinee, &sig_lookup, &env_lookup) {
+                Ok(rust_scrut) => {
+                    // Subscribe each signal read by the scrutinee to dirty the view on change.
+                    let mut reads = Vec::new();
+                    crate::eval::collect_reads(scrutinee, &mut reads);
+                    for r in reads.iter().filter(|r| sigs.var(r).is_some()) {
+                        emit_structural_subscribe(e, sigs, r);
+                    }
+                    // String scrutinee: match on &str so literal-string arm patterns work.
+                    let scrut_is_str = reads.iter().any(|r| sigs.kind(r) == Some(crate::eval::SigKind::Str));
+                    if scrut_is_str {
+                        e.line(&format!("match ({rust_scrut}).as_str() {{"));
+                    } else {
+                        e.line(&format!("match {rust_scrut} {{"));
+                    }
+                    e.indent();
+                    let mut saw_wildcard = false;
+                    for arm in arms {
+                        let pat = arm.pattern.trim();
+                        if pat == "_" {
+                            saw_wildcard = true;
+                        }
+                        // Validate: only string/int literals and `_` wildcard are supported.
+                        let pat_is_valid = pat == "_"
+                            || (pat.starts_with('"') && pat.ends_with('"'))
+                            || pat.parse::<i64>().is_ok();
+                        if pat_is_valid {
+                            e.line(&format!("{pat} => {{"));
+                        } else {
+                            e.line(&format!("compile_error!(\"mui: unsupported match arm pattern: {pat}\") => {{"));
+                        }
+                        e.indent();
+                        for n in &arm.body {
+                            emit_node(e, n, env, sigs, comps, sink);
+                        }
+                        e.dedent();
+                        e.line("}");
+                    }
+                    // Rust requires exhaustiveness; append a catch-all if not present.
+                    if !saw_wildcard {
+                        e.line("_ => {}");
+                    }
+                    e.dedent();
+                    e.line("}");
+                }
+                Err(msg) => {
+                    let escaped = msg.replace('"', "'");
+                    e.line(&format!("compile_error!(\"mui: unsupported match scrutinee: {escaped}\");"));
+                }
+            }
+        }
         Node::Expr(_) => {}
     }
 }
@@ -3443,6 +3496,25 @@ view App(title: string = "Todos") {
         let code = crate::generate_from_str(src).expect("codegen");
         assert!(code.contains("for item in __sig_items.borrow().clone() {"), "dynamic loop:\n{code}");
         assert!(!code.contains("renders one iteration"), "placeholder gone:\n{code}");
+    }
+
+    #[test]
+    fn lowers_reactive_match() {
+        let src = r#"
+app { name: "M" width: 200 height: 200 entry: V }
+view V() {
+  mut status = signal("on")
+  match status {
+    "on" => { Text("ON") }
+    _ => { Text("OFF") }
+  }
+}
+"#;
+        let code = crate::generate_from_str(src).expect("codegen");
+        assert!(code.contains("match (__sig_status.borrow().get()).as_str() {")
+             || code.contains("match __sig_status.borrow().get() {"), "match scrutinee:\n{code}");
+        assert!(code.contains("\"on\" =>"), "literal arm:\n{code}");
+        assert!(code.contains("_ =>"), "wildcard arm:\n{code}");
     }
 }
 
