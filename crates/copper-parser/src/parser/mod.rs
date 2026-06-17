@@ -85,15 +85,61 @@ pub struct Parser {
     pending_async_fn: bool,
 }
 
+/// Drop the `;` from a statement-terminating newline when the next
+/// significant token is a `.` — i.e. a method-chain continuation written
+/// across lines:
+///
+/// ```text
+/// result = vec![1, 2, 3]
+///     .iter()
+///     .sum()
+/// ```
+///
+/// The tokenizer already suppresses the separator when a line *ends* with a
+/// continuation token (`.`, `&&`, `::`, …); this handles the common form
+/// where the line ends with `)`/`]` and the *next* line opens with `.`.
+fn join_chain_continuations(tokens: Vec<Token>) -> Vec<Token> {
+    let next_significant_is_dot = |from: usize| -> bool {
+        let mut j = from;
+        while j < tokens.len() {
+            match tokens[j].kind {
+                TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment => j += 1,
+                TokenKind::Dot => return true,
+                _ => return false,
+            }
+        }
+        false
+    };
+    let mut out = tokens.clone();
+    for i in 0..out.len() {
+        if out[i].kind == TokenKind::Newline
+            && out[i].value.contains(';')
+            && next_significant_is_dot(i + 1)
+        {
+            // Keep the newline (formatting) but strip the separator so the
+            // expression continues onto the chained call.
+            out[i].value = out[i].value.replace(';', "");
+        }
+    }
+    out
+}
+
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
         let filtered: Vec<Token> = tokens
             .into_iter()
             .filter(|t| t.kind != TokenKind::Whitespace && t.kind != TokenKind::Comment)
             .collect();
+        // Join multi-line method chains: a statement-terminating newline
+        // whose next significant token is `.` is a chain continuation
+        // (`x\n  .iter()\n  .sum()`), not a statement end — drop its `;`
+        // so the chain lowers as one expression instead of three broken
+        // statements. The tokenizer only suppresses the `;` when a line
+        // *ends* with `.`/operator; this catches the leading-dot form.
+        let joined = join_chain_continuations(filtered);
         // Lower `cond ? then : else` ternaries into `if cond { then } else { else }`
         // before the main parser dispatch sees them.
-        let lowered = ternary::rewrite(filtered);
+        let lowered = ternary::rewrite(joined);
         Self {
             tokens: lowered,
             current: 0,
