@@ -1,0 +1,25 @@
+// glass.mui — region-backdrop container with `method: liquid`.
+//
+// `method: liquid` (bare ident, no quotes) is sugar for the macOS 26+ /
+// iOS 26+ Liquid Glass material. The same family as `effect: liquid`,
+// kept as a separate prop so authors can write it as a stylistic
+// choice ("I want liquid glass specifically") rather than a material.
+// The mapping is done by `UIBackdrop_FromString` in glass.c — this
+// file just shows how the two props end up resolving to the same enum.
+
+view GlassLiquid() {
+  Stack(orientation: vertical, gap: 16, padding: 24) {
+    // The new prop. Resolves to UI_BACKDROP_LIQUID_GLASS on macOS 26+ /
+    // iOS 26+ (NSGlassEffectView / UIGlassEffect); on older OSes, the
+    // in-app tinted approximation is the universal fallback.
+    Glass(method: liquid, radius: 20, padding: 16, tint: #ffffff, tintOpacity: 0.5) {
+      Text("Hello, Liquid Glass", size: 18, color: #0f172a)
+    }
+
+    // `effect: liquid` — the broader material picker. Both reach the
+    // same enum; the choice is purely stylistic.
+    Glass(effect: liquid, radius: 20, padding: 16) {
+      Text("…or via effect:", size: 14, color: #475569)
+    }
+  }
+}

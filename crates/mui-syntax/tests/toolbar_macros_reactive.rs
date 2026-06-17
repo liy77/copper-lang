@@ -3,6 +3,7 @@
 // toolbar's root Stack so this test is self-contained (doesn't
 // depend on OndaEngine being on the cargo path at test time).
 
+use mui_syntax::style;
 use mui_syntax::style::{box_spacing_reactive, ReactiveEnv};
 
 const TOOLBAR_STACK: &str = r#"view EditorToolbar() {
@@ -70,4 +71,47 @@ fn toolbar_padding_on_non_macos() {
     let (l, t, _r, _b) = render_with_is_macos("0");
     assert_eq!(t, 0.0, "paddingTop should be 0 on Windows/Linux");
     assert_eq!(l, 14.0, "paddingLeft should be 14 on Windows/Linux");
+}
+
+// The Files panel renders the scene list inside a `Scroll` whose
+// `height:` is bound to the `scene_h` signal. When the user drags
+// the divider between the scene list and the file tree, `scene_h`
+// updates — the Scroll's viewport should resize to match. This
+// regression test pins the codegen's `dim_reactive` (added in
+// commit 8a5540d) so the literal `height: scene_h` is no longer
+// parsed as a metric ref, and the `${scene_h}` ternary IS
+// evaluated against the live ReactiveEnv.
+const FILES_PANEL_SCROLL: &str = r#"view FilesPanel() {
+  Stack(orientation: vertical, width: 200) {
+    Scroll(direction: vertical, height: ${scene_h}) {
+      Stack(orientation: vertical, padding: 6) {
+        Text("Scene A")
+        Text("Scene B")
+      }
+    }
+  }
+}"#;
+
+#[test]
+fn files_panel_scroll_height_reactive() {
+    // Build the AST and resolve the Scroll's `height:` with three
+    // different `scene_h` values to confirm the codegen's reactive
+    // path picks up the live signal snapshot (not the 240px default).
+    let doc = mui_syntax::parse(FILES_PANEL_SCROLL);
+    let view = doc.views.first().expect("no view");
+    let scroll = find_el(&view.body, "Scroll").expect("no Scroll");
+    for (scene_h, expected) in [("100", 100.0), ("240", 240.0), ("480", 480.0)] {
+        let env = ReactiveEnv {
+            signals: [
+                ("is_macos".into(), "0".into()),
+                ("scene_h".into(), scene_h.into()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let resolved = style::dim_prop_reactive(scroll, "height", &env)
+            .expect("height should be set on Scroll");
+        assert_eq!(resolved, expected,
+            "Scroll height should follow scene_h (got {resolved} for scene_h={scene_h})");
+    }
 }

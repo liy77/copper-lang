@@ -1790,7 +1790,7 @@ fn str_template(t: &Token) -> StrTemplate {
         let mut ai = 0usize;
         for (i, seg) in segments.iter().enumerate() {
             if !seg.is_empty() {
-                parts.push(StrPart::Lit((*seg).to_string()));
+                parts.push(StrPart::Lit(unescape(seg)));
             }
             if i + 1 < segments.len() {
                 if let Some(arg) = args.get(ai) {
@@ -1804,7 +1804,7 @@ fn str_template(t: &Token) -> StrTemplate {
         return StrTemplate { parts };
     }
     StrTemplate {
-        parts: vec![StrPart::Lit(unquote(&t.value).to_string())],
+        parts: vec![StrPart::Lit(unescape(unquote(&t.value)))],
     }
 }
 
@@ -1812,6 +1812,73 @@ fn unquote(s: &str) -> &str {
     s.strip_prefix('"')
         .and_then(|v| v.strip_suffix('"'))
         .unwrap_or(s)
+}
+
+/// Process C-style backslash escapes in a string-literal body (after the
+/// surrounding quotes were stripped by [`unquote`]). Produces the real
+/// control characters so `Text("a\nb")` renders two lines on every OS
+/// (`\n` → U+000A, identical bytes on Windows/macOS/Linux — the line
+/// break is honoured by the text renderer, not by a platform newline).
+///
+/// Recognised: `\n \r \t \0 \\ \" \'`, plus `\xHH` (1–2 hex
+/// digits) and `\u{...}` (Unicode scalar). An unknown escape keeps the
+/// backslash verbatim so it round-trips instead of being silently eaten.
+fn unescape(s: &str) -> String {
+    if !s.contains('\\') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('0') => out.push('\0'),
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('\'') => out.push('\''),
+            Some('x') => {
+                // \xHH — up to 2 hex digits.
+                let mut hex = String::new();
+                while hex.len() < 2 {
+                    match chars.peek() {
+                        Some(h) if h.is_ascii_hexdigit() => { hex.push(*h); chars.next(); }
+                        _ => break,
+                    }
+                }
+                match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    Some(ch) => out.push(ch),
+                    None => { out.push('\\'); out.push('x'); out.push_str(&hex); }
+                }
+            }
+            Some('u') => {
+                // \u{XXXX} — Unicode scalar in braces.
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    let mut hex = String::new();
+                    while let Some(h) = chars.peek() {
+                        if *h == '}' { chars.next(); break; }
+                        if h.is_ascii_hexdigit() && hex.len() < 6 { hex.push(*h); chars.next(); }
+                        else { break; }
+                    }
+                    match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        Some(ch) => out.push(ch),
+                        None => { out.push_str("\\u{"); out.push_str(&hex); out.push('}'); }
+                    }
+                } else {
+                    out.push('\\'); out.push('u');
+                }
+            }
+            Some(other) => { out.push('\\'); out.push(other); }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

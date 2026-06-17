@@ -780,9 +780,13 @@ fn emit_stack(
     e.line("}");
 }
 
-/// `Glass(effect:, radius:, tint:, tintOpacity:, blur:, …)` → `mocida::Glass`.
+/// `Glass(effect:, method:, radius:, tint:, tintOpacity:, blur:, …)`
+/// → `mocida::Glass`.
+///
 /// Mirrors [`emit_stack`] but constructs a glass container with a backdrop
-/// material and its tint / effect-specific knobs.
+/// material and its tint / effect-specific knobs. `method:` is sugar for
+/// the macOS 26+ / iOS 26+ Liquid Glass material — when set it overrides
+/// `effect:` (same family, written as a stylistic choice).
 fn emit_glass(
     e: &mut Emitter,
     el: &Element,
@@ -791,7 +795,12 @@ fn emit_glass(
     comps: &Registry,
     sink: &str,
 ) {
-    let effect = style::enum_member(el, "effect").unwrap_or_else(|| "auto".to_string());
+    // `method:` takes precedence over `effect:` when both are set; this lets
+    // authors write `Glass { method: "liquid", … }` and still reach the same
+    // `BackdropMaterial::LiquidGlass` enum as `effect: "liquid"`.
+    let effect = style::enum_member(el, "method")
+        .or_else(|| style::enum_member(el, "effect"))
+        .unwrap_or_else(|| "auto".to_string());
     let horizontal = matches!(style::enum_member(el, "orientation").as_deref(), Some("horizontal"));
     let sw = dim(e, el, "width").unwrap_or(400.0);
     let sh = dim(e, el, "height").unwrap_or(400.0);

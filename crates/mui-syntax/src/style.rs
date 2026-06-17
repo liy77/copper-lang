@@ -691,12 +691,26 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 }
 
 /// The enum member of a prop, lowercased — either dotted `Type.Member`
-/// (`cursor: Cursor.Pointer`) or a bare ident (`anchor: center`).
+/// (`cursor: Cursor.Pointer`), a bare ident (`anchor: center`), or a
+/// string literal (`effect: "vibrancy-sidebar"`). String literals are
+/// treated the same as bare idents so `method: "liquid"` and
+/// `method: liquid` reach the same prop. A template that contains any
+/// expression interpolation (e.g. `method: "${kind}"`) is rejected —
+/// material names must be a compile-time constant.
 pub fn enum_member(el: &Element, name: &str) -> Option<String> {
+    use copper_syntax::expr::{Literal, StrPart};
     match &find(el, name)?.value {
         PropValue::Mui(MuiValue::Enum { member, .. }) => Some(member.to_lowercase()),
         PropValue::Expr(e) => match &e.kind {
             ExprKind::Ident(n) => Some(n.to_lowercase()),
+            ExprKind::Literal(Literal::Str(tpl)) => {
+                if tpl.parts.len() == 1 {
+                    if let StrPart::Lit(s) = &tpl.parts[0] {
+                        return Some(s.to_lowercase());
+                    }
+                }
+                None
+            }
             _ => None,
         },
         _ => None,

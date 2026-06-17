@@ -1,0 +1,31 @@
+// vibrancy.mui — vibrancy / liquid glass on macOS.
+//
+// `app { backdrop: "vibrancy-sidebar" }` enables the OS-level backdrop on
+// the whole window. mocida-rs auto-sets SDL_WINDOW_TRANSPARENT BEFORE
+// App::new so the Metal layer is non-opaque; the per-pixel alpha from our
+// clear then lets the NSVisualEffectView (or NSGlassEffectView on macOS 26+)
+// show through. Glass widgets inside render the in-app tinted approximation
+// over the same backdrop.
+
+App() {
+  window: 800x600
+  title: "Vibrancy Test"
+  backdrop: "vibrancy-sidebar"
+}
+
+view VibrancyView() {
+  Stack(orientation: vertical, gap: 16, padding: 32) {
+    Text("Vibrancy", size: 32, color: #ffffff)
+    // Embedded \n line breaks: the text component honours \n / \r / \t
+    // (processed into real control chars by the parser, rendered as line
+    // breaks by mocida) on every OS.
+    Text("The window's clear is alpha=0;\nthe OS material (NSVisualEffectView, or\nNSGlassEffectView on macOS 26+) shows through\nwherever the app didn't draw opaque content.", size: 14, color: #e2e8f0)
+
+    // Translucent cards over the same vibrancy. The Glass widget paints
+    // an in-app tinted fill on top — vibrancy is still visible through
+    // its radius corners.
+    Glass(method: vibrancy-header, radius: 16, padding: 16, tint: #ffffff, tintOpacity: 0.4) {
+      Text("Header vibrancy over a card", size: 14, color: #0f172a)
+    }
+  }
+}

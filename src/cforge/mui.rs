@@ -690,14 +690,39 @@ fn cargo_run_host(dir: &Path, file: &str) -> i32 {
 
 /// Spawn a `mui-dev` executable on `file`, inheriting stdio so its logs and
 /// the mocida window come through. Returns the exit code.
+///
+/// Hot-reload depends on this process staying alive after `cforge run`
+/// returns from its `Command::status()` call (the mui-dev child runs the
+/// per-frame tick callback that swaps the tree on file changes). On
+/// macOS/Linux we also have to put the mocida lib dir on the loader
+/// search path BEFORE spawn — `mui-dev` was built with
+/// `-Wl,-rpath,<lib>`, but only when the most recent build saw a non-empty
+/// `MOCIDA_LIB_DIR` env (see `apply_mocida_env`); a pre-built binary with a
+/// stale or missing rpath crashes at startup with
+/// "Library not loaded: @rpath/libmocida.dylib" and the user just sees a
+/// broken window — they conclude hot-reload is "not working" because
+/// nothing ever renders. Inject the same env var here so the loader finds
+/// the dynamic lib even when the rpath is wrong.
 fn spawn_binary(bin: &str, file: &str) -> i32 {
     vlog(&format!("exec {bin} {file}"));
-    let status = Command::new(bin)
-        .arg(file)
+    let mut cmd = Command::new(bin);
+    cmd.arg(file)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status();
+        .stderr(std::process::Stdio::inherit());
+    if let Some(ws) = find_mocida_rs() {
+        if let Some(lib) = mocida_runtime_lib_dir(&ws) {
+            let (var, sep) = runtime_lib_var();
+            let prev = std::env::var(var).unwrap_or_default();
+            let val = if prev.is_empty() {
+                lib.to_string_lossy().into_owned()
+            } else {
+                format!("{}{sep}{prev}", lib.display())
+            };
+            cmd.env(var, val);
+        }
+    }
+    let status = cmd.status();
     match status {
         Ok(s) => s.code().unwrap_or(0),
         Err(e) => {
@@ -818,16 +843,60 @@ fn crate_bin_name(cargo_toml: &Path) -> Option<String> {
 }
 
 /// The mocida shared-lib directory to put on the OS loader path at run-time.
-/// Prefers the staged SDK (`mocida/release/stage/lib`), matching the dylib the
-/// codegen build linked against.
+///
+/// Two candidates:
+///   1. `mocida/release/stage/lib` — the staged SDK layout (matches the dylib
+///      the codegen build linked against on most setups).
+///   2. `mocida/build/`           — the developer's fresh `python build.py`
+///      output, where a `libmocida.dylib` was produced without going through
+///      the staging step.
+///
+/// Hot-reload runs `mui-dev`, which was linked against whichever dylib the
+/// most recent `MOCIDA_LIB_DIR` pointed at. If the stage is stale (older
+/// than the build/ tree — e.g. someone added a C export after the last
+/// `python build.py --release --stage`), the runtime would load the stale
+/// lib and crash with SEGV on the first new-symbol FFI call. Pick the newer
+/// of the two so the loader finds the symbols the binary was linked with.
 fn mocida_runtime_lib_dir(workspace: &Path) -> Option<PathBuf> {
-    let lib = workspace
-        .parent()?
-        .join("mocida")
-        .join("release")
-        .join("stage")
-        .join("lib");
-    lib.is_dir().then_some(lib)
+    let mocida_c = workspace.parent()?.join("mocida");
+    let stage = mocida_c.join("release").join("stage").join("lib");
+    let build = mocida_c.join("build");
+    let stage_newer = newer_libmocida(&stage, &build);
+    let dir = if stage_newer == Some(true) { stage } else { build };
+    if dir.join(mocida_lib_filename()).is_file() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// Filename of the dynamic mocida lib on this OS.
+fn mocida_lib_filename() -> &'static str {
+    if cfg!(windows) {
+        "mocida.dll"
+    } else if cfg!(target_os = "macos") {
+        "libmocida.dylib"
+    } else {
+        "libmocida.so"
+    }
+}
+
+/// True when `a` is a directory containing a mocida lib whose mtime is
+/// strictly newer than the mocida lib in `b` (or `b` has none). `None` when
+/// neither dir carries a lib — caller falls back to whichever is non-empty.
+fn newer_libmocida(a: &Path, b: &Path) -> Option<bool> {
+    let a_mtime = std::fs::metadata(a.join(mocida_lib_filename()))
+        .and_then(|m| m.modified())
+        .ok();
+    let b_mtime = std::fs::metadata(b.join(mocida_lib_filename()))
+        .and_then(|m| m.modified())
+        .ok();
+    match (a_mtime, b_mtime) {
+        (Some(am), Some(bm)) => Some(am > bm),
+        (Some(_), None) => Some(true),
+        (None, Some(_)) => Some(false),
+        (None, None) => None,
+    }
 }
 
 /// Env var + path separator the OS uses to find shared libs at run-time.
