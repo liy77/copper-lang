@@ -1048,25 +1048,6 @@ impl Parser {
         })
     }
 
-    fn skip_balanced(&mut self, open: &str, close: &str) {
-        if !self.eat(open) {
-            return;
-        }
-        let mut depth = 1i32;
-        while let Some(v) = self.peek_val() {
-            if v == open {
-                depth += 1;
-            } else if v == close {
-                depth -= 1;
-                if depth == 0 {
-                    self.bump();
-                    return;
-                }
-            }
-            self.bump();
-        }
-    }
-
     fn expect_ident(&mut self, what: &str) -> String {
         if self.is_ident() {
             return self.bump().unwrap().value;
