@@ -19,18 +19,13 @@ const CSTD_SOURCE: &str = include_str!("../../../../std/cstd.crs");
 // `.crs` surface plus a native `.rs` of helpers.
 const NET_SOURCE: &str = include_str!("../../../../std/net.crs");
 const HTTP_SOURCE: &str = include_str!("../../../../std/http.crs");
-const HTTP_NATIVE: &str = include_str!("../../../../std/http_native.rs");
 const URL_SOURCE: &str = include_str!("../../../../std/url.crs");
 const JSON_SOURCE: &str = include_str!("../../../../std/json.crs");
-const JSON_NATIVE: &str = include_str!("../../../../std/json_native.rs");
 const CRYPTO_SOURCE: &str = include_str!("../../../../std/crypto.crs");
-const CRYPTO_NATIVE: &str = include_str!("../../../../std/crypto_native.rs");
 const TIME_SOURCE: &str = include_str!("../../../../std/time.crs");
 const FS_SOURCE: &str = include_str!("../../../../std/fs.crs");
 const WS_SOURCE: &str = include_str!("../../../../std/ws.crs");
-const WS_NATIVE: &str = include_str!("../../../../std/ws_native.rs");
 const REFLECT_SOURCE: &str = include_str!("../../../../std/reflect.crs");
-const REFLECT_NATIVE: &str = include_str!("../../../../std/reflect_native.rs");
 pub mod result;
 pub mod scope;
 pub mod scope_manager;
@@ -3065,14 +3060,14 @@ impl Parser {
     fn std_module_sources(name: &str) -> Option<(&'static str, &'static str)> {
         match name {
             "net" => Some((NET_SOURCE, "")),
-            "http" => Some((HTTP_SOURCE, HTTP_NATIVE)),
+            "http" => Some((HTTP_SOURCE, "")),
             "url" => Some((URL_SOURCE, "")),
-            "json" => Some((JSON_SOURCE, JSON_NATIVE)),
-            "crypto" => Some((CRYPTO_SOURCE, CRYPTO_NATIVE)),
+            "json" => Some((JSON_SOURCE, "")),
+            "crypto" => Some((CRYPTO_SOURCE, "")),
             "time" => Some((TIME_SOURCE, "")),
             "fs" => Some((FS_SOURCE, "")),
-            "ws" => Some((WS_SOURCE, WS_NATIVE)),
-            "reflect" => Some((REFLECT_SOURCE, REFLECT_NATIVE)),
+            "ws" => Some((WS_SOURCE, "")),
+            "reflect" => Some((REFLECT_SOURCE, "")),
             _ => None,
         }
     }
@@ -3088,16 +3083,59 @@ impl Parser {
 
         let body = raw.replace("fn main() {}", "").trim_end().to_string();
 
+        // Promote module functions to `pub fn` so `mod::{X}` resolves — but
+        // ONLY where `pub` is legal. A `fn` inside a `trait` body or a trait
+        // `impl ... for ...` block must NOT be `pub` (rustc E0449). A `fn` at
+        // module top level, or inside an inherent `impl Type { }` (whose
+        // methods are called externally, e.g. `r.keys()`), DOES need `pub`.
+        // Track a stack of enclosing blocks; `no_promote` is true inside a
+        // trait / trait-impl block. Brace bookkeeping is line-granular, which
+        // suits the one-construct-per-line generated Rust.
+        let mut no_promote_stack: Vec<bool> = Vec::new();
         let promoted = body
             .lines()
             .map(|line| {
                 let trimmed = line.trim_start();
-                if let Some(rest) = trimmed.strip_prefix("fn ") {
-                    let indent_len = line.len() - trimmed.len();
-                    format!("{}pub fn {}", &line[..indent_len], rest)
+                let depth = no_promote_stack.len();
+                let in_no_promote = no_promote_stack.iter().any(|&x| x);
+                let indent = &line[..line.len() - trimmed.len()];
+                // What needs `pub` to be reachable as `mod::X`:
+                //  - `fn`: at module top level OR inside an inherent `impl`
+                //    (methods called externally) — never inside trait/trait-impl.
+                //  - type/const decls (`struct`/`enum`/`trait`/`type`/`const`/
+                //    `static`): ONLY at module top level (depth 0) — a local
+                //    `static`/`const` inside a fn body must stay private.
+                let promote = if trimmed.starts_with("pub ") {
+                    false
+                } else if trimmed.starts_with("fn ") {
+                    !in_no_promote
+                } else if depth == 0 {
+                    trimmed.starts_with("struct ")
+                        || trimmed.starts_with("enum ")
+                        || trimmed.starts_with("trait ")
+                        || trimmed.starts_with("type ")
+                        || trimmed.starts_with("const ")
+                        || trimmed.starts_with("static ")
+                } else {
+                    false
+                };
+                let out = if promote {
+                    format!("{}pub {}", indent, trimmed)
                 } else {
                     line.to_string()
+                };
+                // A brace that OPENS a block records whether it is a no-promote
+                // zone (trait body or `impl ... for ...`); closing braces pop.
+                let opens_no_promote = trimmed.starts_with("trait ")
+                    || (trimmed.starts_with("impl") && trimmed.contains(" for "));
+                for ch in line.chars() {
+                    if ch == '{' {
+                        no_promote_stack.push(opens_no_promote);
+                    } else if ch == '}' {
+                        no_promote_stack.pop();
+                    }
                 }
+                out
             })
             .collect::<Vec<_>>()
             .join("\n");

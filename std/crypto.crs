@@ -11,3 +11,190 @@
 //   crypto::sha512(s)        -> 128-char hex digest
 //   crypto::hmac_sha256(key, msg) -> hex HMAC (API signing, webhooks)
 //   crypto::crc32(s)         -> i64 (the unsigned CRC-32 value)
+
+// Standard base64 (with `=` padding) of the UTF-8 bytes of `s`.
+func String base64_encode(s: &str) {
+    let table = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = s.as_bytes();
+    mut out = String::new();
+    let n = bytes.len();
+    mut i = 0;
+    while i < n {
+        let b0 = bytes[i] as u32;
+        mut b1 = 0u32;
+        mut b2 = 0u32;
+        let rem = n - i;
+        if rem > 1 {
+            b1 += bytes[i + 1] as u32;
+        }
+        if rem > 2 {
+            b2 += bytes[i + 2] as u32;
+        }
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(table[((triple >> 18) & 63) as usize] as char);
+        out.push(table[((triple >> 12) & 63) as usize] as char);
+        if rem > 1 {
+            out.push(table[((triple >> 6) & 63) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if rem > 2 {
+            out.push(table[(triple & 63) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        i += 3;
+    }
+    return out;
+}
+
+// Map a base64 alphabet byte to its 6-bit value, or 255 if it is not a
+// valid base64 character (used by `base64_decode`).
+func u32 b64_value(c: u8) {
+    if c >= b'A' && c <= b'Z' {
+        return (c - b'A') as u32;
+    }
+    if c >= b'a' && c <= b'z' {
+        return (c - b'a' + 26) as u32;
+    }
+    if c >= b'0' && c <= b'9' {
+        return (c - b'0' + 52) as u32;
+    }
+    if c == b'+' {
+        return 62;
+    }
+    if c == 47u8 {
+        return 63;
+    }
+    return 255;
+}
+
+// Decode standard base64 to a lossy-UTF-8 String. Invalid input -> "".
+func String base64_decode(s: &str) {
+    let raw = s.as_bytes();
+    mut cleaned: Vec<u8> = vec![];
+    for i in 0..raw.len() {
+        let c = raw[i];
+        if c != b'=' && c != 32u8 && c != 9u8 && c != 10u8 && c != 13u8 {
+            cleaned.push(c);
+        }
+    }
+    mut out: Vec<u8> = vec![];
+    let total = cleaned.len();
+    mut idx = 0;
+    while idx < total {
+        mut acc = 0u32;
+        mut bits = 0u32;
+        mut k = 0;
+        while k < 4 && idx + k < total {
+            let c = cleaned[idx + k];
+            let v = b64_value(c);
+            if v == 255 {
+                return String::new();
+            }
+            acc <<= 6;
+            acc |= v;
+            bits += 6;
+            k += 1;
+        }
+        let bytes_avail = bits / 8;
+        acc <<= 24 - bits;
+        mut j = 0u32;
+        while j < bytes_avail {
+            out.push(((acc >> (16 - j * 8)) & 255) as u8);
+            j += 1;
+        }
+        idx += 4;
+    }
+    return String::from_utf8_lossy(&out).into_owned();
+}
+
+// Lower-case hex of the UTF-8 bytes of `s`.
+func String hex_encode(s: &str) {
+    let digits = b"0123456789abcdef";
+    let bytes = s.as_bytes();
+    mut out = String::new();
+    for i in 0..bytes.len() {
+        let b = bytes[i] as usize;
+        out.push(digits[(b >> 4) & 15] as char);
+        out.push(digits[b & 15] as char);
+    }
+    return out;
+}
+
+// Decode a hex string to a lossy-UTF-8 String. Invalid input -> "".
+func String hex_decode(s: &str) {
+    let t = s.trim();
+    let b = t.as_bytes();
+    let n = b.len();
+    if n % 2 != 0 {
+        return String::new();
+    }
+    mut out: Vec<u8> = vec![];
+    mut i = 0;
+    while i < n {
+        let hi = (b[i] as char).to_digit(16);
+        let lo = (b[i + 1] as char).to_digit(16);
+        if hi.is_none() || lo.is_none() {
+            return String::new();
+        }
+        let h = hi.unwrap();
+        let l = lo.unwrap();
+        out.push((h * 16 + l) as u8);
+        i += 2;
+    }
+    return String::from_utf8_lossy(&out).into_owned();
+}
+
+// SHA-256 of `s`, as a 64-char lower-case hex digest.
+func String sha256(s: &str) {
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(s.as_bytes());
+    mut out = String::new();
+    for i in 0..digest.len() {
+        out.push_str(&format!("{:02x}", digest[i]));
+    }
+    return out;
+}
+
+// SHA-512 of `s`, as a 128-char lower-case hex digest.
+func String sha512(s: &str) {
+    let digest = <sha2::Sha512 as sha2::Digest>::digest(s.as_bytes());
+    mut out = String::new();
+    for i in 0..digest.len() {
+        out.push_str(&format!("{:02x}", digest[i]));
+    }
+    return out;
+}
+
+// HMAC-SHA256 of `msg` under `key`, as a hex digest. "" on a bad key length
+// (HMAC accepts any key length, so this effectively never fails).
+func String hmac_sha256(key: &str, msg: &str) {
+    let built = <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(key.as_bytes());
+    if built.is_err() {
+        return String::new();
+    }
+    mut mac = built.unwrap();
+    hmac::Mac::update(&mut mac, msg.as_bytes());
+    let bytes = hmac::Mac::finalize(mac).into_bytes();
+    mut out = String::new();
+    for i in 0..bytes.len() {
+        out.push_str(&format!("{:02x}", bytes[i]));
+    }
+    return out;
+}
+
+// CRC-32 (IEEE) of the UTF-8 bytes of `s`, returned as an i64 holding the
+// unsigned 32-bit value. Std-only table-less bit algorithm.
+func i64 crc32(s: &str) {
+    let bytes = s.as_bytes();
+    mut crc = 0xFFFFFFFFu32;
+    for i in 0..bytes.len() {
+        crc ^= bytes[i] as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc >>= 1;
+            crc ^= 0xEDB88320u32 & mask;
+        }
+    }
+    return (!crc) as i64;
+}
