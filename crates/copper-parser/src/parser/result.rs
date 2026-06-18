@@ -44,6 +44,11 @@ pub struct Result {
     /// definitions). Generic structs are not recorded (their impl would need
     /// generic bounds — out of MVP scope).
     pub(crate) reflect_structs: Vec<(String, Vec<String>)>,
+    /// Transpiled Rust source (crate-root lib) for each used std module, as
+    /// `(module_name, lib_source)`. cforge writes each as a separate local
+    /// crate under `__copper__/std/<name>/` and path-depends on it, instead of
+    /// inlining a `pub mod` into main.rs.
+    pub(crate) std_lib_crates: Vec<(String, String)>,
     /// Set when the user defines their own `func main()`. The function is
     /// emitted under the renamed symbol `__copper_main`, and `finalize` uses
     /// this to synthesize the real `fn main` entry point (and to suppress the
@@ -74,8 +79,29 @@ impl Result {
             used_std_modules: std::collections::BTreeSet::new(),
             external_crates: Vec::new(),
             reflect_structs: Vec::new(),
+            std_lib_crates: Vec::new(),
             user_main: None,
         }
+    }
+
+    /// Record a used std module's transpiled lib source so cforge can write it
+    /// as a separate local crate (`__copper__/std/<name>/`).
+    pub fn add_std_lib_crate(&mut self, name: &str, lib_source: &str) {
+        if !self.std_lib_crates.iter().any(|(n, _)| n == name) {
+            self.std_lib_crates
+                .push((name.to_string(), lib_source.to_string()));
+        }
+    }
+
+    /// The `(name, lib_source)` pairs for every used std module.
+    pub fn std_lib_crates(&self) -> &[(String, String)] {
+        &self.std_lib_crates
+    }
+
+    /// Prepend raw text (e.g. `use copper_http as http;` aliases) to the
+    /// generated Rust, ahead of everything else.
+    pub fn prepend_value(&mut self, text: &str) {
+        self.value = format!("{}{}", text, self.value);
     }
 
     /// Record that the user defined their own `main` (renamed to
@@ -334,15 +360,15 @@ impl Result {
     }
 
     pub fn get_required_dependencies(&self) -> Vec<String> {
-        // Crate-backed std modules target a SPECIFIC crate API, so each dep is
-        // pinned with a `name@version` req (the generated Cargo.toml honours
-        // the pin; a bare name would resolve to the latest — e.g. `ureq` 3.x,
-        // whose API differs from the 2.x this code is written against).
+        // Dependencies for the MAIN project's Cargo.toml. Crate-backed std
+        // MODULES (http/json/crypto) no longer add their crates here — each is
+        // a separate local crate under `__copper__/std/<name>/` that carries
+        // its own deps (see `std_module_crate_deps`); the main project just
+        // path-depends on `copper_<name>` (added by cforge). What remains here
+        // is the inline DATA-TYPE crates (the `json`/`toml` value types used
+        // directly in main, not via a module) plus the user's external crates.
         const SERDE_JSON: &str = "serde_json@1";
         const TOML: &str = "toml@0.8";
-        const UREQ: &str = "ureq@2";
-        const SHA2: &str = "sha2@0.10";
-        const HMAC: &str = "hmac@0.12";
 
         let mut deps = Vec::new();
         let mut add = |spec: &str, deps: &mut Vec<String>| {
@@ -359,21 +385,6 @@ impl Result {
         }
 
         // XML needs no external dependency for now (uses String).
-
-        // Native std modules with crate-backed implementations.
-        if self.used_std_modules.contains("http") {
-            add(UREQ, &mut deps);
-            // `Response::json(path)` parses the body with serde_json.
-            add(SERDE_JSON, &mut deps);
-        }
-        if self.used_std_modules.contains("json") {
-            add(SERDE_JSON, &mut deps);
-        }
-        if self.used_std_modules.contains("crypto") {
-            add(SHA2, &mut deps);
-            add(HMAC, &mut deps);
-        }
-        // (the `net`, `url`, `time`, `fs` and `ws` modules are std-only.)
 
         // External crates from `import { … } from <crate>`.
         for c in &self.external_crates {
