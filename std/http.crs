@@ -14,7 +14,7 @@
 //     resp.ok            -> true when status is 2xx
 //     resp.is_ok()       -> same as resp.ok
 //     resp.text()        -> the body (String)
-//     resp.json(path)    -> extract a dotted JSON path from the body
+//     resp.json()        -> parsed body as a serde_json::Value (navigate it
 //                           ("a.b.0"); "" if absent. "" path -> whole body.
 //
 //   http::get(url)                       -> Response
@@ -50,29 +50,12 @@ impl Response {
         return self.body.clone()
     }
 
-    // Extract a dotted path (`"a.b.0"`) from the JSON body. "" if the body
-    // is not JSON or the path is absent. An empty path returns the whole
-    // body re-serialized.
-    func String json(&self, path: &str) {
-        mut parsed = serde_json::from_str::<serde_json::Value>(&self.body)
-        if parsed.is_err() {
-            return String::new()
-        }
-        mut root = parsed.unwrap()
-        if path.is_empty() {
-            return serde_json::to_string(&root).unwrap_or_default()
-        }
-        mut ptr = format!("/{}", path.replace('.', "/"))
-        mut node_opt = root.pointer(&ptr)
-        if node_opt.is_none() {
-            return String::new()
-        }
-        mut node = node_opt.unwrap()
-        return match node {
-            serde_json::Value::String(v) => v.clone(),
-            serde_json::Value::Null => String::new(),
-            other => serde_json::to_string(other).unwrap_or_default(),
-        }
+    // Parse the body as JSON and return the `serde_json::Value` so the caller
+    // can navigate / convert it however they like (`r.json()["a"]["b"]`,
+    // `.as_str()`, `.get(...)`, pattern-match, etc.). Returns `Value::Null` if
+    // the body is not valid JSON.
+    func serde_json::Value json(&self) {
+        return serde_json::from_str::<serde_json::Value>(&self.body).unwrap_or(serde_json::Value::Null)
     }
 }
 

@@ -8,10 +8,11 @@ println!("status = {}", r.status)
 println!("body   = {} bytes", r.body.len())
 println!("ok     = {}", r.is_ok())
 
-// POST a JSON payload; read a field straight out of the JSON reply.
+// POST a JSON payload; `.json()` returns a serde_json::Value to navigate.
 reply = post_json("https://httpbin.org/post", "{\"hello\":\"copper\"}")
 println!("post status = {}", reply.status)
-println!("post echo   = {}", reply.json("json.hello"))
+body = reply.json()
+println!("post echo   = {}", body["json"]["hello"])
 
 // Stream a URL straight to disk.
 saved = download("https://example.com", "example.html")
