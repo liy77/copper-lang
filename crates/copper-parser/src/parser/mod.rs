@@ -2413,6 +2413,16 @@ impl Parser {
                             || (t.kind == TokenKind::Operator && t.value == ">")
                     };
                     let mut name_idx = fn_idx + 2;
+                    // Collect `::segment` path parts for a QUALIFIED return type
+                    // (`serde_json::Value`, `std::collections::HashMap`) before
+                    // the generic args. Otherwise the `::` lands where the
+                    // method name is expected and the method is silently dropped.
+                    let mut path_suffix = String::new();
+                    while name_idx + 1 < tokens.len() && tokens[name_idx].value == "::" {
+                        path_suffix.push_str("::");
+                        path_suffix.push_str(&tokens[name_idx + 1].value);
+                        name_idx += 2;
+                    }
                     let mut generic_suffix = String::new();
                     if name_idx < tokens.len() && is_open(&tokens[name_idx]) {
                         let mut depth = 0usize;
@@ -2444,6 +2454,7 @@ impl Parser {
 
                     let (mut return_type, data_type) =
                         utils::convert_type_with_marking(&return_type_token.value);
+                    return_type.push_str(&path_suffix);
                     return_type.push_str(&generic_suffix);
 
                     // Mark data type usage for return types
@@ -3317,6 +3328,30 @@ impl Parser {
                         // `AngleEnd`, so we discriminate by value here.
                         let mut full = convert_type(&self.value());
                         let mut consumed = 1;
+
+                        // Collect `::segment` path parts so a QUALIFIED return
+                        // type works (`std::collections::HashMap`,
+                        // `serde_json::Value`). The tokenizer marks only the
+                        // first segment as `ReturnType`; without this the rest
+                        // of the path leaks into the function name and the bare
+                        // first segment becomes the (wrong) return type.
+                        loop {
+                            let is_colons = self
+                                .select(self.current + consumed)
+                                .map(|t| t.value == "::")
+                                .unwrap_or(false);
+                            if !is_colons {
+                                break;
+                            }
+                            full.push_str("::");
+                            consumed += 1;
+                            if let Some(seg) = self.select(self.current + consumed) {
+                                full.push_str(&seg.value);
+                                consumed += 1;
+                            } else {
+                                break;
+                            }
+                        }
 
                         let next_is_open_generic = matches!(
                             self.select(self.current + consumed),
