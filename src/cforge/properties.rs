@@ -52,6 +52,9 @@ pub struct Dependency {
     git: Option<String>,
     branch: Option<String>,
     tag: Option<String>,
+    /// Local path dependency (`{ path = "..." }`) — used for the per-module
+    /// std crates under `__copper__/std/<name>/`.
+    path: Option<String>,
 }
 
 pub struct Properties<'a> {
@@ -105,6 +108,7 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
                     git: None,
                     branch: None,
                     tag: None,
+                    path: None,
                 });
                 println!("✅ {} {} {}", name.green(), "=>".yellow(), version.black());
                 continue;
@@ -150,6 +154,7 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
                 git: None,
                 branch: None,
                 tag: None,
+                path: None,
             });
         } else if value.is_object() {
             // Complex dependency (with git, features, etc.)
@@ -182,6 +187,7 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
                         .get("tag")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
+                    path: None,
                 });
 
                 println!("✅ {} {} {}", name.green(), "=>".yellow(), git_url.black());
@@ -212,6 +218,7 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
                     git: None,
                     branch: None,
                     tag: None,
+                    path: None,
                 });
 
                 println!(
@@ -344,6 +351,7 @@ impl<'a> Properties<'a> {
             git: None,
             branch: None,
             tag: None,
+            path: None,
         };
 
         // Check if dependency already exists
@@ -358,11 +366,32 @@ impl<'a> Properties<'a> {
         }
     }
 
+    /// Register a local path dependency: `name = { path = "<path>" }`.
+    pub fn add_path_dependency(&mut self, name: &str, path: &str) {
+        if self.dependencies.iter().any(|d| d.name == name) {
+            return;
+        }
+        self.dependencies.push(Dependency {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            features: Vec::new(),
+            kind: DepKind::NormalOnlyVersion,
+            git: None,
+            branch: None,
+            tag: None,
+            path: Some(path.to_string()),
+        });
+        println!("📦 {} {} {}", name.green(), "=>".yellow(), path.black());
+    }
+
     pub fn to_toml(&self) -> String {
         let mut deps_str = String::new();
 
         for dep in &self.dependencies {
-            if let Some(git_url) = &dep.git {
+            if let Some(p) = &dep.path {
+                // Local path dependency (a per-module std crate).
+                deps_str.push_str(&format!("{} = {{ path = \"{}\" }}\n", dep.name, p));
+            } else if let Some(git_url) = &dep.git {
                 // Git dependency
                 deps_str.push_str(&format!("{} = {{ git = \"{}\"", dep.name, git_url));
                 if let Some(branch) = &dep.branch {

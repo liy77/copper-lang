@@ -3046,11 +3046,16 @@ impl Parser {
         self.result.get_required_dependencies()
     }
 
-    /// Tokenize + parse `std/cstd.crs` (the Copper-written stdlib),
-    /// upgrade every top-level `fn` to `pub fn`, and wrap the lot in
-    /// `pub mod cstd { ... }` so user code can `use cstd::{input};`.
-    fn transpile_cstd_module() -> String {
-        Self::transpile_std_module("cstd", CSTD_SOURCE, "")
+    /// `(module_name, lib_source)` for every used std module — cforge writes
+    /// each as a separate local crate under `__copper__/std/<name>/`.
+    pub fn std_lib_crates(&self) -> &[(String, String)] {
+        self.result.std_lib_crates()
+    }
+
+    /// External crate deps (pinned `name@version`) a std module's crate needs,
+    /// for that crate's own `Cargo.toml`.
+    pub fn std_module_crate_dependencies(name: &str) -> &'static [&'static str] {
+        Self::std_module_crate_deps(name)
     }
 
     /// True for native std modules selectable via `import { ... } from <name>`
@@ -3078,7 +3083,12 @@ impl Parser {
     /// Transpile a Copper-written std module, promote its top-level `fn`s to
     /// `pub fn`, and wrap it with the native helper block in
     /// `pub mod <mod_name> { ... }`.
-    fn transpile_std_module(mod_name: &str, crs_source: &str, native: &str) -> String {
+    /// Transpile a std module's `.crs` into the **crate-root** Rust source for
+    /// a standalone library crate (no `pub mod` wrapper). cforge writes this as
+    /// `__copper__/std/<name>/src/lib.rs`. `mod_name` is accepted for symmetry
+    /// with the registry but not embedded (the crate itself is the module).
+    fn transpile_std_module_lib(mod_name: &str, crs_source: &str, native: &str) -> String {
+        let _ = mod_name;
         let mut tk = Tokenizer::new(crs_source.to_string());
         let tokens = tk.tokenize();
         let mut sub = Parser::new(tokens);
@@ -3162,18 +3172,45 @@ impl Parser {
             .join("\n");
 
         format!(
-            "#[allow(dead_code)]\npub mod {} {{\n{}\n\n{}\n}}\n",
-            mod_name, promoted, native
+            "#![allow(dead_code, unused_imports, unused_mut, unused_variables, clippy::all)]\n{}\n\n{}\n",
+            promoted, native
         )
+    }
+
+    /// External crate deps (pinned `name@version`) a std module's crate needs.
+    fn std_module_crate_deps(name: &str) -> &'static [&'static str] {
+        match name {
+            "http" => &["ureq@2", "serde_json@1"],
+            "json" => &["serde_json@1"],
+            "crypto" => &["sha2@0.10", "hmac@0.12"],
+            _ => &[],
+        }
     }
 
     /// Transpile + prepend every native std module the program imported.
     fn prepend_used_std_modules(&mut self) {
+        // Each used std module becomes a SEPARATE local crate (cforge writes it
+        // to `__copper__/std/<name>/`). Here we transpile its lib source, hand
+        // it to the result for cforge to emit, and prepend a
+        // `use copper_<name> as <name>;` alias so existing `<name>::fn` /
+        // `use <name>::{X}` references resolve against the crate.
+        let mut targets: Vec<(String, &'static str, &'static str)> = Vec::new();
+        if self.result.cstd_is_used() {
+            targets.push(("cstd".to_string(), CSTD_SOURCE, ""));
+        }
         for name in self.result.used_std_modules() {
             if let Some((crs, native)) = Self::std_module_sources(&name) {
-                let module = Self::transpile_std_module(&name, crs, native);
-                self.result.prepend_cstd_module(&module);
+                targets.push((name, crs, native));
             }
+        }
+        let mut aliases = String::new();
+        for (name, crs, native) in &targets {
+            let lib = Self::transpile_std_module_lib(name, crs, native);
+            self.result.add_std_lib_crate(name, &lib);
+            aliases.push_str(&format!("use copper_{name} as {name};\n"));
+        }
+        if !aliases.is_empty() {
+            self.result.prepend_value(&aliases);
         }
         // When `reflect` is imported, auto-derive `impl reflect::Reflect` for
         // every recorded (non-generic) struct, appended after the struct defs.
@@ -3186,10 +3223,6 @@ impl Parser {
                 // Only add aliases if actually using data types
                 if self.uses_data_types {
                     self.result.add_data_type_aliases();
-                }
-                if self.result.cstd_is_used() {
-                    let module = Self::transpile_cstd_module();
-                    self.result.prepend_cstd_module(&module);
                 }
                 self.prepend_used_std_modules();
                 self.result.write_main_function();
@@ -3467,10 +3500,6 @@ impl Parser {
                     _ => {}
                 }
             } else {
-                if self.result.cstd_is_used() {
-                    let module = Self::transpile_cstd_module();
-                    self.result.prepend_cstd_module(&module);
-                }
                 self.prepend_used_std_modules();
                 self.result.write_main_function();
                 break self.result.get().expect("Format Error");
