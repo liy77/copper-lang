@@ -743,9 +743,15 @@ pub async fn generate_toml(extra_dependencies: Vec<String>) {
         println!("⚠️  Warning: Detected Cargo.toml file. CForge now uses properties.kson as the main configuration file. Please migrate your configuration to properties.kson. See https://copper-lang.org/docs/cforge/properties for more information.");
         let mut properties_obj = properties::Properties::from_toml(&properties.1).await;
 
-        // Add extra detected dependencies
-        for dep in extra_dependencies {
-            properties_obj.add_dependency(&dep, "latest").await;
+        // Add extra detected dependencies. A `name@version` spec pins the
+        // version (std modules target a specific crate API, e.g. `ureq@2`);
+        // a bare name resolves to the latest.
+        for dep in &extra_dependencies {
+            let (name, version) = match dep.split_once('@') {
+                Some((n, v)) => (n, v),
+                None => (dep.as_str(), "latest"),
+            };
+            properties_obj.add_dependency(name, version).await;
         }
 
         toml = properties_obj.to_toml();
@@ -753,9 +759,15 @@ pub async fn generate_toml(extra_dependencies: Vec<String>) {
     } else {
         let mut properties_obj = properties::Properties::from_kson(&properties.1).await;
 
-        // Add extra detected dependencies
-        for dep in extra_dependencies {
-            properties_obj.add_dependency(&dep, "latest").await;
+        // Add extra detected dependencies. A `name@version` spec pins the
+        // version (std modules target a specific crate API, e.g. `ureq@2`);
+        // a bare name resolves to the latest.
+        for dep in &extra_dependencies {
+            let (name, version) = match dep.split_once('@') {
+                Some((n, v)) => (n, v),
+                None => (dep.as_str(), "latest"),
+            };
+            properties_obj.add_dependency(name, version).await;
         }
 
         toml = properties_obj.to_toml();
