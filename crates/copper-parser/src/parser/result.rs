@@ -324,16 +324,22 @@ impl Result {
         let mut aliases = String::new();
         let mut imports = String::new();
 
-        if self.uses_json {
+        // Emit an alias whenever the data type is marked used OR the generated
+        // code references the converted type name (`JsonValue` etc.) — robust
+        // to the various paths that lower `json` -> `JsonValue` without
+        // reliably flipping `uses_json`. Check BOTH `value` and the not-yet-
+        // folded `main_function_code` (this runs before write_main_function).
+        let refs = |n: &str| self.value.contains(n) || self.main_function_code.contains(n);
+        if self.uses_json || refs("JsonValue") {
             imports.push_str("use serde_json::{json, Value as JsonValue};\n");
             aliases.push_str("// JsonValue type alias already imported from serde_json\n");
         }
 
-        if self.uses_xml {
+        if self.uses_xml || refs("XmlValue") {
             aliases.push_str("type XmlValue = String; // For now, XML is represented as String\n");
         }
 
-        if self.uses_toml {
+        if self.uses_toml || refs("TomlValue") {
             imports.push_str("use toml;\n");
             aliases.push_str("type TomlValue = toml::Value;\n");
         }
