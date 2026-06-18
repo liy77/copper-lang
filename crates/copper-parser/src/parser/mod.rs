@@ -1334,6 +1334,13 @@ impl Parser {
                     }
                 } else if Self::is_native_std_module(&module) {
                     self.result.mark_std_module(&module);
+                    // `http`'s `Response::json()` returns a serde_json::Value;
+                    // mark json usage so the main project gets the native
+                    // `json`/`JsonValue` alias + serde_json dep and can use the
+                    // returned value as Copper's native json type.
+                    if module == "http" || module == "json" {
+                        self.result.mark_json_usage();
+                    }
                 } else if !matches!(
                     module.as_str(),
                     "std" | "core" | "alloc" | "crate" | "self" | "super"
@@ -3231,10 +3238,12 @@ impl Parser {
     pub fn parse(&mut self) -> String {
         loop {
             if self.eof {
-                // Only add aliases if actually using data types
-                if self.uses_data_types {
-                    self.result.add_data_type_aliases();
-                }
+                // Always emit the data-type aliases (`use serde_json::{json,
+                // Value as JsonValue}`, etc.). The call is a no-op unless a
+                // data type was actually marked used on the result — robust to
+                // the paths that set `uses_json` without the parser's
+                // `uses_data_types` flag.
+                self.result.add_data_type_aliases();
                 self.prepend_used_std_modules();
                 self.result.write_main_function();
                 break self.result.get().expect("Format Error");

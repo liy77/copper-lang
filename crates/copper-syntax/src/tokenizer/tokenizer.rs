@@ -853,12 +853,16 @@ impl Tokenizer {
                 // through to the normal identifier-resolution path below.
                 && (value != "from" || self.seen_import)
                 // `json`/`xml`/`toml` are data-type keywords only in type
-                // position. As a method/field name (`resp.json(...)`) or a
-                // function name / call (`func String json(...)`, `json(...)`)
-                // they must be plain identifiers — fall through like `from`.
+                // position. As a method/field name (`resp.json(...)`), a
+                // function name / call (`func String json(...)`, `json(...)`),
+                // or a path segment / macro (`serde_json::json!(...)`,
+                // `x::json`) they must be plain identifiers — fall through
+                // like `from`.
                 && !(matches!(value.as_str(), "json" | "xml" | "toml")
                     && (matches!(self.last_token().map(|t| t.kind), Some(TokenKind::Dot))
-                        || self.current_char() == '('))
+                        || self.last_token().map(|t| t.value == "::").unwrap_or(false)
+                        || self.current_char() == '('
+                        || self.current_char() == '!'))
             {
                 match value.as_str() {
                     "import" => {
