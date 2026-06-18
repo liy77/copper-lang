@@ -334,32 +334,44 @@ impl Result {
     }
 
     pub fn get_required_dependencies(&self) -> Vec<String> {
+        // Crate-backed std modules target a SPECIFIC crate API, so each dep is
+        // pinned with a `name@version` req (the generated Cargo.toml honours
+        // the pin; a bare name would resolve to the latest — e.g. `ureq` 3.x,
+        // whose API differs from the 2.x this code is written against).
+        const SERDE_JSON: &str = "serde_json@1";
+        const TOML: &str = "toml@0.8";
+        const UREQ: &str = "ureq@2";
+        const SHA2: &str = "sha2@0.10";
+        const HMAC: &str = "hmac@0.12";
+
         let mut deps = Vec::new();
+        let mut add = |spec: &str, deps: &mut Vec<String>| {
+            if !deps.iter().any(|d| d == spec) {
+                deps.push(spec.to_string());
+            }
+        };
 
         if self.uses_json {
-            deps.push("serde_json".to_string());
+            add(SERDE_JSON, &mut deps);
         }
-
         if self.uses_toml {
-            deps.push("toml".to_string());
+            add(TOML, &mut deps);
         }
 
         // XML needs no external dependency for now (uses String).
 
         // Native std modules with crate-backed implementations.
         if self.used_std_modules.contains("http") {
-            deps.push("ureq".to_string());
+            add(UREQ, &mut deps);
             // `Response::json(path)` parses the body with serde_json.
-            if !deps.contains(&"serde_json".to_string()) {
-                deps.push("serde_json".to_string());
-            }
+            add(SERDE_JSON, &mut deps);
         }
-        if self.used_std_modules.contains("json") && !deps.contains(&"serde_json".to_string()) {
-            deps.push("serde_json".to_string());
+        if self.used_std_modules.contains("json") {
+            add(SERDE_JSON, &mut deps);
         }
         if self.used_std_modules.contains("crypto") {
-            deps.push("sha2".to_string());
-            deps.push("hmac".to_string());
+            add(SHA2, &mut deps);
+            add(HMAC, &mut deps);
         }
         // (the `net`, `url`, `time`, `fs` and `ws` modules are std-only.)
 

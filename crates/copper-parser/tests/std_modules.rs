@@ -22,7 +22,7 @@ fn net_module_is_bundled_no_dep() {
     assert!(rust.contains("pub mod net {"), "net module not bundled: {rust}");
     assert!(rust.contains("pub fn resolve("), "resolve not promoted: {rust}");
     assert!(rust.contains("use net::"), "use net not emitted: {rust}");
-    assert!(!deps.iter().any(|d| d == "ureq"), "net pulled a dep: {deps:?}");
+    assert!(!deps.iter().any(|d| d.starts_with("ureq")), "net pulled a dep: {deps:?}");
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn http_module_is_bundled_with_ureq_dep() {
     );
     assert!(rust.contains("pub mod http {"), "http module not bundled: {rust}");
     assert!(rust.contains("pub fn get("), "get not promoted: {rust}");
-    assert!(deps.iter().any(|d| d == "ureq"), "ureq dep missing: {deps:?}");
+    assert!(deps.iter().any(|d| d.starts_with("ureq")), "ureq dep missing: {deps:?}");
 }
 
 #[test]
@@ -49,7 +49,7 @@ fn both_modules_coexist() {
         "import { resolve } from net\nimport { get } from http\nx = resolve(\"a:1\")\ny = get(\"http://x\")\n",
     );
     assert!(rust.contains("pub mod net {") && rust.contains("pub mod http {"), "got: {rust}");
-    assert!(deps.iter().any(|d| d == "ureq"), "deps: {deps:?}");
+    assert!(deps.iter().any(|d| d.starts_with("ureq")), "deps: {deps:?}");
 }
 
 
@@ -62,7 +62,7 @@ x = encode(\"a b\")
     );
     assert!(rust.contains("pub mod url {"), "url not bundled: {rust}");
     assert!(rust.contains("pub fn encode("), "encode not promoted: {rust}");
-    assert!(!deps.iter().any(|d| d == "ureq" || d == "serde_json"), "url pulled a dep: {deps:?}");
+    assert!(!deps.iter().any(|d| d.starts_with("ureq") || d == "serde_json"), "url pulled a dep: {deps:?}");
 }
 
 #[test]
@@ -74,7 +74,7 @@ x = get(\"{}\", \"a\")
     );
     assert!(rust.contains("pub mod json {"), "json not bundled: {rust}");
     assert!(rust.contains("pub fn get("), "get not promoted: {rust}");
-    assert!(deps.iter().any(|d| d == "serde_json"), "serde_json dep missing: {deps:?}");
+    assert!(deps.iter().any(|d| d.starts_with("serde_json")), "serde_json dep missing: {deps:?}");
 }
 
 
@@ -87,8 +87,8 @@ x = sha256(\"a\")
     );
     assert!(rust.contains("pub mod crypto {"), "crypto not bundled: {rust}");
     assert!(rust.contains("pub fn sha256("), "sha256 not promoted: {rust}");
-    assert!(deps.iter().any(|d| d == "sha2"), "sha2 dep missing: {deps:?}");
-    assert!(deps.iter().any(|d| d == "hmac"), "hmac dep missing: {deps:?}");
+    assert!(deps.iter().any(|d| d.starts_with("sha2")), "sha2 dep missing: {deps:?}");
+    assert!(deps.iter().any(|d| d.starts_with("hmac")), "hmac dep missing: {deps:?}");
 }
 
 #[test]
