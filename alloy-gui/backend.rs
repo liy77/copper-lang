@@ -94,7 +94,9 @@ pub fn list_dirs(prefix: &str) -> Vec<String> {
 // Downloads shell out to `curl` (present on Win10+/macOS/Linux) so the crate
 // stays dependency-light, mirroring the installer's std-only backend.
 
-const REPO_SLUG: &str = "liy77/copper-lang"; // TODO: confirme o slug de releases
+// Releases do Alloy saem do repo copper-lang (owner `liy77`, conforme os ids de
+// bundle `net.liy77.*`). Ajuste o owner aqui se o repo de releases for outro.
+const REPO_SLUG: &str = "liy77/copper-lang";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct UpdateInfo {
