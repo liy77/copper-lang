@@ -1586,7 +1586,14 @@ impl Parser {
             Some(t)
                 if matches!(
                     t.kind,
-                    TokenKind::Identifier | TokenKind::Keyword | TokenKind::Type
+                    TokenKind::Identifier
+                        | TokenKind::Keyword
+                        | TokenKind::Type
+                        // Dentro de `(...)` o tokenizer marca identificadores
+                        // como `Param`/`ParamType`; um campo após `.` num
+                        // argumento (`f(a.w)`) chega assim.
+                        | TokenKind::Param
+                        | TokenKind::ParamType
                 ) =>
             {
                 self.bump();
@@ -1847,13 +1854,20 @@ fn unescape(s: &str) -> String {
                 let mut hex = String::new();
                 while hex.len() < 2 {
                     match chars.peek() {
-                        Some(h) if h.is_ascii_hexdigit() => { hex.push(*h); chars.next(); }
+                        Some(h) if h.is_ascii_hexdigit() => {
+                            hex.push(*h);
+                            chars.next();
+                        }
                         _ => break,
                     }
                 }
                 match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
                     Some(ch) => out.push(ch),
-                    None => { out.push('\\'); out.push('x'); out.push_str(&hex); }
+                    None => {
+                        out.push('\\');
+                        out.push('x');
+                        out.push_str(&hex);
+                    }
                 }
             }
             Some('u') => {
@@ -1862,19 +1876,34 @@ fn unescape(s: &str) -> String {
                     chars.next();
                     let mut hex = String::new();
                     while let Some(h) = chars.peek() {
-                        if *h == '}' { chars.next(); break; }
-                        if h.is_ascii_hexdigit() && hex.len() < 6 { hex.push(*h); chars.next(); }
-                        else { break; }
+                        if *h == '}' {
+                            chars.next();
+                            break;
+                        }
+                        if h.is_ascii_hexdigit() && hex.len() < 6 {
+                            hex.push(*h);
+                            chars.next();
+                        } else {
+                            break;
+                        }
                     }
                     match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
                         Some(ch) => out.push(ch),
-                        None => { out.push_str("\\u{"); out.push_str(&hex); out.push('}'); }
+                        None => {
+                            out.push_str("\\u{");
+                            out.push_str(&hex);
+                            out.push('}');
+                        }
                     }
                 } else {
-                    out.push('\\'); out.push('u');
+                    out.push('\\');
+                    out.push('u');
                 }
             }
-            Some(other) => { out.push('\\'); out.push(other); }
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
             None => out.push('\\'),
         }
     }
