@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/copper-syntax", "crates/copper-parser", "crates/copper-lsp", "crates/mui-syntax", "crates/mui-codegen", "crates/mui-lsp"]
+members = [".", "crates/copper-syntax", "crates/copper-parser", "crates/copper-lsp", "crates/mui-syntax", "crates/mui-codegen", "crates/mui-lsp", "crates/alloy-vm"]
 # `dist/rust` is the output dir for cforge-transpiled programs; it has its
 # own Cargo.toml that must NOT be a workspace member. The installer-gui
 # is its own self-contained Tauri app — also kept out.
