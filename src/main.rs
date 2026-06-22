@@ -167,39 +167,84 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
 /// `cforge vm run/build <file>` — drive the Alloy interpreter. Returns the
 /// process exit code.
 fn run_vm(sub: &str, file: &str) -> i32 {
-    let src = match std::fs::read_to_string(file) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("cforge vm: não consegui ler {file}: {e}");
+    use std::path::Path;
+    // `build`: compila o .crs para um artefato portátil `.alloybc`.
+    if sub == "build" {
+        let src = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("cforge vm: não consegui ler {file}: {e}");
+                return 1;
+            }
+        };
+        let prog = copper_syntax::program::parse_program(&src);
+        if !prog.errors.is_empty() {
+            for err in &prog.errors {
+                eprintln!(
+                    "cforge vm: erro de sintaxe @ {}..{}: {}",
+                    err.span.start, err.span.end, err.message
+                );
+            }
             return 1;
         }
-    };
-    let prog = copper_syntax::program::parse_program(&src);
-    if !prog.errors.is_empty() {
-        for err in &prog.errors {
-            eprintln!(
-                "cforge vm: erro de sintaxe @ {}..{}: {}",
-                err.span.start, err.span.end, err.message
-            );
+        let out = Path::new(file).with_extension("alloybc");
+        let bytes = alloy_vm::bytecode::compile(&prog.items);
+        match std::fs::write(&out, bytes) {
+            Ok(()) => {
+                println!("compilado: {}", out.display());
+                0
+            }
+            Err(e) => {
+                eprintln!("cforge vm: não consegui gravar {}: {e}", out.display());
+                1
+            }
         }
-        return 1;
-    }
-    // `build`: só valida (parse + carrega o programa), não executa.
-    if sub == "build" {
-        let mut interp = alloy_vm::interp::Interpreter::new();
-        interp.load_program(&prog);
-        println!("ok: {file} válido para a VM Alloy");
-        return 0;
-    }
-    // `run`: interpreta.
-    match alloy_vm::interp::Interpreter::new().run_program(&prog) {
-        Ok(_) => 0,
-        Err(e) => {
-            eprintln!(
-                "cforge vm: erro de runtime @ {}..{}: {}",
-                e.span.start, e.span.end, e.message
-            );
-            1
+    } else {
+        // `run`: executa um `.crs` (instantâneo) ou um `.alloybc`.
+        let bytes = match std::fs::read(file) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("cforge vm: não consegui ler {file}: {e}");
+                return 1;
+            }
+        };
+        let prog = if alloy_vm::bytecode::is_bytecode(&bytes) {
+            match alloy_vm::bytecode::load(&bytes) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("cforge vm: {e}");
+                    return 1;
+                }
+            }
+        } else {
+            let src = match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(_) => {
+                    eprintln!("cforge vm: arquivo não é UTF-8 nem .alloybc");
+                    return 1;
+                }
+            };
+            let prog = copper_syntax::program::parse_program(&src);
+            if !prog.errors.is_empty() {
+                for err in &prog.errors {
+                    eprintln!(
+                        "cforge vm: erro de sintaxe @ {}..{}: {}",
+                        err.span.start, err.span.end, err.message
+                    );
+                }
+                return 1;
+            }
+            prog
+        };
+        match alloy_vm::interp::Interpreter::new().run_program(&prog) {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!(
+                    "cforge vm: erro de runtime @ {}..{}: {}",
+                    e.span.start, e.span.end, e.message
+                );
+                1
+            }
         }
     }
 }

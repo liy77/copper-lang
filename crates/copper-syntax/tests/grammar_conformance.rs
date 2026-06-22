@@ -81,6 +81,7 @@ fn has_raw(e: &Expr) -> bool {
         ExprKind::Assign { target, value, .. } => has_raw(target) || has_raw(value),
         ExprKind::Range { start, end, .. } => has_raw(start) || has_raw(end),
         ExprKind::Array(xs) => xs.iter().any(has_raw),
+        ExprKind::Tuple(xs) => xs.iter().any(has_raw),
         ExprKind::Closure { body, .. } => has_raw(body),
         ExprKind::StructLit { fields, spread, .. } => {
             fields.iter().any(|(_, v)| has_raw(v)) || spread.as_deref().is_some_and(has_raw)

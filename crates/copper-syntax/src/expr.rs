@@ -34,7 +34,7 @@ use crate::tokenizer::tokens::{Data, Token};
 
 /// A (not-yet-resolved) Copper type. `Unknown` is the parser's default; an
 /// inference pass replaces it. Cranelift lowering keys off the resolved form.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub enum Type {
     Int,
     Float,
@@ -54,7 +54,7 @@ pub enum Type {
 // Operators
 // ===========================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
     Sub,
@@ -75,7 +75,7 @@ pub enum BinOp {
     BitXor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
     /// `-x`
     Neg,
@@ -91,7 +91,7 @@ pub enum UnOp {
 
 /// Compound-assignment flavour. `Plain` is `=`. Mirrors the tokenizer's
 /// `COMPOUND_SIGNS` (minus `::`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssignOp {
     Plain,
     Add,
@@ -108,7 +108,7 @@ pub enum AssignOp {
 // Literals & string templates
 // ===========================================================================
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub enum Literal {
     Int(i64),
     Float(f64),
@@ -118,12 +118,12 @@ pub enum Literal {
     Str(StrTemplate),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct StrTemplate {
     pub parts: Vec<StrPart>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub enum StrPart {
     Lit(String),
     Expr(Box<Expr>),
@@ -133,7 +133,7 @@ pub enum StrPart {
 // Expressions
 // ===========================================================================
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
@@ -155,7 +155,7 @@ impl Expr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub enum ExprKind {
     Literal(Literal),
     /// A bare name: `count`, `FontStyle`.
@@ -250,7 +250,7 @@ pub enum ExprKind {
     Raw(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub guard: Option<Expr>,
@@ -262,7 +262,7 @@ pub struct MatchArm {
 // Patterns (match / let)
 // ===========================================================================
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub enum Pattern {
     /// `_`
     Wildcard,
@@ -282,7 +282,7 @@ pub enum Pattern {
 // Statements & blocks
 // ===========================================================================
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// Copper binding: `mut name = value` (mutable) or bare `name = value`
     /// (immutable). `ty` carries an optional `: Type` annotation. There is no
@@ -364,7 +364,7 @@ impl Stmt {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
     /// Trailing value expression (block's value), if any.
@@ -376,7 +376,7 @@ pub struct Block {
 // Public entry points
 // ===========================================================================
 
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ParseError {
     pub span: Span,
     pub message: String,
