@@ -3,7 +3,7 @@
 use crate::env::Env;
 use crate::error::RuntimeError;
 use crate::value::Value;
-use copper_syntax::expr::{BinOp, Expr, ExprKind, Literal, StrPart, UnOp};
+use copper_syntax::expr::{AssignOp, BinOp, Block, Expr, ExprKind, Literal, Stmt, StrPart, UnOp};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -45,9 +45,108 @@ impl Interpreter {
                     )),
                 }
             }
+            ExprKind::Assign { target, op, value } => {
+                let name = match &target.kind {
+                    ExprKind::Ident(n) => n.clone(),
+                    _ => {
+                        return Err(RuntimeError::new(
+                            "alvo de atribuição não suportado (só nomes simples no MVP)",
+                            target.span,
+                        ))
+                    }
+                };
+                let rhs = self.eval_expr(value, env)?;
+                let new_val = match op {
+                    AssignOp::Plain => rhs,
+                    _ => {
+                        let cur = env.borrow().get(&name).ok_or_else(|| {
+                            RuntimeError::new(
+                                format!("variável `{name}` não definida"),
+                                target.span,
+                            )
+                        })?;
+                        let binop = match op {
+                            AssignOp::Add => BinOp::Add,
+                            AssignOp::Sub => BinOp::Sub,
+                            AssignOp::Mul => BinOp::Mul,
+                            AssignOp::Div => BinOp::Div,
+                            AssignOp::Rem => BinOp::Rem,
+                            AssignOp::BitAnd => BinOp::BitAnd,
+                            AssignOp::BitOr => BinOp::BitOr,
+                            AssignOp::BitXor => BinOp::BitXor,
+                            AssignOp::Plain => unreachable!(),
+                        };
+                        self.eval_binary(binop, cur, rhs, expr.span)?
+                    }
+                };
+                if !env.borrow_mut().set(&name, new_val.clone()) {
+                    return Err(RuntimeError::new(
+                        format!("variável `{name}` não definida"),
+                        target.span,
+                    ));
+                }
+                Ok(Value::Unit)
+            }
             _ => Err(RuntimeError::new(
                 "construção ainda não suportada pela VM",
                 expr.span,
+            )),
+        }
+    }
+
+    pub fn eval_block(
+        &mut self,
+        block: &Block,
+        env: &Rc<RefCell<Env>>,
+    ) -> Result<Value, RuntimeError> {
+        let scope = Env::child(env);
+        for stmt in &block.stmts {
+            self.eval_stmt(stmt, &scope)?;
+        }
+        match &block.tail {
+            Some(e) => self.eval_expr(e, &scope),
+            None => Ok(Value::Unit),
+        }
+    }
+
+    pub fn eval_stmt(
+        &mut self,
+        stmt: &Stmt,
+        env: &Rc<RefCell<Env>>,
+    ) -> Result<Value, RuntimeError> {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                let v = match value {
+                    Some(e) => self.eval_expr(e, env)?,
+                    None => Value::Unit,
+                };
+                env.borrow_mut().define(name.clone(), v);
+                Ok(Value::Unit)
+            }
+            Stmt::Expr(e) => self.eval_expr(e, env),
+            Stmt::IncDec { target, inc, span } => {
+                let name = match &target.kind {
+                    ExprKind::Ident(n) => n.clone(),
+                    _ => return Err(RuntimeError::new("alvo de ++/-- inválido", *span)),
+                };
+                let cur = env.borrow().get(&name).ok_or_else(|| {
+                    RuntimeError::new(format!("variável `{name}` não definida"), *span)
+                })?;
+                let next = match cur {
+                    Value::Int(n) => Value::Int(if *inc { n + 1 } else { n - 1 }),
+                    other => {
+                        return Err(RuntimeError::new(
+                            format!("++/-- requer int, achou {}", other.type_name()),
+                            *span,
+                        ))
+                    }
+                };
+                env.borrow_mut().set(&name, next);
+                Ok(Value::Unit)
+            }
+            _ => Err(RuntimeError::new(
+                "statement ainda não suportado pela VM",
+                stmt.span(),
             )),
         }
     }
@@ -230,6 +329,24 @@ mod tests {
             eval_err("naoexiste").is_err(),
             "variável não definida deve ser Err"
         );
+    }
+
+    use copper_syntax::expr::parse_stmts;
+
+    fn run_block(src: &str) -> Value {
+        let (block, errs) = parse_stmts(src);
+        assert!(errs.is_empty(), "parse errs: {errs:?}");
+        let env = Env::new();
+        Interpreter::new()
+            .eval_block(&block, &env)
+            .expect("erro de runtime")
+    }
+
+    #[test]
+    fn let_assign_incdec() {
+        assert_eq!(run_block("mut x = 1\nx = x + 4\nx"), Value::Int(5));
+        assert_eq!(run_block("mut y = 10\ny += 5\ny"), Value::Int(15));
+        assert_eq!(run_block("mut c = 0\nc++\nc++\nc"), Value::Int(2));
     }
 
     #[test]
