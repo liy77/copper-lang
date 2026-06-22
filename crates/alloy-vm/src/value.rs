@@ -1,4 +1,4 @@
-//! Valores em runtime da VM Alloy.
+//! Runtime values of the Alloy VM.
 
 use crate::env::Env;
 use copper_syntax::expr::Expr;
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-/// Uma closure: parâmetros, corpo e o ambiente capturado.
+/// A closure: parameters, body and the captured environment.
 #[derive(Debug)]
 pub struct ClosureData {
     pub params: Vec<String>,
@@ -22,23 +22,23 @@ pub enum Value {
     Bool(bool),
     Str(String),
     Unit,
-    /// Vec/array — mutável e compartilhável.
+    /// Vec/array — mutable and shareable.
     Vec(Rc<RefCell<Vec<Value>>>),
-    /// Tupla `(a, b, ...)`.
+    /// Tuple `(a, b, ...)`.
     Tuple(Vec<Value>),
-    /// Instância de struct/class: `name` + campos.
+    /// Struct/class instance: `name` + fields.
     Struct {
         name: String,
         fields: Rc<RefCell<HashMap<String, Value>>>,
     },
-    /// Enum, incluindo `Option` (Some/None) e `Result` (Ok/Err):
+    /// Enum, including `Option` (Some/None) and `Result` (Ok/Err):
     /// `ty="Option"`, `variant="Some"`, `payload=[v]`.
     Enum {
         ty: String,
         variant: String,
         payload: Vec<Value>,
     },
-    /// `|x| corpo` — com ambiente capturado.
+    /// `|x| body` — with captured environment.
     Closure(Rc<ClosureData>),
 }
 
@@ -75,14 +75,14 @@ impl PartialEq for Value {
                     payload: p2,
                 },
             ) => t1 == t2 && v1 == v2 && p1 == p2,
-            // Closures nunca são iguais.
+            // Closures are never equal.
             _ => false,
         }
     }
 }
 
 impl Value {
-    /// Nome do tipo para mensagens de erro.
+    /// Type name for error messages.
     pub fn type_name(&self) -> String {
         match self {
             Value::Int(_) => "int".into(),
@@ -98,7 +98,7 @@ impl Value {
         }
     }
 
-    /// Verdade de um valor em contexto booleano (só `Bool` é válido).
+    /// Truthiness of a value in boolean context (only `Bool` is valid).
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Value::Bool(b) => Some(*b),
@@ -106,7 +106,7 @@ impl Value {
         }
     }
 
-    /// Helpers de construção para `Option`/`Result` (usados pela stdlib e por
+    /// Construction helpers for `Option`/`Result` (used by stdlib and
     /// `Some`/`None`/`Ok`/`Err`).
     pub fn some(v: Value) -> Value {
         Value::Enum {

@@ -1,3 +1,4 @@
+pub mod check;
 pub mod commands;
 pub mod fetch;
 pub mod kson;

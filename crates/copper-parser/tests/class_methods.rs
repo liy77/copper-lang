@@ -24,14 +24,23 @@ const COUNTER: &str = "class Counter {\n\
 #[test]
 fn constructor_keeps_primitive_param() {
     let rust = transpile(COUNTER);
-    assert!(rust.contains("pub fn new(value: i32) -> Self"), "ctor param dropped: {rust}");
+    assert!(
+        rust.contains("pub fn new(value: i32) -> Self"),
+        "ctor param dropped: {rust}"
+    );
 }
 
 #[test]
 fn methods_emit_with_self_and_params() {
     let rust = transpile(COUNTER);
-    assert!(rust.contains("pub fn get(&self) -> i32"), "get missing: {rust}");
-    assert!(rust.contains("pub fn plus(&self, n: i32) -> i32"), "plus missing/params dropped: {rust}");
+    assert!(
+        rust.contains("pub fn get(&self) -> i32"),
+        "get missing: {rust}"
+    );
+    assert!(
+        rust.contains("pub fn plus(&self, n: i32) -> i32"),
+        "plus missing/params dropped: {rust}"
+    );
 }
 
 #[test]
@@ -40,7 +49,10 @@ fn selfless_method_gets_implicit_self() {
     let rust = transpile(
         "class G {\n  name: String\n  G(name: String) {\n    self.name = name\n  }\n  String hi() {\n    return \"x\"\n  }\n}\n",
     );
-    assert!(rust.contains("pub fn hi(&self) -> String"), "selfless method dropped: {rust}");
+    assert!(
+        rust.contains("pub fn hi(&self) -> String"),
+        "selfless method dropped: {rust}"
+    );
 }
 
 #[test]
@@ -51,5 +63,8 @@ fn class_emitted_at_module_level() {
     let main_pos = rust.find("fn main").unwrap_or(usize::MAX);
     assert!(struct_pos < main_pos, "class not at module level: {rust}");
     // No stray `;` terminating the impl block.
-    assert!(!rust.contains("}\n};") && !rust.contains("    };"), "stray ; after impl: {rust}");
+    assert!(
+        !rust.contains("}\n};") && !rust.contains("    };"),
+        "stray ; after impl: {rust}"
+    );
 }

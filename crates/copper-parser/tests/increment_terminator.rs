@@ -16,7 +16,10 @@ fn increment_before_if_is_terminated() {
         "func void run() {\n  mut count = 0\n  loop {\n    count++\n    if count == 3 {\n      break\n    }\n  }\n}\n",
     );
     assert!(rust.contains("count += 1;"), "missing terminator: {rust}");
-    assert!(!rust.contains("count+= 1\n if") && !rust.contains("count += 1 if"), "fused: {rust}");
+    assert!(
+        !rust.contains("count+= 1\n if") && !rust.contains("count += 1 if"),
+        "fused: {rust}"
+    );
 }
 
 #[test]
@@ -32,5 +35,8 @@ fn binary_plus_continuation_still_joins() {
     // A line genuinely ending in `+` (binary) stays a continuation.
     let rust = transpile("func i32 run() {\n  x = 1 +\n    2\n  return x\n}\n");
     assert!(rust.contains("1 +") && rust.contains("2"), "got: {rust}");
-    assert!(!rust.contains("1 +;"), "binary + wrongly terminated: {rust}");
+    assert!(
+        !rust.contains("1 +;"),
+        "binary + wrongly terminated: {rust}"
+    );
 }

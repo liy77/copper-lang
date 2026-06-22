@@ -21,7 +21,10 @@ fn generic_param_is_preserved() {
 fn multiple_generic_params() {
     let rust = transpile("struct Map<K, V> {\n  key: K\n  value: V\n}\n");
     assert!(rust.contains("struct Map<K, V>"), "got: {rust}");
-    assert!(rust.contains("key: K,") && rust.contains("value: V,"), "got: {rust}");
+    assert!(
+        rust.contains("key: K,") && rust.contains("value: V,"),
+        "got: {rust}"
+    );
 }
 
 #[test]
@@ -30,12 +33,18 @@ fn newline_separated_fields_dont_fuse() {
     assert!(rust.contains("x: f64,"), "got: {rust}");
     assert!(rust.contains("y: f64,"), "got: {rust}");
     assert!(rust.contains("z: f64,"), "got: {rust}");
-    assert!(!rust.contains("f64y") && !rust.contains("f64z"), "fused: {rust}");
+    assert!(
+        !rust.contains("f64y") && !rust.contains("f64z"),
+        "fused: {rust}"
+    );
 }
 
 #[test]
 fn comma_separated_fields_no_double_comma() {
     let rust = transpile("struct Point { x: int, y: int }\n");
-    assert!(rust.contains("x: i64,") && rust.contains("y: i64,"), "got: {rust}");
+    assert!(
+        rust.contains("x: i64,") && rust.contains("y: i64,"),
+        "got: {rust}"
+    );
     assert!(!rust.contains(",,"), "double comma: {rust}");
 }

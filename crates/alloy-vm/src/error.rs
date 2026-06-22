@@ -1,4 +1,4 @@
-//! Erros e fluxo de controle não-local da VM.
+//! VM errors and non-local control flow.
 
 use copper_syntax::ast::Span;
 

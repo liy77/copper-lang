@@ -18,12 +18,12 @@ fn main() {
             let mut res = winresource::WindowsResource::new();
             res.set_icon("assets/alloy-icon.ico");
             if let Err(e) = res.compile() {
-                println!("cargo:warning=falha ao embutir o ícone do Alloy: {e}");
+                println!("cargo:warning=failed to embed the Alloy icon: {e}");
             }
         } else {
             println!(
-                "cargo:warning=assets/alloy-icon.ico ausente — gere-o do PNG \
-                 (assets/alloy-icon.png) para embutir o ícone no .exe"
+                "cargo:warning=assets/alloy-icon.ico missing — generate it from the PNG \
+                 (assets/alloy-icon.png) to embed the icon in the .exe"
             );
         }
     }

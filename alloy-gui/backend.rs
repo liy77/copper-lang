@@ -29,7 +29,7 @@ pub fn run_source(src: &str) -> RunResult {
         let msg = prog
             .errors
             .iter()
-            .map(|e| format!("sintaxe @ {}..{}: {}", e.span.start, e.span.end, e.message))
+            .map(|e| format!("syntax @ {}..{}: {}", e.span.start, e.span.end, e.message))
             .collect::<Vec<_>>()
             .join("\n");
         return RunResult {
@@ -49,7 +49,7 @@ pub fn run_source(src: &str) -> RunResult {
 /// Read a `.crs` file from disk for the file-runner. Returns the source or an
 /// error message suitable for display.
 pub fn read_file(path: &str) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|e| format!("não consegui ler {path}: {e}"))
+    std::fs::read_to_string(path).map_err(|e| format!("could not read {path}: {e}"))
 }
 
 /// Directory autocomplete: list child entries of the directory part of
@@ -94,8 +94,8 @@ pub fn list_dirs(prefix: &str) -> Vec<String> {
 // Downloads shell out to `curl` (present on Win10+/macOS/Linux) so the crate
 // stays dependency-light, mirroring the installer's std-only backend.
 
-// Releases do Alloy saem do repo copper-lang (owner `liy77`, conforme os ids de
-// bundle `net.liy77.*`). Ajuste o owner aqui se o repo de releases for outro.
+// Alloy releases come from the copper-lang repo (owner `liy77`, matching the
+// bundle ids `net.liy77.*`). Adjust the owner here if the release repo differs.
 const REPO_SLUG: &str = "liy77/copper-lang";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -123,7 +123,7 @@ pub fn check_update() -> UpdateInfo {
         Err(e) => {
             return UpdateInfo {
                 current: CURRENT_VERSION.to_string(),
-                latest: format!("erro: {e}"),
+                latest: format!("error: {e}"),
                 available: false,
                 asset_url: String::new(),
             }
@@ -145,24 +145,24 @@ pub fn check_update() -> UpdateInfo {
 /// can't be deleted, so we rename the old one aside first.
 pub fn apply_update(asset_url: &str) -> Result<(), String> {
     if asset_url.is_empty() {
-        return Err("nenhum asset de release para esta plataforma".into());
+        return Err("no release asset for this platform".into());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let tmp = exe.with_extension("new");
-    curl_download(asset_url, &tmp).map_err(|e| format!("download falhou: {e}"))?;
+    curl_download(asset_url, &tmp).map_err(|e| format!("download failed: {e}"))?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
-        std::fs::rename(&tmp, &exe).map_err(|e| format!("troca falhou: {e}"))?;
+        std::fs::rename(&tmp, &exe).map_err(|e| format!("swap failed: {e}"))?;
     }
     #[cfg(windows)]
     {
         let old = exe.with_extension("old");
         let _ = std::fs::remove_file(&old);
-        std::fs::rename(&exe, &old).map_err(|e| format!("não pude mover o exe atual: {e}"))?;
-        std::fs::rename(&tmp, &exe).map_err(|e| format!("troca falhou: {e}"))?;
+        std::fs::rename(&exe, &old).map_err(|e| format!("could not move current exe: {e}"))?;
+        std::fs::rename(&tmp, &exe).map_err(|e| format!("swap failed: {e}"))?;
     }
     Ok(())
 }
@@ -277,7 +277,7 @@ mod tests {
         assert!(r.error.is_none());
 
         let bad = run_source("func main() { 1 / 0 }");
-        assert!(bad.error.is_some(), "div-by-zero deve reportar erro");
+        assert!(bad.error.is_some(), "div-by-zero should report an error");
     }
 
     #[test]

@@ -112,8 +112,7 @@ impl Result {
 
     /// Record a Copper struct (name + ordered field names) for reflect codegen.
     pub fn record_reflect_struct(&mut self, name: &str, fields: Vec<String>) {
-        self.reflect_structs
-            .push((name.to_string(), fields));
+        self.reflect_structs.push((name.to_string(), fields));
     }
 
     /// If the `reflect` module is imported, append one
@@ -174,9 +173,7 @@ impl Result {
         // newline can leave a lone `";\n"` in main_function_code; that is NOT
         // a real top-level statement, so don't let it trigger the auto-wrapper
         // or the both-top-level-and-main conflict diagnostic.
-        let top_level_nonempty = body
-            .chars()
-            .any(|c| !c.is_whitespace() && c != ';');
+        let top_level_nonempty = body.chars().any(|c| !c.is_whitespace() && c != ';');
 
         match self.user_main {
             // The user wrote their own `main` (emitted as `__copper_main`).
@@ -207,10 +204,7 @@ impl Result {
                 if self.main_function_code.is_empty() {
                     return;
                 }
-                self.force_append(
-                    &("\n\nfn main() {\n".to_owned() + &body + "}"),
-                    false,
-                );
+                self.force_append(&("\n\nfn main() {\n".to_owned() + &body + "}"), false);
             }
         }
     }
@@ -377,7 +371,7 @@ impl Result {
         const TOML: &str = "toml@0.8";
 
         let mut deps = Vec::new();
-        let mut add = |spec: &str, deps: &mut Vec<String>| {
+        let add = |spec: &str, deps: &mut Vec<String>| {
             if !deps.iter().any(|d| d == spec) {
                 deps.push(spec.to_string());
             }

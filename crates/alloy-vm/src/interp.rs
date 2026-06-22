@@ -1,4 +1,4 @@
-//! Interpretador tree-walking.
+//! Tree-walking interpreter.
 
 use crate::env::Env;
 use crate::error::RuntimeError;
@@ -11,9 +11,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// Resultado interno de executar uma sequência de statements.
+/// Internal result of executing a sequence of statements.
 enum Outcome {
-    /// Continuou normal, com o valor de bloco acumulado.
+    /// Continued normally, with the accumulated block value.
     Normal(Value),
     Return(Value),
     Break,
@@ -36,12 +36,12 @@ enum Sink {
 #[derive(Default)]
 pub struct Interpreter {
     funcs: HashMap<String, FuncDef>,
-    /// tipo -> (nome do método/função associada -> def). Métodos têm `self`
-    /// como primeiro parâmetro; funções associadas (ex.: `Rect::new`) não.
+    /// type -> (method/associated-function name -> def). Methods have `self`
+    /// as the first parameter; associated functions (e.g. `Rect::new`) do not.
     methods: HashMap<String, HashMap<String, FuncDef>>,
-    /// símbolo importado -> módulo de origem (ex.: "input" -> "cstd").
+    /// imported symbol -> source module (e.g. "input" -> "cstd").
     imports: HashMap<String, String>,
-    /// classes que têm construtor (`Class::new` cria a instância e roda o corpo).
+    /// classes that have a constructor (`Class::new` creates the instance and runs the body).
     constructors: std::collections::HashSet<String>,
     globals: Option<Rc<RefCell<Env>>>,
     out: Sink,
@@ -131,7 +131,7 @@ impl Interpreter {
                                 );
                             }
                             ClassMember::Constructor { params, body, .. } => {
-                                // `Class::new(...)` constrói uma instância.
+                                // `Class::new(...)` constructs an instance.
                                 self.constructors.insert(name.clone());
                                 table.insert(
                                     "new".into(),
@@ -191,11 +191,11 @@ impl Interpreter {
             .funcs
             .get(name)
             .cloned()
-            .ok_or_else(|| RuntimeError::new(format!("função `{name}` não definida"), span))?;
+            .ok_or_else(|| RuntimeError::new(format!("function `{name}` not defined"), span))?;
         if def.params.len() != args.len() {
             return Err(RuntimeError::new(
                 format!(
-                    "`{name}` espera {} args, recebeu {}",
+                    "`{name}` expects {} args, got {}",
                     def.params.len(),
                     args.len()
                 ),
@@ -211,7 +211,7 @@ impl Interpreter {
             Outcome::Return(v) => Ok(v),
             Outcome::Normal(v) => Ok(v),
             Outcome::Break | Outcome::Continue => {
-                Err(RuntimeError::new("break/continue fora de loop", span))
+                Err(RuntimeError::new("break/continue outside of loop", span))
             }
         }
     }
@@ -227,11 +227,11 @@ impl Interpreter {
                 if let Some(v) = env.borrow().get(name) {
                     return Ok(v);
                 }
-                // Construtores nulares de enum embutidos.
+                // Nullary enum constructors built in.
                 match name.as_str() {
                     "None" => Ok(Value::none()),
                     _ => Err(RuntimeError::new(
-                        format!("variável `{name}` não definida"),
+                        format!("variable `{name}` not defined"),
                         expr.span,
                     )),
                 }
@@ -251,14 +251,14 @@ impl Interpreter {
                     Some(true) => self.eval_expr(then, env),
                     Some(false) => self.eval_expr(els, env),
                     None => Err(RuntimeError::new(
-                        format!("condição do ternário não é bool (é {})", c.type_name()),
+                        format!("ternary condition is not bool (got {})", c.type_name()),
                         cond.span,
                     )),
                 }
             }
             ExprKind::Assign { target, op, value } => {
                 let rhs = self.eval_expr(value, env)?;
-                // Desembrulha `*x`/`&x` (ponteiros são identidade aqui).
+                // Unwrap `*x`/`&x` (pointers are identity here).
                 let mut place = &**target;
                 while let ExprKind::Unary {
                     op: UnOp::Deref | UnOp::Ref | UnOp::RefMut,
@@ -286,12 +286,12 @@ impl Interpreter {
                         let cur = env.borrow().get(name).unwrap_or(Value::Unit);
                         let nv = compound(self, cur, expr.span)?;
                         if !env.borrow_mut().set(name, nv) {
-                            // primeira atribuição a um nome livre → define
+                            // first assignment to a free name → define it
                             env.borrow_mut().define(name.clone(), rhs);
                         }
                         Ok(Value::Unit)
                     }
-                    // `obj.campo = v` / `self.campo = v`.
+                    // `obj.field = v` / `self.field = v`.
                     ExprKind::Member { base, field, .. } => {
                         let recv = self.eval_expr(base, env)?;
                         if let Value::Struct { fields, .. } = recv {
@@ -301,7 +301,7 @@ impl Interpreter {
                             Ok(Value::Unit)
                         } else {
                             Err(RuntimeError::new(
-                                "atribuição de campo em valor não-struct",
+                                "field assignment on non-struct value",
                                 target.span,
                             ))
                         }
@@ -319,10 +319,7 @@ impl Interpreter {
                                 return Ok(Value::Unit);
                             }
                         }
-                        Err(RuntimeError::new(
-                            "índice de atribuição inválido",
-                            target.span,
-                        ))
+                        Err(RuntimeError::new("invalid assignment index", target.span))
                     }
                     // Destructuring: `(a, b) = (1, 2)`, aninhado também.
                     ExprKind::Tuple(targets) => {
@@ -330,7 +327,7 @@ impl Interpreter {
                         Ok(Value::Unit)
                     }
                     _ => Err(RuntimeError::new(
-                        "alvo de atribuição não suportado",
+                        "unsupported assignment target",
                         target.span,
                     )),
                 }
@@ -375,8 +372,8 @@ impl Interpreter {
                     fields: Rc::new(RefCell::new(map)),
                 })
             }
-            // `as` cast: no interpretador tratamos como identidade (sem checagem
-            // estática de tipos), exceto conversões numéricas óbvias.
+            // `as` cast: in the interpreter we treat it as identity (no static
+            // type checking), except for obvious numeric conversions.
             ExprKind::Cast { expr: inner, ty } => {
                 let v = self.eval_expr(inner, env)?;
                 Ok(cast_value(v, ty))
@@ -396,7 +393,7 @@ impl Interpreter {
                     }
                     return self.eval_expr(&arm.body, &scope);
                 }
-                Err(RuntimeError::new("nenhum braço do match casou", expr.span))
+                Err(RuntimeError::new("no match arm matched", expr.span))
             }
             ExprKind::If { cond, then, els } => {
                 let c = self.eval_expr(cond, env)?;
@@ -406,7 +403,7 @@ impl Interpreter {
                         Some(e) => self.eval_expr(e, env),
                         None => Ok(Value::Unit),
                     },
-                    None => Err(RuntimeError::new("condição de `if` não é bool", cond.span)),
+                    None => Err(RuntimeError::new("`if` condition is not bool", cond.span)),
                 }
             }
             ExprKind::Closure { params, body } => {
@@ -418,8 +415,8 @@ impl Interpreter {
             }
             ExprKind::Block(block) => self.eval_block(block, env),
             ExprKind::Try { expr: inner } => {
-                // `expr?`: Ok(v)/Some(v) → v; Err/None propaga como erro de
-                // runtime (modelo simplificado, sem early-return de função).
+                // `expr?`: Ok(v)/Some(v) → v; Err/None propagates as a runtime
+                // error (simplified model, no early-return from function).
                 let v = self.eval_expr(inner, env)?;
                 match &v {
                     Value::Enum {
@@ -439,7 +436,7 @@ impl Interpreter {
                     .map(|a| self.eval_expr(a, env))
                     .collect::<Result<_, _>>()?;
                 match &callee.kind {
-                    // `vec![..]` chega como Call{callee: Ident("vec"), args:[Array]}.
+                    // `vec![..]` arrives as Call{callee: Ident("vec"), args:[Array]}.
                     ExprKind::Ident(name) if name == "vec" => {
                         let items = if arg_vals.len() == 1 {
                             match &arg_vals[0] {
@@ -457,7 +454,7 @@ impl Interpreter {
                         self.emit(&line, newline);
                         Ok(Value::Unit)
                     }
-                    // Construtores de Option/Result.
+                    // Option/Result constructors.
                     ExprKind::Ident(name) if name == "Some" => Ok(Value::some(
                         arg_vals.into_iter().next().unwrap_or(Value::Unit),
                     )),
@@ -469,7 +466,7 @@ impl Interpreter {
                     )),
                     ExprKind::Ident(name) => {
                         let name = name.clone();
-                        // Função de stdlib importada?
+                        // Imported stdlib function?
                         if let Some(module) = self.imports.get(&name).cloned() {
                             if let Some(res) =
                                 crate::stdlib::dispatch(&module, &name, &arg_vals, expr.span)
@@ -484,14 +481,14 @@ impl Interpreter {
                         }
                         self.call_user(&name, arg_vals, expr.span)
                     }
-                    // Chamada de método: `recv.metodo(args)`.
+                    // Method call: `recv.method(args)`.
                     ExprKind::Member {
                         base,
                         field,
                         optional,
                     } => {
                         let recv = self.eval_expr(base, env)?;
-                        // `recv?.metodo()` em None → None.
+                        // `recv?.method()` on None → None.
                         if *optional {
                             if let Value::Enum { variant, .. } = &recv {
                                 if variant == "None" {
@@ -501,22 +498,19 @@ impl Interpreter {
                         }
                         self.call_method(recv, field, arg_vals, expr.span)
                     }
-                    // Função associada: `Tipo::func(args)` ou variante de enum.
+                    // Associated function: `Type::func(args)` or enum variant.
                     ExprKind::Path { segments } => self.call_path(segments, arg_vals, expr.span),
-                    _ => Err(RuntimeError::new(
-                        "alvo de chamada não suportado",
-                        callee.span,
-                    )),
+                    _ => Err(RuntimeError::new("unsupported call target", callee.span)),
                 }
             }
             _ => Err(RuntimeError::new(
-                "construção ainda não suportada pela VM",
+                "construct not yet supported by the VM",
                 expr.span,
             )),
         }
     }
 
-    /// `base[index]` — indexação de `Vec` (por int) e tupla (por int).
+    /// `base[index]` — indexing into a `Vec` (by int) or tuple (by int).
     fn index_value(
         &mut self,
         base: Value,
@@ -528,7 +522,7 @@ impl Interpreter {
             other => {
                 return Err(RuntimeError::new(
                     format!(
-                        "índice deve ser int não-negativo, achou {}",
+                        "index must be a non-negative int, got {}",
                         other.type_name()
                     ),
                     span,
@@ -536,24 +530,24 @@ impl Interpreter {
             }
         };
         match base {
-            Value::Vec(items) => {
-                items.borrow().get(idx).cloned().ok_or_else(|| {
-                    RuntimeError::new(format!("índice {idx} fora dos limites"), span)
-                })
-            }
+            Value::Vec(items) => items
+                .borrow()
+                .get(idx)
+                .cloned()
+                .ok_or_else(|| RuntimeError::new(format!("index {idx} out of bounds"), span)),
             Value::Tuple(items) => items
                 .get(idx)
                 .cloned()
-                .ok_or_else(|| RuntimeError::new(format!("índice {idx} fora da tupla"), span)),
+                .ok_or_else(|| RuntimeError::new(format!("index {idx} out of tuple bounds"), span)),
             other => Err(RuntimeError::new(
-                format!("não dá para indexar {}", other.type_name()),
+                format!("cannot index into {}", other.type_name()),
                 span,
             )),
         }
     }
 
-    /// Destructuring de tupla: vincula cada alvo (ident ou tupla aninhada) ao
-    /// elemento correspondente de `val`.
+    /// Tuple destructuring: binds each target (ident or nested tuple) to
+    /// the corresponding element of `val`.
     fn destructure(
         &mut self,
         targets: &[Expr],
@@ -565,7 +559,7 @@ impl Interpreter {
             Value::Tuple(e) => e,
             other => {
                 return Err(RuntimeError::new(
-                    format!("destructuring espera tupla, achou {}", other.type_name()),
+                    format!("destructuring expects a tuple, got {}", other.type_name()),
                     span,
                 ))
             }
@@ -573,7 +567,7 @@ impl Interpreter {
         if elems.len() != targets.len() {
             return Err(RuntimeError::new(
                 format!(
-                    "tupla de {} elementos para {} alvos",
+                    "tuple of {} elements for {} targets",
                     elems.len(),
                     targets.len()
                 ),
@@ -581,7 +575,7 @@ impl Interpreter {
             ));
         }
         for (t, v) in targets.iter().zip(elems) {
-            // Desembrulha `mut`/`&` se vierem como Unary no alvo.
+            // Unwrap `mut`/`&` if they appear as Unary on the target.
             let mut tk = t;
             while let ExprKind::Unary { expr: inner, .. } = &tk.kind {
                 tk = inner;
@@ -595,7 +589,7 @@ impl Interpreter {
                 ExprKind::Tuple(inner) => self.destructure(inner, v, env, span)?,
                 _ => {
                     return Err(RuntimeError::new(
-                        "alvo de destructuring não suportado",
+                        "unsupported destructuring target",
                         tk.span,
                     ))
                 }
@@ -604,7 +598,7 @@ impl Interpreter {
         Ok(())
     }
 
-    /// `base[key]` por string — para objetos JSON (`Value::Struct`).
+    /// `base[key]` by string — for JSON objects (`Value::Struct`).
     fn index_str(
         &mut self,
         base: Value,
@@ -616,14 +610,14 @@ impl Interpreter {
                 Ok(fields.borrow().get(key).cloned().unwrap_or(Value::Unit))
             }
             other => Err(RuntimeError::new(
-                format!("não dá para indexar {} por string", other.type_name()),
+                format!("cannot index {} by string", other.type_name()),
                 span,
             )),
         }
     }
 
-    /// `base.field` (e `base?.field`). Cobre campo de struct, `.0`/`.1` de
-    /// tupla, e propagação de `None` no `?.`.
+    /// `base.field` (and `base?.field`). Covers struct fields, `.0`/`.1` on
+    /// tuples, and `None` propagation through `?.`.
     fn member_value(
         &mut self,
         base: Value,
@@ -631,7 +625,7 @@ impl Interpreter {
         optional: bool,
         span: copper_syntax::ast::Span,
     ) -> Result<Value, RuntimeError> {
-        // `?.` em `None` → continua `None`.
+        // `?.` on `None` → stays `None`.
         if optional {
             if let Value::Enum {
                 variant, payload, ..
@@ -649,24 +643,24 @@ impl Interpreter {
         match base {
             Value::Struct { fields, name } => {
                 fields.borrow().get(field).cloned().ok_or_else(|| {
-                    RuntimeError::new(format!("`{name}` não tem o campo `{field}`"), span)
+                    RuntimeError::new(format!("`{name}` has no field `{field}`"), span)
                 })
             }
             Value::Tuple(items) => {
-                // `.0.0` pode chegar como o campo "0.0" (o tokenizer fundiu o
-                // número). Trata cada segmento como um índice encadeado.
+                // `.0.0` may arrive as the field "0.0" (the tokenizer merged the
+                // number). Treat each segment as a chained index.
                 let mut cur = Value::Tuple(items);
                 for seg in field.split('.') {
                     let idx: usize = seg.parse().map_err(|_| {
-                        RuntimeError::new(format!("índice de tupla inválido `.{seg}`"), span)
+                        RuntimeError::new(format!("invalid tuple index `.{seg}`"), span)
                     })?;
                     cur = match cur {
                         Value::Tuple(ref t) => t.get(idx).cloned().ok_or_else(|| {
-                            RuntimeError::new(format!("tupla não tem `.{idx}`"), span)
+                            RuntimeError::new(format!("tuple has no `.{idx}`"), span)
                         })?,
                         other => {
                             return Err(RuntimeError::new(
-                                format!("`.{idx}` em {}", other.type_name()),
+                                format!("`.{idx}` on {}", other.type_name()),
                                 span,
                             ))
                         }
@@ -675,20 +669,20 @@ impl Interpreter {
                 Ok(cur)
             }
             other => Err(RuntimeError::new(
-                format!("não dá para acessar `.{field}` em {}", other.type_name()),
+                format!("cannot access `.{field}` on {}", other.type_name()),
                 span,
             )),
         }
     }
 
-    /// Tenta casar `pat` contra `val`, vinculando bindings em `scope`.
-    /// Retorna `true` se casou.
+    /// Tries to match `pat` against `val`, binding names in `scope`.
+    /// Returns `true` if it matched.
     fn match_pattern(&self, pat: &Pattern, val: &Value, scope: &Rc<RefCell<Env>>) -> bool {
         match pat {
             Pattern::Wildcard => true,
             Pattern::Ident(name) => {
-                // Variante nulária (ex.: `None`) casa por igualdade de variante;
-                // senão é um binding que casa com qualquer valor.
+                // Nullary variant (e.g. `None`) matches by variant equality;
+                // otherwise it is a binding that matches any value.
                 if let Value::Enum {
                     variant, payload, ..
                 } = val
@@ -719,9 +713,9 @@ impl Interpreter {
         }
     }
 
-    /// Invoca um `FuncDef` (função, método ou associada). Se `receiver` for
-    /// `Some`, ele é vinculado ao primeiro parâmetro `self`; os demais
-    /// parâmetros recebem `args` em ordem.
+    /// Invokes a `FuncDef` (function, method, or associated). If `receiver` is
+    /// `Some`, it is bound to the first `self` parameter; the remaining
+    /// parameters receive `args` in order.
     fn invoke(
         &mut self,
         def: &FuncDef,
@@ -733,7 +727,7 @@ impl Interpreter {
         let scope = Env::child(&base);
         let mut params = def.params.iter();
         if let Some(recv) = receiver {
-            // Pula o parâmetro `self` (se declarado) e o vincula.
+            // Skip the `self` parameter (if declared) and bind it.
             if def.params.first().map(|p| p.as_str()) == Some("self") {
                 params.next();
             }
@@ -742,7 +736,7 @@ impl Interpreter {
         let rest: Vec<&String> = params.collect();
         if rest.len() != args.len() {
             return Err(RuntimeError::new(
-                format!("função espera {} args, recebeu {}", rest.len(), args.len()),
+                format!("function expects {} args, got {}", rest.len(), args.len()),
                 span,
             ));
         }
@@ -752,12 +746,12 @@ impl Interpreter {
         match self.run_block_in(&def.body, &scope)? {
             Outcome::Return(v) | Outcome::Normal(v) => Ok(v),
             Outcome::Break | Outcome::Continue => {
-                Err(RuntimeError::new("break/continue fora de loop", span))
+                Err(RuntimeError::new("break/continue outside of loop", span))
             }
         }
     }
 
-    /// Aplica uma closure a argumentos.
+    /// Applies a closure to arguments.
     fn call_closure(
         &mut self,
         cl: &crate::value::ClosureData,
@@ -772,7 +766,7 @@ impl Interpreter {
         self.eval_expr(&cl.body, &scope)
     }
 
-    /// `recv.metodo(args)` — tenta métodos built-in, depois métodos de usuário.
+    /// `recv.method(args)` — tries built-in methods first, then user-defined methods.
     fn call_method(
         &mut self,
         recv: Value,
@@ -780,7 +774,7 @@ impl Interpreter {
         args: Vec<Value>,
         span: copper_syntax::ast::Span,
     ) -> Result<Value, RuntimeError> {
-        // Adaptadores de iterador com closure (precisam do interpretador).
+        // Closure iterator adapters (need the interpreter).
         if let Value::Vec(items) = &recv {
             if let Some(Value::Closure(cl)) = args.first() {
                 let cl = Rc::clone(cl);
@@ -830,7 +824,7 @@ impl Interpreter {
                 }
             }
         }
-        // Métodos do `Response` do módulo http.
+        // `Response` methods from the http module.
         if let Value::Struct { name: ty, fields } = &recv {
             if ty == "Response" {
                 let field = |k: &str| fields.borrow().get(k).cloned().unwrap_or(Value::Unit);
@@ -857,12 +851,12 @@ impl Interpreter {
             }
         }
         Err(RuntimeError::new(
-            format!("método `{name}` não encontrado em {}", recv.type_name()),
+            format!("method `{name}` not found on {}", recv.type_name()),
             span,
         ))
     }
 
-    /// `Tipo::func(args)` — função associada, ou construção de variante de enum.
+    /// `Type::func(args)` — associated function, or enum variant construction.
     fn call_path(
         &mut self,
         segments: &[String],
@@ -871,8 +865,8 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         if segments.len() == 2 {
             let (ty, name) = (&segments[0], &segments[1]);
-            // Construtor de classe: cria a instância, roda o corpo (que faz
-            // `self.campo = ...`) e devolve a instância.
+            // Class constructor: creates the instance, runs the body (which does
+            // `self.field = ...`) and returns the instance.
             if name == "new" && self.constructors.contains(ty) {
                 if let Some(def) = self.methods.get(ty).and_then(|m| m.get("new")).cloned() {
                     let inst = Value::Struct {
@@ -886,7 +880,7 @@ impl Interpreter {
             if let Some(def) = self.methods.get(ty).and_then(|m| m.get(name)).cloned() {
                 return self.invoke(&def, None, args, span);
             }
-            // Não é função associada conhecida → variante de enum.
+            // Not a known associated function → enum variant.
             return Ok(Value::Enum {
                 ty: ty.clone(),
                 variant: name.clone(),
@@ -894,7 +888,7 @@ impl Interpreter {
             });
         }
         Err(RuntimeError::new(
-            format!("caminho `{}` não suportado", segments.join("::")),
+            format!("path `{}` not supported", segments.join("::")),
             span,
         ))
     }
@@ -908,7 +902,7 @@ impl Interpreter {
             Outcome::Normal(v) => Ok(v),
             Outcome::Return(v) => Ok(v),
             Outcome::Break | Outcome::Continue => Err(RuntimeError::new(
-                "break/continue fora de um loop",
+                "break/continue outside of a loop",
                 block.span,
             )),
         }
@@ -932,8 +926,8 @@ impl Interpreter {
         }
     }
 
-    /// Como `run_block`, mas sem criar um escopo filho extra (o chamador já
-    /// criou um — usado pelo `for`, que injeta a variável de laço).
+    /// Like `run_block`, but without creating an extra child scope (the caller
+    /// already created one — used by `for`, which injects the loop variable).
     fn run_block_in(
         &mut self,
         block: &Block,
@@ -965,16 +959,16 @@ impl Interpreter {
             Stmt::IncDec { target, inc, span } => {
                 let name = match &target.kind {
                     ExprKind::Ident(n) => n.clone(),
-                    _ => return Err(RuntimeError::new("alvo de ++/-- inválido", *span)),
+                    _ => return Err(RuntimeError::new("invalid ++/-- target", *span)),
                 };
                 let cur = env.borrow().get(&name).ok_or_else(|| {
-                    RuntimeError::new(format!("variável `{name}` não definida"), *span)
+                    RuntimeError::new(format!("variable `{name}` not defined"), *span)
                 })?;
                 let next = match cur {
                     Value::Int(n) => Value::Int(if *inc { n + 1 } else { n - 1 }),
                     other => {
                         return Err(RuntimeError::new(
-                            format!("++/-- requer int, achou {}", other.type_name()),
+                            format!("++/-- requires int, got {}", other.type_name()),
                             *span,
                         ))
                     }
@@ -1017,7 +1011,7 @@ impl Interpreter {
                         Some(s) => self.exec_stmt(s, env),
                         None => Ok(Outcome::Normal(Value::Unit)),
                     },
-                    None => Err(RuntimeError::new("condição de `if` não é bool", cond.span)),
+                    None => Err(RuntimeError::new("`if` condition is not bool", cond.span)),
                 }
             }
             Stmt::While {
@@ -1054,7 +1048,7 @@ impl Interpreter {
                         Some(false) => break,
                         None => {
                             return Err(RuntimeError::new(
-                                "condição de `while` não é bool",
+                                "`while` condition is not bool",
                                 cond.span,
                             ))
                         }
@@ -1082,7 +1076,7 @@ impl Interpreter {
                     Pattern::Ident(n) => n.clone(),
                     _ => {
                         return Err(RuntimeError::new(
-                            "padrão de `for` não suportado (só nome simples)",
+                            "`for` pattern not supported (simple name only)",
                             *span,
                         ))
                     }
@@ -1099,13 +1093,18 @@ impl Interpreter {
                             (Value::Int(s), Value::Int(e)) => (s, e, *inclusive),
                             _ => {
                                 return Err(RuntimeError::new(
-                                    "`for` só itera ranges de int no MVP",
+                                    "`for` only iterates int ranges in the MVP",
                                     *span,
                                 ))
                             }
                         }
                     }
-                    _ => return Err(RuntimeError::new("`for` só itera ranges no MVP", iter.span)),
+                    _ => {
+                        return Err(RuntimeError::new(
+                            "`for` only iterates ranges in the MVP",
+                            iter.span,
+                        ))
+                    }
                 };
                 let last = if inclusive { end + 1 } else { end };
                 let mut i = start;
@@ -1125,10 +1124,10 @@ impl Interpreter {
                 Ok(Outcome::Normal(Value::Unit))
             }
             Stmt::BlockStmt(b) => self.run_block(b, env),
-            // `unsafe { ... }` — sem semântica especial no interpretador.
+            // `unsafe { ... }` — no special semantics in the interpreter.
             Stmt::Unsafe { body, .. } => self.run_block(body, env),
             _ => Err(RuntimeError::new(
-                "statement ainda não suportado pela VM",
+                "statement not yet supported by the VM",
                 stmt.span(),
             )),
         }
@@ -1166,14 +1165,14 @@ impl Interpreter {
             (UnOp::Neg, Value::Int(n)) => n
                 .checked_neg()
                 .map(Value::Int)
-                .ok_or_else(|| RuntimeError::new("overflow em negação de inteiro", span)),
+                .ok_or_else(|| RuntimeError::new("overflow in integer negation", span)),
             (UnOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
             (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
-            // Referência/deref: no interpretador são identidade (não há um
-            // modelo de ponteiros real; `unsafe`/raw-ptr executam sem aliasing).
+            // Ref/deref: in the interpreter these are identity (there is no real
+            // pointer model; `unsafe`/raw-ptr execute without aliasing).
             (UnOp::Ref, v) | (UnOp::RefMut, v) | (UnOp::Deref, v) => Ok(v),
             (op, v) => Err(RuntimeError::new(
-                format!("operador unário {op:?} inválido para {}", v.type_name()),
+                format!("unary operator {op:?} invalid for {}", v.type_name()),
                 span,
             )),
         }
@@ -1192,23 +1191,23 @@ impl Interpreter {
             (Add, Int(a), Int(b)) => a
                 .checked_add(b)
                 .map(Int)
-                .ok_or_else(|| RuntimeError::new("overflow em soma de inteiros", span)),
+                .ok_or_else(|| RuntimeError::new("integer addition overflow", span)),
             (Sub, Int(a), Int(b)) => a
                 .checked_sub(b)
                 .map(Int)
-                .ok_or_else(|| RuntimeError::new("overflow em subtração de inteiros", span)),
+                .ok_or_else(|| RuntimeError::new("integer subtraction overflow", span)),
             (Mul, Int(a), Int(b)) => a
                 .checked_mul(b)
                 .map(Int)
-                .ok_or_else(|| RuntimeError::new("overflow em multiplicação de inteiros", span)),
+                .ok_or_else(|| RuntimeError::new("integer multiplication overflow", span)),
             (Div, Int(a), Int(b)) => a
                 .checked_div(b)
                 .map(Int)
-                .ok_or_else(|| RuntimeError::new("divisão por zero ou overflow", span)),
+                .ok_or_else(|| RuntimeError::new("division by zero or overflow", span)),
             (Rem, Int(a), Int(b)) => a
                 .checked_rem(b)
                 .map(Int)
-                .ok_or_else(|| RuntimeError::new("resto por zero ou overflow", span)),
+                .ok_or_else(|| RuntimeError::new("remainder by zero or overflow", span)),
             (Add, Float(a), Float(b)) => Ok(Float(a + b)),
             (Sub, Float(a), Float(b)) => Ok(Float(a - b)),
             (Mul, Float(a), Float(b)) => Ok(Float(a * b)),
@@ -1224,7 +1223,7 @@ impl Interpreter {
             (Or, Bool(a), Bool(b)) => Ok(Bool(a || b)),
             (op, a, b) => Err(RuntimeError::new(
                 format!(
-                    "operador {op:?} inválido para {} e {}",
+                    "operator {op:?} invalid for {} and {}",
                     a.type_name(),
                     b.type_name()
                 ),
@@ -1234,16 +1233,16 @@ impl Interpreter {
     }
 }
 
-/// Métodos built-in (estilo Rust) sobre os valores. Retorna `None` quando o
-/// método não é built-in (aí o chamador tenta métodos de usuário). Nunca
-/// panica: erros viram `RuntimeError`.
+/// Built-in methods (Rust style) on values. Returns `None` when the method
+/// is not built-in (the caller then tries user-defined methods). Never
+/// panics: errors become `RuntimeError`.
 fn builtin_method(
     recv: &Value,
     name: &str,
     args: &[Value],
     span: copper_syntax::ast::Span,
 ) -> Option<Result<Value, RuntimeError>> {
-    // Métodos válidos em qualquer valor.
+    // Methods valid on any value.
     match name {
         "to_string" => return Some(Ok(Value::Str(recv.to_string()))),
         "clone" => return Some(Ok(recv.clone())),
@@ -1264,7 +1263,7 @@ fn builtin_method(
                 Ok(n) => Value::ok(Value::Int(n)),
                 Err(_) => match s.trim().parse::<f64>() {
                     Ok(x) => Value::ok(Value::Float(x)),
-                    Err(_) => Value::err(Value::Str(format!("não consegui parsear `{s}`"))),
+                    Err(_) => Value::err(Value::Str(format!("could not parse `{s}`"))),
                 },
             })),
             "contains" => Some(Ok(Value::Bool(match args.first() {
@@ -1276,14 +1275,14 @@ fn builtin_method(
         Value::Vec(items) => match name {
             "len" | "count" => Some(Ok(Value::Int(items.borrow().len() as i64))),
             "is_empty" => Some(Ok(Value::Bool(items.borrow().is_empty()))),
-            // `into_iter` devolve um cursor independente (clone) para que
-            // `.next()` consuma sem afetar o vec original.
+            // `into_iter` returns an independent cursor (clone) so that
+            // `.next()` consumes without affecting the original vec.
             "into_iter" => Some(Ok(Value::Vec(Rc::new(RefCell::new(
                 items.borrow().clone(),
             ))))),
-            // Demais adaptadores: modelo eager, retornam o próprio vec.
+            // Other adapters: eager model, return the vec itself.
             "iter" | "copied" | "cloned" | "collect" => Some(Ok(Value::Vec(Rc::clone(items)))),
-            // Consome o primeiro elemento (drena a frente do cursor).
+            // Consume the first element (drains the front of the cursor).
             "next" => {
                 let mut b = items.borrow_mut();
                 if b.is_empty() {
@@ -1383,7 +1382,7 @@ fn builtin_method(
     }
 }
 
-/// Converte um literal de pattern em `Value` para comparação.
+/// Converts a pattern literal to a `Value` for comparison.
 fn pattern_literal(lit: &Literal) -> Option<Value> {
     match lit {
         Literal::Int(n) => Some(Value::Int(*n)),
@@ -1395,7 +1394,7 @@ fn pattern_literal(lit: &Literal) -> Option<Value> {
                 if let StrPart::Lit(t) = part {
                     s.push_str(t);
                 } else {
-                    return None; // interpolação em pattern não é suportada
+                    return None; // interpolation in patterns is not supported
                 }
             }
             Some(Value::Str(s))
@@ -1403,7 +1402,7 @@ fn pattern_literal(lit: &Literal) -> Option<Value> {
     }
 }
 
-/// `expr as Tipo` — conversões numéricas; o resto é identidade.
+/// `expr as Type` — numeric conversions; everything else is identity.
 fn cast_value(v: Value, ty: &copper_syntax::expr::Type) -> Value {
     use copper_syntax::expr::Type;
     match (ty, &v) {
@@ -1425,10 +1424,10 @@ fn cast_value(v: Value, ty: &copper_syntax::expr::Type) -> Value {
     }
 }
 
-/// Renderiza os argumentos de `println!`/`print!`. Se o primeiro argumento for
-/// uma string com placeholders `{...}` e houver mais argumentos, faz
-/// substituição posicional estilo `format!` (o spec interno — `{}`, `{:?}`,
-/// `{:.2}` — é ignorado, usa-se `Display`). Senão, junta tudo por espaço.
+/// Renders the arguments of `println!`/`print!`. If the first argument is
+/// a string with `{...}` placeholders and there are more arguments, performs
+/// positional substitution in `format!` style (the inner spec — `{}`, `{:?}`,
+/// `{:.2}` — is ignored; `Display` is used). Otherwise joins everything with spaces.
 fn render_print(args: &[Value]) -> String {
     if let Some(Value::Str(fmt)) = args.first() {
         if args.len() > 1 && fmt.contains('{') {
@@ -1441,8 +1440,8 @@ fn render_print(args: &[Value]) -> String {
         .join(" ")
 }
 
-/// Substitui cada `{...}` por `args[i].to_string()`, na ordem. `{{`/`}}` são
-/// chaves literais. Placeholders extras sem argumento viram vazio.
+/// Replaces each `{...}` with `args[i].to_string()`, in order. `{{`/`}}` are
+/// literal braces. Extra placeholders without an argument become empty.
 fn format_with(fmt: &str, args: &[Value]) -> String {
     let mut out = String::new();
     let mut next = 0usize;
@@ -1458,7 +1457,7 @@ fn format_with(fmt: &str, args: &[Value]) -> String {
                 out.push('}');
             }
             '{' => {
-                // Consome até o '}' de fechamento (ignora o spec de formato).
+                // Consume until the closing '}' (ignores the format spec).
                 for n in chars.by_ref() {
                     if n == '}' {
                         break;
@@ -1483,11 +1482,11 @@ mod tests {
     fn eval(src: &str) -> Value {
         let (expr, errs) = parse_expr(src);
         assert!(errs.is_empty(), "parse errs: {errs:?}");
-        let expr = expr.expect("sem expr");
+        let expr = expr.expect("no expr");
         let env = Env::new();
         Interpreter::new()
             .eval_expr(&expr, &env)
-            .expect("erro de runtime")
+            .expect("runtime error")
     }
 
     #[test]
@@ -1514,19 +1513,22 @@ mod tests {
     fn eval_err(src: &str) -> Result<Value, RuntimeError> {
         let (expr, errs) = parse_expr(src);
         assert!(errs.is_empty(), "parse errs: {errs:?}");
-        let expr = expr.expect("sem expr");
+        let expr = expr.expect("no expr");
         let env = Env::new();
         Interpreter::new().eval_expr(&expr, &env)
     }
 
     #[test]
     fn div_by_zero_is_err() {
-        assert!(eval_err("1 / 0").is_err(), "divisão por zero deve ser Err");
+        assert!(eval_err("1 / 0").is_err(), "division by zero should be Err");
     }
 
     #[test]
     fn rem_by_zero_is_err() {
-        assert!(eval_err("5 % 0").is_err(), "resto por zero deve ser Err");
+        assert!(
+            eval_err("5 % 0").is_err(),
+            "remainder by zero should be Err"
+        );
     }
 
     fn dummy_span() -> copper_syntax::ast::Span {
@@ -1542,7 +1544,7 @@ mod tests {
             Value::Int(-1),
             dummy_span(),
         );
-        assert!(result.is_err(), "i64::MIN / -1 deve ser Err (overflow)");
+        assert!(result.is_err(), "i64::MIN / -1 should be Err (overflow)");
     }
 
     #[test]
@@ -1554,14 +1556,14 @@ mod tests {
             Value::Int(-1),
             dummy_span(),
         );
-        assert!(result.is_err(), "i64::MIN % -1 deve ser Err (overflow)");
+        assert!(result.is_err(), "i64::MIN % -1 should be Err (overflow)");
     }
 
     #[test]
     fn undefined_variable_is_err() {
         assert!(
             eval_err("naoexiste").is_err(),
-            "variável não definida deve ser Err"
+            "undefined variable should be Err"
         );
     }
 
@@ -1573,7 +1575,7 @@ mod tests {
         assert!(prog.errors.is_empty(), "prog errs: {:?}", prog.errors);
         Interpreter::new()
             .run_program(&prog)
-            .expect("erro de runtime")
+            .expect("runtime error")
     }
 
     #[test]
@@ -1594,7 +1596,7 @@ mod tests {
         let env = Env::new();
         Interpreter::new()
             .eval_block(&block, &env)
-            .expect("erro de runtime")
+            .expect("runtime error")
     }
 
     #[test]
@@ -1607,7 +1609,7 @@ mod tests {
     #[test]
     fn ternary_and_string_interp() {
         assert_eq!(eval("1 < 2 ? 10 : 20"), Value::Int(10));
-        // interpolação simples
+        // simple interpolation
         assert_eq!(eval("\"v=${1 + 1}\""), Value::Str("v=2".into()));
     }
 
@@ -1653,7 +1655,7 @@ mod tests {
         assert!(prog.errors.is_empty(), "prog errs: {:?}", prog.errors);
         Interpreter::with_output(Rc::clone(&buf))
             .run_program(&prog)
-            .expect("erro de runtime");
+            .expect("runtime error");
         assert_eq!(buf.borrow().as_str(), "a\nb");
     }
 }

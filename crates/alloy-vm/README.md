@@ -5,38 +5,38 @@
 <h1 align="center">Alloy</h1>
 
 <p align="center">
-  <em>A VM de iteração rápida do Copper — interpretador tree-walking.</em>
+  <em>Copper's fast-iteration VM — a tree-walking interpreter.</em>
 </p>
 
 ---
 
-## O que é
+## What it is
 
-**Alloy** é o interpretador do [Copper](../../README.md): um binário separado
-(`alloy`) que **executa `.crs` direto**, sem transpilar para Rust nem chamar o
-`cargo`. Ele anda sobre a mesma AST que o transpiler de produção (`cforge`)
-usa — então o que roda no Alloy é o mesmo Copper que compila nativo.
+**Alloy** is the [Copper](../../README.md) interpreter: a separate binary
+(`alloy`) that **executes `.crs` directly**, without transpiling to Rust or
+invoking `cargo`. It walks the same AST that the production transpiler (`cforge`)
+uses — so what runs in Alloy is the same Copper that compiles natively.
 
-Dois alvos, uma linguagem:
+Two targets, one language:
 
-| Ferramenta | Caminho | Para quê |
+| Tool | Path | Purpose |
 | --- | --- | --- |
-| `cforge` | `.crs` → Rust → `cargo build` | build nativo de release |
-| **`alloy`** | `.crs` → AST → interpretação | iteração rápida, scripting, REPL |
+| `cforge` | `.crs` → Rust → `cargo build` | native release build |
+| **`alloy`** | `.crs` → AST → interpretation | fast iteration, scripting, REPL |
 
-A compatibilidade com Rust é a invariante central: **o mesmo `.crs` produz o
-mesmo comportamento** nos dois caminhos.
+Rust compatibility is the central invariant: **the same `.crs` produces the
+same behaviour** on both paths.
 
-## Uso
+## Usage
 
 ```sh
-alloy run programa.crs
+alloy run program.crs
 ```
 
-Exemplo (`examples/copper/alloy-hello.crs`):
+Example (`examples/copper/alloy-hello.crs`):
 
 ```rust
-func int soma_ate(n: int) {
+func int sum_to(n: int) {
     mut total = 0
     for i in 1..n {
         total += i
@@ -46,58 +46,58 @@ func int soma_ate(n: int) {
 
 func main() {
     println("Alloy VM")
-    mut s = soma_ate(5)
-    println("soma 1..5 = ${s}")
+    mut s = sum_to(5)
+    println("sum 1..5 = ${s}")
 }
 ```
 
 ```sh
 $ alloy run examples/copper/alloy-hello.crs
 Alloy VM
-soma 1..5 = 10
+sum 1..5 = 10
 ```
 
-## Suportado hoje (MVP)
+## Supported today (MVP)
 
-- Literais escalares (`int`, `float`, `bool`, `str`) e interpolação `"${expr}"`.
-- Operadores binários/unários, ternário, atribuição (`=`, `+=`, …), `++`/`--`.
-- Controle de fluxo: `if`/`else`, `while`, `loop`, `for x in a..b`,
+- Scalar literals (`int`, `float`, `bool`, `str`) and `"${expr}"` interpolation.
+- Binary/unary operators, ternary, assignment (`=`, `+=`, …), `++`/`--`.
+- Control flow: `if`/`else`, `while`, `loop`, `for x in a..b`,
   `break`/`continue`.
-- Funções do usuário, chamadas e recursão.
-- Builtins `println` / `print`.
+- User functions, calls and recursion.
+- Built-ins `println` / `print`.
 
-Aritmética de inteiros é **checada** (overflow e divisão/resto por zero viram
-erro de runtime, nunca panic). Construções fora do subset do MVP
-(struct/enum/impl/match/closures, genéricos, traits) reportam um erro de
-runtime claro — estão no roadmap.
+Integer arithmetic is **checked** (overflow and division/remainder by zero
+become runtime errors, never a panic). Constructs outside the MVP subset
+(struct/enum/impl/match/closures, generics, traits) report a clear runtime
+error — they are on the roadmap.
 
 ## Roadmap
 
-Veja o design completo em
+See the full design in
 [`docs/superpowers/specs/2026-06-22-alloy-vm-design.md`](../../docs/superpowers/specs/2026-06-22-alloy-vm-design.md):
 
-1. ✅ Núcleo tree-walking (expr, vars, controle de fluxo, funções, `println`).
-2. Tipos compostos: struct/class/enum/impl/match/closures.
-3. Genéricos + traits.
-4. Interop com Rust: stdlib registrada + shim C-ABI cacheado sob demanda.
-5. `alloy build` (binário self-contained) + `alloy repl`.
-6. *(futuro)* backend de bytecode e/ou JIT Cranelift como otimização.
+1. ✅ Tree-walking core (expr, vars, control flow, functions, `println`).
+2. Composite types: struct/class/enum/impl/match/closures.
+3. Generics + traits.
+4. Rust interop: registered stdlib + cached C-ABI shim on demand.
+5. `alloy build` (self-contained binary) + `alloy repl`.
+6. *(future)* bytecode backend and/or Cranelift JIT as an optimisation.
 
-## Arquitetura
+## Architecture
 
 ```
-crates/copper-syntax::program  (Program AST — corpos parseados)
+crates/copper-syntax::program  (Program AST — parsed bodies)
             │
             ▼
 crates/alloy-vm                bin: alloy
-(interpretador tree-walking)   (run / build / repl / check)
+(tree-walking interpreter)     (run / build / repl / check)
 ```
 
-- `value.rs` — valores em runtime (`Value`).
-- `env.rs` — escopos encadeados (`Env`).
-- `error.rs` — `RuntimeError` + fluxo de controle.
-- `interp.rs` — o interpretador (`Interpreter`).
-- `src/bin/alloy.rs` — o CLI.
+- `value.rs` — runtime values (`Value`).
+- `env.rs` — chained scopes (`Env`).
+- `error.rs` — `RuntimeError` + control flow.
+- `interp.rs` — the interpreter (`Interpreter`).
+- `src/bin/alloy.rs` — the CLI.
 
-O crate é **isolado**: `cforge` e os crates `mui-*` não dependem dele, então o
-CI multiplataforma não é afetado.
+The crate is **isolated**: `cforge` and the `mui-*` crates do not depend on it,
+so cross-platform CI is unaffected.

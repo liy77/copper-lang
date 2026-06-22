@@ -11,8 +11,8 @@ use std::vec;
 /// next `cargo build`.
 const CSTD_SOURCE: &str = include_str!("../../../../std/cstd.crs");
 
-/// Native-Rust helpers for things Copper cannot yet express cleanly
-/// (multi-line method chains, `&[T]`, `cfg!(target_os=...)`).
+// Native-Rust helpers for things Copper cannot yet express cleanly
+// (multi-line method chains, `&[T]`, `cfg!(target_os=...)`).
 
 // Additional native std modules, bundled on demand when imported
 // (`import { ... } from net` / `from http`). Each has a Copper-written
@@ -137,14 +137,14 @@ fn join_chain_continuations(tokens: Vec<Token>) -> Vec<Token> {
         false
     };
     let mut out = tokens.clone();
-    for i in 0..out.len() {
-        if out[i].kind == TokenKind::Newline
-            && out[i].value.contains(';')
+    for (i, tok) in out.iter_mut().enumerate() {
+        if tok.kind == TokenKind::Newline
+            && tok.value.contains(';')
             && next_significant_is_dot(i + 1)
         {
             // Keep the newline (formatting) but strip the separator so the
             // expression continues onto the chained call.
-            out[i].value = out[i].value.replace(';', "");
+            tok.value = tok.value.replace(';', "");
         }
     }
     out
@@ -863,14 +863,17 @@ impl Parser {
                 // argument) so `println(x)` → `println!("{}", x)` and
                 // `println(a, b)` → `println!("{} {}", a, b)`, both valid Rust.
                 if self.peek_kind() == Some(TokenKind::ParenthesesStart) {
-                    if let Some((first_is_fmt, argc)) = self.scan_macro_call_args(self.current + 1) {
+                    if let Some((first_is_fmt, argc)) = self.scan_macro_call_args(self.current + 1)
+                    {
                         if !first_is_fmt && argc > 0 {
                             let mut fmt = String::with_capacity(argc * 3 + 4);
                             fmt.push_str(rust); // e.g. "println!"
                             fmt.push('(');
                             fmt.push('"');
                             for i in 0..argc {
-                                if i > 0 { fmt.push(' '); }
+                                if i > 0 {
+                                    fmt.push(' ');
+                                }
                                 fmt.push_str("{}");
                             }
                             fmt.push_str("\", ");
@@ -1129,10 +1132,8 @@ impl Parser {
                 _ if depth == 1 => {
                     if !first_token_seen {
                         first_token_seen = true;
-                        first_is_fmt = matches!(
-                            tok.kind,
-                            TokenKind::String | TokenKind::InterpolatedString
-                        );
+                        first_is_fmt =
+                            matches!(tok.kind, TokenKind::String | TokenKind::InterpolatedString);
                     }
                     seen_arg_token = true;
                 }
@@ -1732,7 +1733,10 @@ impl Parser {
                 format!("&self, {}", params.join(", "))
             };
             if rust_type == "()" {
-                output.push_str(&format!("    pub fn {}({}) {{\n", name_t.value, self_and_params));
+                output.push_str(&format!(
+                    "    pub fn {}({}) {{\n",
+                    name_t.value, self_and_params
+                ));
             } else {
                 output.push_str(&format!(
                     "    pub fn {}({}) -> {} {{\n",
@@ -1857,9 +1861,7 @@ impl Parser {
                             brace_count -= 1;
                             if brace_count == 0 {
                                 if !current_field.trim().is_empty() {
-                                    if let Some(name) =
-                                        Self::reflect_field_name(&current_field)
-                                    {
+                                    if let Some(name) = Self::reflect_field_name(&current_field) {
                                         reflect_fields.push(name);
                                     }
                                     self.append(
@@ -1882,9 +1884,7 @@ impl Parser {
                                 && seen_type
                                 && !current_field.trim().is_empty()
                             {
-                                if let Some(name) =
-                                    Self::reflect_field_name(&current_field)
-                                {
+                                if let Some(name) = Self::reflect_field_name(&current_field) {
                                     reflect_fields.push(name);
                                 }
                                 self.append(
@@ -2025,9 +2025,7 @@ impl Parser {
                             // `first: Tsecond: T`. Only flush once a field is
                             // complete (name + type seen); a blank line or the
                             // newline right after `{` leaves nothing to emit.
-                            if type_depth == 0
-                                && !in_field_name
-                                && !current_field.trim().is_empty()
+                            if type_depth == 0 && !in_field_name && !current_field.trim().is_empty()
                             {
                                 if let Some(name) = Self::reflect_field_name(&current_field) {
                                     reflect_fields.push(name);
@@ -2066,7 +2064,8 @@ impl Parser {
             // Record this struct for reflect codegen (emitted at EOF iff the
             // `reflect` module is imported). Skip generic structs.
             if !has_generics {
-                self.result.record_reflect_struct(&struct_name, reflect_fields);
+                self.result
+                    .record_reflect_struct(&struct_name, reflect_fields);
             }
 
             return Consumed::consume(consumed.try_into().unwrap());
@@ -2253,8 +2252,7 @@ impl Parser {
                                         "__CopperGeneric{}",
                                         target_generics
                                     ));
-                                    if let Some(stripped) =
-                                        lowered.strip_prefix("__CopperGeneric")
+                                    if let Some(stripped) = lowered.strip_prefix("__CopperGeneric")
                                     {
                                         target_generics = stripped.to_string();
                                     }
@@ -2619,9 +2617,8 @@ impl Parser {
                                     break;
                                 }
 
-                                let (converted, data_type) = utils::convert_type_with_marking(
-                                    &param_tokens[k_type].value,
-                                );
+                                let (converted, data_type) =
+                                    utils::convert_type_with_marking(&param_tokens[k_type].value);
                                 let mut param_type = format!("{}{}", ref_prefix, converted);
 
                                 // Gobble generic arguments on the param type too
@@ -3079,7 +3076,10 @@ impl Parser {
     /// True for native std modules selectable via `import { ... } from <name>`
     /// (besides cstd, which keeps its own dedicated path).
     fn is_native_std_module(name: &str) -> bool {
-        matches!(name, "net" | "http" | "url" | "json" | "crypto" | "time" | "fs" | "ws" | "reflect")
+        matches!(
+            name,
+            "net" | "http" | "url" | "json" | "crypto" | "time" | "fs" | "ws" | "reflect"
+        )
     }
 
     /// (crs surface, native helpers) for a native std module name.
@@ -3134,7 +3134,7 @@ impl Parser {
             .map(|line| {
                 let trimmed = line.trim_start();
                 let depth = stack.len();
-                let in_no_promote = stack.iter().any(|&x| x == NO_PROMOTE);
+                let in_no_promote = stack.contains(&NO_PROMOTE);
                 let innermost_is_struct = stack.last() == Some(&STRUCT);
                 let indent = &line[..line.len() - trimmed.len()];
                 // What needs `pub` to be reachable as `mod::X`:
@@ -3482,7 +3482,8 @@ impl Parser {
                         // `.into()` first (`"Brian".into().to_string()`) makes
                         // the `.into()` target ambiguous (E0282).
                         let next_is_chain = matches!(
-                            self.select(self.current + 1).map(|t| (t.kind, t.value.clone())),
+                            self.select(self.current + 1)
+                                .map(|t| (t.kind, t.value.clone())),
                             Some((TokenKind::Dot, _))
                         ) || matches!(
                             self.select(self.current + 1).map(|t| t.value.clone()),
@@ -3490,10 +3491,7 @@ impl Parser {
                         );
                         let coerce = in_field_value && !next_is_chain;
                         if coerce {
-                            self.append(
-                                &format!("{}.into()", self.value()),
-                                AppendMode::Append,
-                            );
+                            self.append(&format!("{}.into()", self.value()), AppendMode::Append);
                         } else {
                             self.append(&self.value(), AppendMode::Append);
                         }

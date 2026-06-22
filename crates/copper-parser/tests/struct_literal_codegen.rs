@@ -32,7 +32,8 @@ fn rustc_compiles(rust_src: &str, stem: &str) -> Result<(), String> {
     let out_path = dir.join("out_bin");
     {
         let mut f = std::fs::File::create(&src_path).map_err(|e| e.to_string())?;
-        f.write_all(rust_src.as_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(rust_src.as_bytes())
+            .map_err(|e| e.to_string())?;
     }
     let output = match Command::new("rustc")
         .arg("--edition=2021")

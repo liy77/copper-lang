@@ -1,6 +1,6 @@
-//! Stdlib nativa que depende de crates externas: `crypto` (sha2/hmac + puros),
-//! `json` (serde_json) e `http` (ureq). Separada de [`crate::stdlib`] para
-//! manter o que é Rust-puro isolado do que puxa dependências.
+//! Native stdlib that depends on external crates: `crypto` (sha2/hmac + pure),
+//! `json` (serde_json) and `http` (ureq). Kept separate from [`crate::stdlib`]
+//! to isolate pure-Rust code from dependency-pulling code.
 
 use crate::error::RuntimeError;
 use crate::value::Value;
@@ -31,7 +31,7 @@ pub fn dispatch(
 fn arg_str(args: &[Value], i: usize, span: Span) -> Result<String, RuntimeError> {
     args.get(i)
         .map(|v| v.to_string())
-        .ok_or_else(|| RuntimeError::new(format!("argumento {i} ausente"), span))
+        .ok_or_else(|| RuntimeError::new(format!("argument {i} missing"), span))
 }
 
 // ===========================================================================
@@ -74,7 +74,7 @@ fn crypto(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError>
             Ok(Value::Str(hex_encode(&mac.finalize().into_bytes())))
         }
         _ => Err(RuntimeError::new(
-            format!("crypto::{name} não implementado"),
+            format!("crypto::{name} not implemented"),
             span,
         )),
     }
@@ -165,8 +165,8 @@ fn crc32(data: &[u8]) -> u32 {
 // json
 // ===========================================================================
 
-/// Converte um `serde_json::Value` num [`Value`] do Alloy (objeto→Struct,
-/// array→Vec, etc.). Objetos viram `Struct{name:"object"}` indexáveis por chave.
+/// Converts a `serde_json::Value` into an Alloy [`Value`] (object→Struct,
+/// array→Vec, etc.). Objects become `Struct{name:"object"}` indexable by key.
 pub fn json_to_value(j: &serde_json::Value) -> Value {
     match j {
         serde_json::Value::Null => Value::Unit,
@@ -195,7 +195,7 @@ pub fn json_to_value(j: &serde_json::Value) -> Value {
     }
 }
 
-/// Navega um caminho pontuado (`user.name`, `tags.0`) num valor JSON.
+/// Navigates a dotted path (`user.name`, `tags.0`) in a JSON value.
 fn json_path<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
     let mut cur = root;
     for seg in path.split('.') {
@@ -211,7 +211,7 @@ fn json_path<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_js
 fn json(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     let doc = arg_str(args, 0, span)?;
     let root: serde_json::Value = serde_json::from_str(&doc)
-        .map_err(|e| RuntimeError::new(format!("json inválido: {e}"), span))?;
+        .map_err(|e| RuntimeError::new(format!("invalid json: {e}"), span))?;
     let path = |i| arg_str(args, i, span);
     match name {
         "get" => Ok(Value::Str(match json_path(&root, &path(1)?) {
@@ -245,7 +245,7 @@ fn json(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
         )),
         "minify" => Ok(Value::Str(serde_json::to_string(&root).unwrap_or_default())),
         _ => Err(RuntimeError::new(
-            format!("json::{name} não implementado"),
+            format!("json::{name} not implemented"),
             span,
         )),
     }
@@ -276,9 +276,9 @@ fn do_request(req: ureq::Request, body: Option<&str>) -> (i64, String) {
             let status = r.status() as i64;
             (status, r.into_string().unwrap_or_default())
         }
-        // ureq devolve Err para status >= 400; extrai o status quando possível.
+        // ureq returns Err for status >= 400; extract the status when possible.
         Err(ureq::Error::Status(code, r)) => (code as i64, r.into_string().unwrap_or_default()),
-        Err(e) => (0, format!("erro de rede: {e}")),
+        Err(e) => (0, format!("network error: {e}")),
     }
 }
 
@@ -303,7 +303,7 @@ fn http(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
             Ok(Value::Bool(ok))
         }
         _ => Err(RuntimeError::new(
-            format!("http::{name} não implementado"),
+            format!("http::{name} not implemented"),
             span,
         )),
     }

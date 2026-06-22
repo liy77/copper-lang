@@ -17,10 +17,7 @@ fn tuple_inside_generic_field_type() {
         rust.contains("fields: Vec<(String, i64)>"),
         "tuple/nested-generic field type mangled: {rust}"
     );
-    assert!(
-        !rust.contains("Vec<(,"),
-        "spurious comma after `(`: {rust}"
-    );
+    assert!(!rust.contains("Vec<(,"), "spurious comma after `(`: {rust}");
 }
 
 #[test]

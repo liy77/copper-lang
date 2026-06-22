@@ -1,9 +1,9 @@
-//! Stdlib nativa do Alloy: implementações Rust das funções que os módulos
-//! `std/*.crs` expõem. Quando um programa faz `import { f } from mod`, o
-//! interpretador registra `f` e resolve as chamadas aqui.
+//! Alloy's native stdlib: Rust implementations of the functions that
+//! `std/*.crs` modules expose. When a program does `import { f } from mod`,
+//! the interpreter registers `f` and resolves calls here.
 //!
-//! Cobertos aqui (Rust puro, sem deps externas): `cstd`, `fs`, `time`, `url`,
-//! `net`. Os módulos `json`/`crypto`/`http` (que precisam de crates) ficam em
+//! Covered here (pure Rust, no external deps): `cstd`, `fs`, `time`, `url`,
+//! `net`. The `json`/`crypto`/`http` modules (which need crates) are in
 //! [`crate::stdlib_ext`].
 
 use crate::error::RuntimeError;
@@ -11,8 +11,8 @@ use crate::value::Value;
 use copper_syntax::ast::Span;
 use std::io::{Read, Write};
 
-/// Resolve `module::name(args)`. Retorna `None` se o módulo/função não é
-/// conhecido por esta camada (o chamador então tenta outras vias / erro).
+/// Resolves `module::name(args)`. Returns `None` if the module/function is
+/// not known to this layer (the caller then tries other paths / errors).
 pub fn dispatch(
     module: &str,
     name: &str,
@@ -31,7 +31,7 @@ pub fn dispatch(
     Some(r)
 }
 
-/// Conjunto de módulos tratados por esta camada (para o registro de imports).
+/// Set of modules handled by this layer (for import registration).
 pub fn handles(module: &str) -> bool {
     matches!(module, "cstd" | "fs" | "time" | "url" | "net" | "ws")
 }
@@ -41,7 +41,7 @@ pub fn handles(module: &str) -> bool {
 fn arg_str(args: &[Value], i: usize, span: Span) -> Result<String, RuntimeError> {
     match args.get(i) {
         Some(v) => Ok(v.to_string()),
-        None => Err(RuntimeError::new(format!("argumento {i} ausente"), span)),
+        None => Err(RuntimeError::new(format!("argument {i} missing"), span)),
     }
 }
 
@@ -49,10 +49,10 @@ fn arg_int(args: &[Value], i: usize, span: Span) -> Result<i64, RuntimeError> {
     match args.get(i) {
         Some(Value::Int(n)) => Ok(*n),
         Some(other) => Err(RuntimeError::new(
-            format!("argumento {i} deve ser int, achou {}", other.type_name()),
+            format!("argument {i} must be int, got {}", other.type_name()),
             span,
         )),
-        None => Err(RuntimeError::new(format!("argumento {i} ausente"), span)),
+        None => Err(RuntimeError::new(format!("argument {i} missing"), span)),
     }
 }
 
@@ -69,8 +69,8 @@ fn vec_of_strings(items: Vec<String>) -> Value {
 fn cstd(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
     match name {
         "input" | "readln" => {
-            // Imprime o prompt (se houver) e lê uma linha de stdin. Sem tty /
-            // EOF → string vazia (não trava).
+            // Print the prompt (if any) and read a line from stdin. No tty /
+            // EOF → empty string (does not block).
             if let Some(p) = args.first() {
                 print!("{p} ");
                 let _ = std::io::stdout().flush();
@@ -110,7 +110,7 @@ fn cstd(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
             Ok(Value::Bool(std::fs::write(p, c).is_ok()))
         }
         _ => Err(RuntimeError::new(
-            format!("cstd::{name} não implementado"),
+            format!("cstd::{name} not implemented"),
             span,
         )),
     }
@@ -159,7 +159,7 @@ fn fs(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
             Ok(vec_of_strings(names))
         }
         _ => Err(RuntimeError::new(
-            format!("fs::{name} não implementado"),
+            format!("fs::{name} not implemented"),
             span,
         )),
     }
@@ -197,7 +197,7 @@ fn time(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
             Ok(Value::Unit)
         }
         "iso8601" | "now_iso" => {
-            // ISO8601 simplificado em UTC a partir dos segundos epoch.
+            // Simplified ISO8601 in UTC from epoch seconds.
             let secs = if name == "iso8601" && !args.is_empty() {
                 arg_int(args, 0, span)?
             } else {
@@ -206,14 +206,14 @@ fn time(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
             Ok(Value::Str(iso_from_epoch(secs)))
         }
         _ => Err(RuntimeError::new(
-            format!("time::{name} não implementado"),
+            format!("time::{name} not implemented"),
             span,
         )),
     }
 }
 
-/// Formata segundos-epoch UTC como `YYYY-MM-DDTHH:MM:SSZ` (algoritmo de Howard
-/// Hinnant para a data civil).
+/// Formats epoch seconds (UTC) as `YYYY-MM-DDTHH:MM:SSZ` (Howard
+/// Hinnant's civil-date algorithm).
 fn iso_from_epoch(secs: i64) -> String {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
@@ -250,7 +250,7 @@ fn url(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
             Ok(Value::Str(joined))
         }
         "query2" => {
-            // query2(k1, v1) → "k1=v1" (forma mínima encodada).
+            // query2(k1, v1) → "k1=v1" (minimal encoded form).
             let k = arg_str(args, 0, span)?;
             let v = arg_str(args, 1, span)?;
             Ok(Value::Str(format!(
@@ -260,7 +260,7 @@ fn url(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
             )))
         }
         _ => Err(RuntimeError::new(
-            format!("url::{name} não implementado"),
+            format!("url::{name} not implemented"),
             span,
         )),
     }
@@ -314,7 +314,7 @@ fn net(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
             Ok(vec_of_strings(addrs))
         }
         "local_ip" => {
-            // Truque UDP: conectar a um host externo revela o IP local da rota.
+            // UDP trick: connecting to an external host reveals the local route IP.
             let ip = std::net::UdpSocket::bind("0.0.0.0:0")
                 .and_then(|s| {
                     s.connect("8.8.8.8:80")?;
@@ -348,20 +348,20 @@ fn net(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
             })();
             match resp {
                 Ok(s) => Ok(Value::Str(s)),
-                Err(e) => Err(RuntimeError::new(format!("tcp_request falhou: {e}"), span)),
+                Err(e) => Err(RuntimeError::new(format!("tcp_request failed: {e}"), span)),
             }
         }
         _ => Err(RuntimeError::new(
-            format!("net::{name} não implementado"),
+            format!("net::{name} not implemented"),
             span,
         )),
     }
 }
 
 // ===========================================================================
-// ws — cliente WebSocket mínimo (RFC 6455) sobre ws:// (TcpStream puro).
-// Degradação graciosa: sem servidor, `request` devolve "" e `send` devolve
-// false (em vez de erro), para o programa seguir rodando.
+// ws — minimal WebSocket client (RFC 6455) over ws:// (plain TcpStream).
+// Graceful degradation: with no server, `request` returns "" and `send` returns
+// false (instead of an error), so the program keeps running.
 // ===========================================================================
 
 fn ws(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
@@ -373,14 +373,14 @@ fn ws(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
         )),
         "send" => Ok(Value::Bool(ws_exchange(&url, &msg, false).is_some())),
         _ => Err(RuntimeError::new(
-            format!("ws::{name} não implementado"),
+            format!("ws::{name} not implemented"),
             span,
         )),
     }
 }
 
-/// Conecta, faz o handshake, envia um frame de texto e (se `want_reply`) lê a
-/// resposta. Retorna `Some(payload)` no sucesso, `None` em qualquer falha.
+/// Connects, performs the handshake, sends a text frame and (if `want_reply`) reads
+/// the response. Returns `Some(payload)` on success, `None` on any failure.
 fn ws_exchange(url: &str, msg: &str, want_reply: bool) -> Option<String> {
     use std::net::TcpStream;
     use std::time::Duration;
@@ -410,7 +410,7 @@ fn ws_exchange(url: &str, msg: &str, want_reply: bool) -> Option<String> {
         return None;
     }
 
-    // Frame de texto mascarado (cliente DEVE mascarar).
+    // Masked text frame (client MUST mask).
     let mask = [0x12u8, 0x34, 0x56, 0x78];
     let payload = msg.as_bytes();
     let mut frame = vec![0x81u8];

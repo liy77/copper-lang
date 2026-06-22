@@ -42,7 +42,10 @@ fn explicit_format_string_is_untouched() {
 #[test]
 fn explicit_bang_form_is_untouched() {
     let rust = transpile("func void run() {\n  b = 2\n  println!(\"explicit {}\", b)\n}\n");
-    assert!(rust.contains(r#"println!("explicit {}", b)"#), "got: {rust}");
+    assert!(
+        rust.contains(r#"println!("explicit {}", b)"#),
+        "got: {rust}"
+    );
 }
 
 #[test]
