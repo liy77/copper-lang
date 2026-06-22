@@ -94,7 +94,7 @@ impl Interpreter {
         }
     }
 
-    fn eval_binary(
+    pub(crate) fn eval_binary(
         &mut self,
         op: BinOp,
         l: Value,
@@ -116,10 +116,14 @@ impl Interpreter {
                 .checked_mul(b)
                 .map(Int)
                 .ok_or_else(|| RuntimeError::new("overflow em multiplicação de inteiros", span)),
-            (Div, Int(a), Int(b)) if b != 0 => Ok(Int(a / b)),
-            (Div, Int(_), Int(_)) => Err(RuntimeError::new("divisão por zero", span)),
-            (Rem, Int(a), Int(b)) if b != 0 => Ok(Int(a % b)),
-            (Rem, Int(_), Int(_)) => Err(RuntimeError::new("resto por zero", span)),
+            (Div, Int(a), Int(b)) => a
+                .checked_div(b)
+                .map(Int)
+                .ok_or_else(|| RuntimeError::new("divisão por zero ou overflow", span)),
+            (Rem, Int(a), Int(b)) => a
+                .checked_rem(b)
+                .map(Int)
+                .ok_or_else(|| RuntimeError::new("resto por zero ou overflow", span)),
             (Add, Float(a), Float(b)) => Ok(Float(a + b)),
             (Sub, Float(a), Float(b)) => Ok(Float(a - b)),
             (Mul, Float(a), Float(b)) => Ok(Float(a * b)),
@@ -190,6 +194,34 @@ mod tests {
     #[test]
     fn rem_by_zero_is_err() {
         assert!(eval_err("5 % 0").is_err(), "resto por zero deve ser Err");
+    }
+
+    fn dummy_span() -> copper_syntax::ast::Span {
+        copper_syntax::ast::Span { start: 0, end: 0 }
+    }
+
+    #[test]
+    fn div_min_over_neg1_is_err() {
+        // i64::MIN / -1 overflows — must not panic, must return Err
+        let result = Interpreter::new().eval_binary(
+            BinOp::Div,
+            Value::Int(i64::MIN),
+            Value::Int(-1),
+            dummy_span(),
+        );
+        assert!(result.is_err(), "i64::MIN / -1 deve ser Err (overflow)");
+    }
+
+    #[test]
+    fn rem_min_over_neg1_is_err() {
+        // i64::MIN % -1 overflows — must not panic, must return Err
+        let result = Interpreter::new().eval_binary(
+            BinOp::Rem,
+            Value::Int(i64::MIN),
+            Value::Int(-1),
+            dummy_span(),
+        );
+        assert!(result.is_err(), "i64::MIN % -1 deve ser Err (overflow)");
     }
 
     #[test]
