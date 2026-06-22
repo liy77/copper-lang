@@ -148,7 +148,61 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
                 .action(clap::ArgAction::SetTrue)
                 .help("Write the formatted result to stdout instead of editing files"))
         )
+        // `cforge vm run/build <file>` (alias `virtual`) — execute a .crs through
+        // the Alloy tree-walking interpreter instead of transpiling to Rust. No
+        // cargo/rustc needed.
+        .subcommand(ClapCommand::new("vm")
+            .visible_alias("virtual")
+            .about("Run a .crs through the Alloy interpreter (no Rust build)")
+            .subcommand_required(true)
+            .subcommand(ClapCommand::new("run")
+                .about("Interpret a .crs file with Alloy")
+                .arg(Arg::new("input").value_name("FILE").required(true).index(1)))
+            .subcommand(ClapCommand::new("build")
+                .about("Parse + validate a .crs through Alloy without running it")
+                .arg(Arg::new("input").value_name("FILE").required(true).index(1)))
+        )
 });
+
+/// `cforge vm run/build <file>` — drive the Alloy interpreter. Returns the
+/// process exit code.
+fn run_vm(sub: &str, file: &str) -> i32 {
+    let src = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cforge vm: não consegui ler {file}: {e}");
+            return 1;
+        }
+    };
+    let prog = copper_syntax::program::parse_program(&src);
+    if !prog.errors.is_empty() {
+        for err in &prog.errors {
+            eprintln!(
+                "cforge vm: erro de sintaxe @ {}..{}: {}",
+                err.span.start, err.span.end, err.message
+            );
+        }
+        return 1;
+    }
+    // `build`: só valida (parse + carrega o programa), não executa.
+    if sub == "build" {
+        let mut interp = alloy_vm::interp::Interpreter::new();
+        interp.load_program(&prog);
+        println!("ok: {file} válido para a VM Alloy");
+        return 0;
+    }
+    // `run`: interpreta.
+    match alloy_vm::interp::Interpreter::new().run_program(&prog) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!(
+                "cforge vm: erro de runtime @ {}..{}: {}",
+                e.span.start, e.span.end, e.message
+            );
+            1
+        }
+    }
+}
 
 /// Build date stamped in by `build.rs` at compile time (UTC, `YYYY-MM-DD`).
 const BUILD_DATE: &str = env!("COPPER_BUILD_DATE");
@@ -432,6 +486,21 @@ async fn main() {
             let check = fmt_matches.get_flag("check");
             let to_stdout = fmt_matches.get_flag("stdout");
             std::process::exit(cforge::mui_fmt::format_command(&paths, check, to_stdout));
+        }
+        // `cforge vm run/build` (alias `virtual`) — Alloy interpreter, no toolchain.
+        Some(("vm", vm_matches)) => {
+            let (sub, sm) = match vm_matches.subcommand() {
+                Some(pair) => pair,
+                None => {
+                    eprintln!("uso: cforge vm <run|build> <arquivo.crs>");
+                    std::process::exit(1);
+                }
+            };
+            let file = sm
+                .get_one::<String>("input")
+                .map(String::as_str)
+                .unwrap_or("");
+            std::process::exit(run_vm(sub, file));
         }
         _ => {}
     }

@@ -20,6 +20,7 @@ path = "src/main.rs"
 [dependencies]
 copper-syntax = { path = "crates/copper-syntax" }
 copper-parser = { path = "crates/copper-parser" }
+alloy-vm = { path = "crates/alloy-vm" }
 mui-syntax = { path = "crates/mui-syntax" }
 mui-codegen = { path = "crates/mui-codegen" }
 clap = "4.6.1"
