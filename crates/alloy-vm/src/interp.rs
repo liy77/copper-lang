@@ -305,7 +305,10 @@ impl Interpreter {
             ExprKind::Index { base, index } => {
                 let b = self.eval_expr(base, env)?;
                 let i = self.eval_expr(index, env)?;
-                self.index_value(b, i, expr.span)
+                match i {
+                    Value::Str(k) => self.index_str(b, &k, expr.span),
+                    other => self.index_value(b, other, expr.span),
+                }
             }
             ExprKind::Member {
                 base,
@@ -426,6 +429,11 @@ impl Interpreter {
                             {
                                 return res;
                             }
+                            if let Some(res) =
+                                crate::stdlib_ext::dispatch(&module, &name, &arg_vals, expr.span)
+                            {
+                                return res;
+                            }
                         }
                         self.call_user(&name, arg_vals, expr.span)
                     }
@@ -492,6 +500,24 @@ impl Interpreter {
                 .ok_or_else(|| RuntimeError::new(format!("índice {idx} fora da tupla"), span)),
             other => Err(RuntimeError::new(
                 format!("não dá para indexar {}", other.type_name()),
+                span,
+            )),
+        }
+    }
+
+    /// `base[key]` por string — para objetos JSON (`Value::Struct`).
+    fn index_str(
+        &mut self,
+        base: Value,
+        key: &str,
+        span: copper_syntax::ast::Span,
+    ) -> Result<Value, RuntimeError> {
+        match base {
+            Value::Struct { fields, .. } => {
+                Ok(fields.borrow().get(key).cloned().unwrap_or(Value::Unit))
+            }
+            other => Err(RuntimeError::new(
+                format!("não dá para indexar {} por string", other.type_name()),
                 span,
             )),
         }
@@ -685,6 +711,24 @@ impl Interpreter {
                             }
                         }
                         return Ok(Value::Bool(true));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Métodos do `Response` do módulo http.
+        if let Value::Struct { name: ty, fields } = &recv {
+            if ty == "Response" {
+                let field = |k: &str| fields.borrow().get(k).cloned().unwrap_or(Value::Unit);
+                match name {
+                    "is_ok" => return Ok(field("ok")),
+                    "status" => return Ok(field("status")),
+                    "text" | "body" => return Ok(field("body")),
+                    "json" => {
+                        let body = field("body").to_string();
+                        let j: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+                        return Ok(crate::stdlib_ext::json_to_value(&j));
                     }
                     _ => {}
                 }
