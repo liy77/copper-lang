@@ -3,9 +3,20 @@
 use crate::env::Env;
 use crate::error::RuntimeError;
 use crate::value::Value;
-use copper_syntax::expr::{AssignOp, BinOp, Block, Expr, ExprKind, Literal, Stmt, StrPart, UnOp};
+use copper_syntax::expr::{
+    AssignOp, BinOp, Block, Expr, ExprKind, Literal, Pattern, Stmt, StrPart, UnOp,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// Resultado interno de executar uma sequência de statements.
+enum Outcome {
+    /// Continuou normal, com o valor de bloco acumulado.
+    Normal(Value),
+    Return(Value),
+    Break,
+    Continue,
+}
 
 #[derive(Default)]
 pub struct Interpreter;
@@ -99,21 +110,54 @@ impl Interpreter {
         block: &Block,
         env: &Rc<RefCell<Env>>,
     ) -> Result<Value, RuntimeError> {
-        let scope = Env::child(env);
-        for stmt in &block.stmts {
-            self.eval_stmt(stmt, &scope)?;
-        }
-        match &block.tail {
-            Some(e) => self.eval_expr(e, &scope),
-            None => Ok(Value::Unit),
+        match self.run_block(block, env)? {
+            Outcome::Normal(v) => Ok(v),
+            Outcome::Return(v) => Ok(v),
+            Outcome::Break | Outcome::Continue => Err(RuntimeError::new(
+                "break/continue fora de um loop",
+                block.span,
+            )),
         }
     }
 
-    pub fn eval_stmt(
+    fn run_block(
         &mut self,
-        stmt: &Stmt,
+        block: &Block,
         env: &Rc<RefCell<Env>>,
-    ) -> Result<Value, RuntimeError> {
+    ) -> Result<Outcome, RuntimeError> {
+        let scope = Env::child(env);
+        for stmt in &block.stmts {
+            match self.exec_stmt(stmt, &scope)? {
+                Outcome::Normal(_) => {}
+                other => return Ok(other),
+            }
+        }
+        match &block.tail {
+            Some(e) => Ok(Outcome::Normal(self.eval_expr(e, &scope)?)),
+            None => Ok(Outcome::Normal(Value::Unit)),
+        }
+    }
+
+    /// Como `run_block`, mas sem criar um escopo filho extra (o chamador já
+    /// criou um — usado pelo `for`, que injeta a variável de laço).
+    fn run_block_in(
+        &mut self,
+        block: &Block,
+        scope: &Rc<RefCell<Env>>,
+    ) -> Result<Outcome, RuntimeError> {
+        for stmt in &block.stmts {
+            match self.exec_stmt(stmt, scope)? {
+                Outcome::Normal(_) => {}
+                other => return Ok(other),
+            }
+        }
+        match &block.tail {
+            Some(e) => Ok(Outcome::Normal(self.eval_expr(e, scope)?)),
+            None => Ok(Outcome::Normal(Value::Unit)),
+        }
+    }
+
+    fn exec_stmt(&mut self, stmt: &Stmt, env: &Rc<RefCell<Env>>) -> Result<Outcome, RuntimeError> {
         match stmt {
             Stmt::Let { name, value, .. } => {
                 let v = match value {
@@ -121,9 +165,9 @@ impl Interpreter {
                     None => Value::Unit,
                 };
                 env.borrow_mut().define(name.clone(), v);
-                Ok(Value::Unit)
+                Ok(Outcome::Normal(Value::Unit))
             }
-            Stmt::Expr(e) => self.eval_expr(e, env),
+            Stmt::Expr(e) => Ok(Outcome::Normal(self.eval_expr(e, env)?)),
             Stmt::IncDec { target, inc, span } => {
                 let name = match &target.kind {
                     ExprKind::Ident(n) => n.clone(),
@@ -142,7 +186,129 @@ impl Interpreter {
                     }
                 };
                 env.borrow_mut().set(&name, next);
-                Ok(Value::Unit)
+                Ok(Outcome::Normal(Value::Unit))
+            }
+            Stmt::Return { value, .. } => {
+                let v = match value {
+                    Some(e) => self.eval_expr(e, env)?,
+                    None => Value::Unit,
+                };
+                Ok(Outcome::Return(v))
+            }
+            Stmt::Break { .. } => Ok(Outcome::Break),
+            Stmt::Continue { .. } => Ok(Outcome::Continue),
+            Stmt::If {
+                cond,
+                let_pattern,
+                then,
+                els,
+                span,
+            } => {
+                if let_pattern.is_some() {
+                    return Err(RuntimeError::new(
+                        "`if let` ainda não suportado pela VM",
+                        *span,
+                    ));
+                }
+                let c = self.eval_expr(cond, env)?;
+                match c.as_bool() {
+                    Some(true) => self.run_block(then, env),
+                    Some(false) => match els {
+                        Some(s) => self.exec_stmt(s, env),
+                        None => Ok(Outcome::Normal(Value::Unit)),
+                    },
+                    None => Err(RuntimeError::new("condição de `if` não é bool", cond.span)),
+                }
+            }
+            Stmt::While {
+                cond,
+                let_pattern,
+                body,
+                span,
+            } => {
+                if let_pattern.is_some() {
+                    return Err(RuntimeError::new(
+                        "`while let` ainda não suportado pela VM",
+                        *span,
+                    ));
+                }
+                loop {
+                    let c = self.eval_expr(cond, env)?;
+                    match c.as_bool() {
+                        Some(true) => match self.run_block(body, env)? {
+                            Outcome::Break => break,
+                            Outcome::Return(v) => return Ok(Outcome::Return(v)),
+                            _ => {}
+                        },
+                        Some(false) => break,
+                        None => {
+                            return Err(RuntimeError::new(
+                                "condição de `while` não é bool",
+                                cond.span,
+                            ))
+                        }
+                    }
+                }
+                Ok(Outcome::Normal(Value::Unit))
+            }
+            Stmt::Loop { body, .. } => {
+                loop {
+                    match self.run_block(body, env)? {
+                        Outcome::Break => break,
+                        Outcome::Return(v) => return Ok(Outcome::Return(v)),
+                        _ => {}
+                    }
+                }
+                Ok(Outcome::Normal(Value::Unit))
+            }
+            Stmt::For {
+                pattern,
+                iter,
+                body,
+                span,
+            } => {
+                let var = match pattern {
+                    Pattern::Ident(n) => n.clone(),
+                    _ => {
+                        return Err(RuntimeError::new(
+                            "padrão de `for` não suportado (só nome simples)",
+                            *span,
+                        ))
+                    }
+                };
+                let (start, end, inclusive) = match &iter.kind {
+                    ExprKind::Range {
+                        start,
+                        end,
+                        inclusive,
+                    } => {
+                        let s = self.eval_expr(start, env)?;
+                        let e = self.eval_expr(end, env)?;
+                        match (s, e) {
+                            (Value::Int(s), Value::Int(e)) => (s, e, *inclusive),
+                            _ => {
+                                return Err(RuntimeError::new(
+                                    "`for` só itera ranges de int no MVP",
+                                    *span,
+                                ))
+                            }
+                        }
+                    }
+                    _ => return Err(RuntimeError::new("`for` só itera ranges no MVP", iter.span)),
+                };
+                let last = if inclusive { end + 1 } else { end };
+                let mut i = start;
+                while i < last {
+                    let scope = Env::child(env);
+                    scope.borrow_mut().define(var.clone(), Value::Int(i));
+                    match self.run_block_in(body, &scope)? {
+                        Outcome::Break => break,
+                        Outcome::Return(v) => return Ok(Outcome::Return(v)),
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                Ok(Outcome::Normal(Value::Unit))
             }
             _ => Err(RuntimeError::new(
                 "statement ainda não suportado pela VM",
@@ -354,5 +520,31 @@ mod tests {
         assert_eq!(eval("1 < 2 ? 10 : 20"), Value::Int(10));
         // interpolação simples
         assert_eq!(eval("\"v=${1 + 1}\""), Value::Str("v=2".into()));
+    }
+
+    #[test]
+    fn while_loop_accumulates() {
+        let v = run_block("mut i = 0\nmut sum = 0\nwhile i < 5 { sum += i; i++ }\nsum");
+        assert_eq!(v, Value::Int(10)); // 0+1+2+3+4
+    }
+
+    #[test]
+    fn for_range_and_break() {
+        assert_eq!(
+            run_block("mut s = 0\nfor n in 1..4 { s += n }\ns"),
+            Value::Int(6)
+        ); // 1+2+3
+        assert_eq!(
+            run_block("mut s = 0\nfor n in 0..100 { if n == 3 { break }; s += n }\ns"),
+            Value::Int(3)
+        ); // 0+1+2
+    }
+
+    #[test]
+    fn if_else_branches() {
+        assert_eq!(
+            run_block("mut x = 0\nif 1 < 2 { x += 10 } else { x += 20 }\nx"),
+            Value::Int(10)
+        );
     }
 }
