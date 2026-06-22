@@ -25,6 +25,7 @@ pub fn dispatch(
         "time" => time(name, args, span),
         "url" => url(name, args, span),
         "net" => net(name, args, span),
+        "ws" => ws(name, args, span),
         _ => return None,
     };
     Some(r)
@@ -32,7 +33,7 @@ pub fn dispatch(
 
 /// Conjunto de módulos tratados por esta camada (para o registro de imports).
 pub fn handles(module: &str) -> bool {
-    matches!(module, "cstd" | "fs" | "time" | "url" | "net")
+    matches!(module, "cstd" | "fs" | "time" | "url" | "net" | "ws")
 }
 
 // --- helpers de extração de argumentos ------------------------------------
@@ -355,4 +356,92 @@ fn net(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
             span,
         )),
     }
+}
+
+// ===========================================================================
+// ws — cliente WebSocket mínimo (RFC 6455) sobre ws:// (TcpStream puro).
+// Degradação graciosa: sem servidor, `request` devolve "" e `send` devolve
+// false (em vez de erro), para o programa seguir rodando.
+// ===========================================================================
+
+fn ws(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
+    let url = arg_str(args, 0, span)?;
+    let msg = arg_str(args, 1, span)?;
+    match name {
+        "request" => Ok(Value::Str(
+            ws_exchange(&url, &msg, true).unwrap_or_default(),
+        )),
+        "send" => Ok(Value::Bool(ws_exchange(&url, &msg, false).is_some())),
+        _ => Err(RuntimeError::new(
+            format!("ws::{name} não implementado"),
+            span,
+        )),
+    }
+}
+
+/// Conecta, faz o handshake, envia um frame de texto e (se `want_reply`) lê a
+/// resposta. Retorna `Some(payload)` no sucesso, `None` em qualquer falha.
+fn ws_exchange(url: &str, msg: &str, want_reply: bool) -> Option<String> {
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let rest = url.strip_prefix("ws://")?;
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    let host = authority.split(':').next().unwrap_or(authority);
+
+    let mut stream = TcpStream::connect(authority).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .ok()?;
+
+    let handshake = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream.write_all(handshake.as_bytes()).ok()?;
+
+    let mut buf = [0u8; 1024];
+    let n = stream.read(&mut buf).ok()?;
+    if !String::from_utf8_lossy(&buf[..n]).contains("101") {
+        return None;
+    }
+
+    // Frame de texto mascarado (cliente DEVE mascarar).
+    let mask = [0x12u8, 0x34, 0x56, 0x78];
+    let payload = msg.as_bytes();
+    let mut frame = vec![0x81u8];
+    if payload.len() < 126 {
+        frame.push(0x80 | payload.len() as u8);
+    } else {
+        frame.push(0x80 | 126);
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    }
+    frame.extend_from_slice(&mask);
+    for (i, b) in payload.iter().enumerate() {
+        frame.push(b ^ mask[i % 4]);
+    }
+    stream.write_all(&frame).ok()?;
+
+    if !want_reply {
+        return Some(String::new());
+    }
+
+    let n = stream.read(&mut buf).ok()?;
+    if n < 2 {
+        return Some(String::new());
+    }
+    let len0 = (buf[1] & 0x7F) as usize;
+    let (len, off) = if len0 < 126 {
+        (len0, 2)
+    } else if len0 == 126 {
+        (u16::from_be_bytes([buf[2], buf[3]]) as usize, 4)
+    } else {
+        return Some(String::new());
+    };
+    let end = (off + len).min(n);
+    Some(String::from_utf8_lossy(&buf[off..end]).into_owned())
 }
