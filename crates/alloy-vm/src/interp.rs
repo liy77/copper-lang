@@ -81,7 +81,10 @@ impl Interpreter {
         span: copper_syntax::ast::Span,
     ) -> Result<Value, RuntimeError> {
         match (op, v) {
-            (UnOp::Neg, Value::Int(n)) => Ok(Value::Int(-n)),
+            (UnOp::Neg, Value::Int(n)) => n
+                .checked_neg()
+                .map(Value::Int)
+                .ok_or_else(|| RuntimeError::new("overflow em negação de inteiro", span)),
             (UnOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
             (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
             (op, v) => Err(RuntimeError::new(
@@ -101,12 +104,22 @@ impl Interpreter {
         use BinOp::*;
         use Value::*;
         match (op, l, r) {
-            (Add, Int(a), Int(b)) => Ok(Int(a + b)),
-            (Sub, Int(a), Int(b)) => Ok(Int(a - b)),
-            (Mul, Int(a), Int(b)) => Ok(Int(a * b)),
+            (Add, Int(a), Int(b)) => a
+                .checked_add(b)
+                .map(Int)
+                .ok_or_else(|| RuntimeError::new("overflow em soma de inteiros", span)),
+            (Sub, Int(a), Int(b)) => a
+                .checked_sub(b)
+                .map(Int)
+                .ok_or_else(|| RuntimeError::new("overflow em subtração de inteiros", span)),
+            (Mul, Int(a), Int(b)) => a
+                .checked_mul(b)
+                .map(Int)
+                .ok_or_else(|| RuntimeError::new("overflow em multiplicação de inteiros", span)),
             (Div, Int(a), Int(b)) if b != 0 => Ok(Int(a / b)),
             (Div, Int(_), Int(_)) => Err(RuntimeError::new("divisão por zero", span)),
             (Rem, Int(a), Int(b)) if b != 0 => Ok(Int(a % b)),
+            (Rem, Int(_), Int(_)) => Err(RuntimeError::new("resto por zero", span)),
             (Add, Float(a), Float(b)) => Ok(Float(a + b)),
             (Sub, Float(a), Float(b)) => Ok(Float(a - b)),
             (Mul, Float(a), Float(b)) => Ok(Float(a * b)),
@@ -159,6 +172,32 @@ mod tests {
         assert_eq!(eval("1 < 2"), Value::Bool(true));
         assert_eq!(eval("!false"), Value::Bool(true));
         assert_eq!(eval("true && false"), Value::Bool(false));
+    }
+
+    fn eval_err(src: &str) -> Result<Value, RuntimeError> {
+        let (expr, errs) = parse_expr(src);
+        assert!(errs.is_empty(), "parse errs: {errs:?}");
+        let expr = expr.expect("sem expr");
+        let env = Env::new();
+        Interpreter::new().eval_expr(&expr, &env)
+    }
+
+    #[test]
+    fn div_by_zero_is_err() {
+        assert!(eval_err("1 / 0").is_err(), "divisão por zero deve ser Err");
+    }
+
+    #[test]
+    fn rem_by_zero_is_err() {
+        assert!(eval_err("5 % 0").is_err(), "resto por zero deve ser Err");
+    }
+
+    #[test]
+    fn undefined_variable_is_err() {
+        assert!(
+            eval_err("naoexiste").is_err(),
+            "variável não definida deve ser Err"
+        );
     }
 
     #[test]
