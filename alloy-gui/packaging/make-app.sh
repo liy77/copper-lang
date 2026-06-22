@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Empacota o binário `alloy` num Alloy.app para macOS, com ícone (.icns) gerado
-# de assets/alloy-icon.png. O app é usável no Finder/Dock E por linha de comando
-# (Alloy.app/Contents/MacOS/alloy run x.crs).
+# Packages the `alloy` binary into an Alloy.app bundle for macOS, with an icon
+# (.icns) generated from assets/alloy-icon.png. The app works in Finder/Dock
+# AND on the command line (Alloy.app/Contents/MacOS/alloy run x.crs).
 #
-# Pré-requisitos: cargo build --release (gera o binário + libmocida.dylib),
-# `sips` e `iconutil` (vêm com o macOS).
+# Prerequisites: cargo build --release (produces the binary + libmocida.dylib),
+# `sips` and `iconutil` (both ship with macOS).
 #
-# Uso:  alloy-gui/packaging/make-app.sh
+# Usage:  alloy-gui/packaging/make-app.sh
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,26 +17,26 @@ icon_png="$gui_dir/assets/alloy-icon.png"
 
 bin="$target_dir/alloy"
 if [[ ! -x "$bin" ]]; then
-  echo "binário não encontrado em $bin — rode primeiro:" >&2
+  echo "binary not found at $bin — build it first:" >&2
   echo "  cargo build --release --manifest-path $gui_dir/Cargo.toml" >&2
   exit 1
 fi
 if [[ ! -f "$icon_png" ]]; then
-  echo "ícone ausente: $icon_png (salve o PNG com a caixa de app)" >&2
+  echo "icon missing: $icon_png (save the PNG with the app box)" >&2
   exit 1
 fi
 
-echo "==> montando $out"
+echo "==> assembling $out"
 rm -rf "$out"
 mkdir -p "$out/Contents/MacOS" "$out/Contents/Resources"
 
-# 1. Binário + dylib do mocida ao lado dele.
+# 1. Binary + mocida dylib beside it.
 cp "$bin" "$out/Contents/MacOS/alloy"
 for dylib in "$target_dir"/*.dylib; do
   [[ -f "$dylib" ]] && cp "$dylib" "$out/Contents/MacOS/"
 done
 
-# 2. Ícone: PNG -> .iconset -> .icns.
+# 2. Icon: PNG -> .iconset -> .icns.
 iconset="$(mktemp -d)/Alloy.iconset"
 mkdir -p "$iconset"
 for size in 16 32 64 128 256 512; do
@@ -45,7 +45,7 @@ for size in 16 32 64 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$out/Contents/Resources/Alloy.icns"
 
-# 3. Info.plist (GUI por padrão; CLI continua acessível pelo binário interno).
+# 3. Info.plist (GUI by default; CLI is still accessible via the inner binary).
 cat > "$out/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -63,6 +63,6 @@ cat > "$out/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> pronto: $out"
+echo "==> done: $out"
 echo "    GUI:  open $out"
-echo "    CLI:  $out/Contents/MacOS/alloy run arquivo.crs"
+echo "    CLI:  $out/Contents/MacOS/alloy run file.crs"

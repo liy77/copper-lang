@@ -1,15 +1,15 @@
-//! `cforge check` — verificação Rust real (type + borrow checker + UB via Miri)
-//! para um programa Copper, com o toolchain **auto-provisionado**: o usuário não
-//! instala nada manualmente; o nightly + componente `miri` ficam num rustup
-//! isolado em `~/.alloy/rustup`.
+//! `cforge check` — real Rust verification (type + borrow checker + UB via Miri)
+//! for a Copper program, with an **auto-provisioned** toolchain: the user installs
+//! nothing manually; nightly + the `miri` component live in an isolated rustup
+//! under `~/.alloy/rustup`.
 //!
-//! Assume que o programa já foi transpilado para `dist/rust/` (o chamador roda
-//! `cforge::compile` + `generate_toml` antes).
+//! Assumes the program has already been transpiled to `dist/rust/` (the caller
+//! runs `cforge::compile` + `generate_toml` first).
 
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Diretório do rustup isolado do Alloy (não mexe no rustup do usuário).
+/// Directory of Alloy's isolated rustup (does not touch the user's rustup).
 fn alloy_rustup_home() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
@@ -25,43 +25,43 @@ fn rustup_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Garante nightly + componente `miri` no rustup isolado. Idempotente: só baixa
-/// na primeira vez. Retorna o nome do toolchain a usar (`nightly`).
+/// Ensures nightly + `miri` component in the isolated rustup. Idempotent: only
+/// downloads on first run. Returns the toolchain name to use (`nightly`).
 pub fn ensure_miri() -> Result<String, String> {
     if !rustup_available() {
         return Err(
-            "o verificador usa o rustup (instalador padrão do Rust), que não está no PATH.\n\
-             Instale uma vez em https://rustup.rs e rode de novo."
+            "the checker uses rustup (the standard Rust installer), which is not in PATH.\n\
+             Install it once from https://rustup.rs and try again."
                 .into(),
         );
     }
     let home = alloy_rustup_home();
     let _ = std::fs::create_dir_all(&home);
 
-    // nightly (perfil mínimo) — idempotente.
-    eprintln!("cforge check: garantindo toolchain de verificação (nightly + miri)…");
+    // nightly (minimal profile) — idempotent.
+    eprintln!("cforge check: ensuring verification toolchain (nightly + miri)…");
     let r = Command::new("rustup")
         .env("RUSTUP_HOME", &home)
         .args(["toolchain", "install", "nightly", "--profile", "minimal"])
         .status()
-        .map_err(|e| format!("falha ao rodar rustup: {e}"))?;
+        .map_err(|e| format!("failed to run rustup: {e}"))?;
     if !r.success() {
-        return Err("não consegui instalar o toolchain nightly".into());
+        return Err("could not install the nightly toolchain".into());
     }
-    // componente miri.
+    // miri component.
     let r = Command::new("rustup")
         .env("RUSTUP_HOME", &home)
         .args(["component", "add", "miri", "--toolchain", "nightly"])
         .status()
-        .map_err(|e| format!("falha ao adicionar miri: {e}"))?;
+        .map_err(|e| format!("failed to add miri: {e}"))?;
     if !r.success() {
-        return Err("não consegui adicionar o componente miri".into());
+        return Err("could not add the miri component".into());
     }
     Ok("nightly".into())
 }
 
-/// Roda a verificação sobre o crate já transpilado em `dist/rust/`.
-/// `no_miri = true` faz só `cargo +nightly check` (type + borrow), sem interpretar.
+/// Runs verification on the already-transpiled crate in `dist/rust/`.
+/// `no_miri = true` runs only `cargo +nightly check` (type + borrow), without Miri.
 pub fn run_check(no_miri: bool) -> i32 {
     let toolchain = match ensure_miri() {
         Ok(t) => t,
@@ -85,12 +85,12 @@ pub fn run_check(no_miri: bool) -> i32 {
         .stderr(std::process::Stdio::inherit());
     match cmd.status() {
         Ok(s) if s.success() => {
-            eprintln!("cforge check: OK — passou no verificador do Rust");
+            eprintln!("cforge check: OK — passed the Rust verifier");
             0
         }
         Ok(s) => s.code().unwrap_or(1),
         Err(e) => {
-            eprintln!("cforge check: falha ao executar o verificador: {e}");
+            eprintln!("cforge check: failed to run the verifier: {e}");
             1
         }
     }

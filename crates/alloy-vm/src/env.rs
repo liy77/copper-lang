@@ -1,4 +1,4 @@
-//! Ambiente de variáveis: cadeia de escopos com pai compartilhado.
+//! Variable environment: a chain of scopes with a shared parent.
 
 use crate::value::Value;
 use std::cell::RefCell;
@@ -16,7 +16,7 @@ impl Env {
         Rc::new(RefCell::new(Env::default()))
     }
 
-    /// Cria um escopo filho que enxerga o pai.
+    /// Creates a child scope that can see the parent.
     pub fn child(parent: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
         Rc::new(RefCell::new(Env {
             vars: HashMap::new(),
@@ -38,8 +38,8 @@ impl Env {
         }
     }
 
-    /// Atualiza uma variável existente no escopo onde ela foi definida.
-    /// Retorna `false` se o nome não existe em nenhum escopo.
+    /// Updates an existing variable in the scope where it was defined.
+    /// Returns `false` if the name does not exist in any scope.
     pub fn set(&mut self, name: &str, value: Value) -> bool {
         if self.vars.contains_key(name) {
             self.vars.insert(name.to_string(), value);
@@ -62,12 +62,12 @@ mod tests {
         root.borrow_mut().define("x", Value::Int(1));
 
         let child = Env::child(&root);
-        // filho enxerga o pai
+        // child can see parent
         assert_eq!(child.borrow().get("x"), Some(Value::Int(1)));
-        // set atualiza no escopo de origem (o pai)
+        // set updates in the origin scope (the parent)
         assert!(child.borrow_mut().set("x", Value::Int(9)));
         assert_eq!(root.borrow().get("x"), Some(Value::Int(9)));
-        // set em nome inexistente falha
+        // set on a nonexistent name fails
         assert!(!child.borrow_mut().set("y", Value::Int(0)));
     }
 }

@@ -27,8 +27,14 @@ fn leading_dot_chain_joins_into_one_expression() {
     );
     // No stray statement separators inside the chain.
     // The chain lowers to one line; no broken per-call statements.
-    assert!(!rust.contains(".iter();"), "stray ; broke the chain: {rust}");
-    assert!(!rust.contains(".sum() -> "), "chain fused with next token: {rust}");
+    assert!(
+        !rust.contains(".iter();"),
+        "stray ; broke the chain: {rust}"
+    );
+    assert!(
+        !rust.contains(".sum() -> "),
+        "chain fused with next token: {rust}"
+    );
 }
 
 #[test]

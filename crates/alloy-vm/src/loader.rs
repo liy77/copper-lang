@@ -1,12 +1,12 @@
-//! Resolução de imports para o Alloy.
+//! Import resolution for Alloy.
 //!
-//! - `import { f } from cstd|http|fs|...` → stdlib nativa (resolvida em runtime).
-//! - `import { f } from mod` com um `mod.crs` irmão → o `.crs` é parseado e seus
-//!   itens são **fundidos** no programa (recursivo, com guarda de ciclo). É o que
-//!   permite projetos multi-arquivo rodarem instantâneo, sem rustc.
-//! - `import { f } from mod` com um `mod.rs` irmão → o interpretador **não roda
-//!   Rust**; sinaliza [`LoadOutcome::NeedsCforge`] para o chamador delegar ao
-//!   `cforge` (transpila + compila nativo).
+//! - `import { f } from cstd|http|fs|...` → native stdlib (resolved at runtime).
+//! - `import { f } from mod` with a sibling `mod.crs` → the `.crs` is parsed and
+//!   its items are **merged** into the program (recursive, with cycle guard). This
+//!   is what lets multi-file projects run instantly, without rustc.
+//! - `import { f } from mod` with a sibling `mod.rs` → the interpreter **does not
+//!   run Rust**; signals [`LoadOutcome::NeedsCforge`] so the caller delegates to
+//!   `cforge` (transpile + native compile).
 
 use crate::bytecode;
 use copper_syntax::program::{parse_program, Item, Program};
@@ -14,31 +14,31 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub enum LoadOutcome {
-    /// Programa pronto para interpretar (imports locais fundidos; stdlib nativa).
+    /// Program ready to interpret (local imports merged; native stdlib).
     Program(Program),
-    /// Há um import de `.rs` (módulo `name`, arquivo `path`): use o cforge.
+    /// There is a `.rs` import (module `name`, file `path`): use cforge.
     NeedsCforge { module: String, rs_path: PathBuf },
 }
 
-/// Um módulo é stdlib nativa (resolvida em runtime)?
+/// Is a module part of the native stdlib (resolved at runtime)?
 fn is_stdlib(module: &str) -> bool {
     crate::stdlib::handles(module) || crate::stdlib_ext::handles(module)
 }
 
-/// Carrega um arquivo para execução: bytecode `.loy` (já self-contained) ou
-/// fonte `.crs` com imports locais resolvidos.
+/// Loads a file for execution: `.loy` bytecode (already self-contained) or
+/// `.crs` source with local imports resolved.
 pub fn load_runnable(path: &Path) -> Result<LoadOutcome, String> {
     let bytes =
-        std::fs::read(path).map_err(|e| format!("não consegui ler {}: {e}", path.display()))?;
+        std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
     if bytecode::is_bytecode(&bytes) {
         return Ok(LoadOutcome::Program(bytecode::load(&bytes)?));
     }
-    let src = String::from_utf8(bytes).map_err(|_| "arquivo não é UTF-8 nem .loy".to_string())?;
+    let src = String::from_utf8(bytes).map_err(|_| "file is not UTF-8 or .loy".to_string())?;
     resolve_source(&src, path)
 }
 
-/// Parseia `src` (vindo de `path`) e funde recursivamente os imports `.crs`
-/// locais. Para no primeiro import de `.rs` encontrado.
+/// Parses `src` (from `path`) and recursively merges local `.crs` imports.
+/// Stops at the first `.rs` import found.
 pub fn resolve_source(src: &str, path: &Path) -> Result<LoadOutcome, String> {
     let prog = parse_program(src);
     if !prog.errors.is_empty() {
@@ -62,8 +62,8 @@ pub fn resolve_source(src: &str, path: &Path) -> Result<LoadOutcome, String> {
     }))
 }
 
-/// Acrescenta `items` em `out`, resolvendo imports locais. Retorna
-/// `Some(NeedsCforge)` se topar com um `.rs`.
+/// Appends `items` to `out`, resolving local imports. Returns
+/// `Some(NeedsCforge)` if it encounters a `.rs`.
 fn collect(
     items: Vec<Item>,
     base: &Path,
@@ -72,7 +72,7 @@ fn collect(
 ) -> Result<Option<LoadOutcome>, String> {
     for item in items {
         if let Item::Import { path: module, .. } = &item {
-            // imports de itens com módulo simples (não path/url, não "./x.rs")
+            // item imports with a simple module (not path/url, not "./x.rs")
             let module = module.trim_matches('"');
             if is_stdlib(module) {
                 out.push(item);
@@ -94,11 +94,11 @@ fn collect(
                     let canon = crs.canonicalize().unwrap_or(crs.clone());
                     if visited.insert(canon) {
                         let sub_src = std::fs::read_to_string(&crs)
-                            .map_err(|e| format!("não consegui ler {}: {e}", crs.display()))?;
+                            .map_err(|e| format!("could not read {}: {e}", crs.display()))?;
                         let sub = parse_program(&sub_src);
                         if !sub.errors.is_empty() {
                             return Err(format!(
-                                "erros em {}: {} erro(s) de sintaxe",
+                                "errors in {}: {} syntax error(s)",
                                 crs.display(),
                                 sub.errors.len()
                             ));
@@ -108,12 +108,12 @@ fn collect(
                             return Ok(Some(rs));
                         }
                     }
-                    // mantém o import (inofensivo; os itens já foram fundidos)
+                    // keep the import (harmless; the items were already merged)
                     out.push(item);
                     continue;
                 }
             }
-            // módulo desconhecido (ex.: caminho Rust em assinatura) — preserva.
+            // unknown module (e.g. Rust path in a signature) — preserve it.
             out.push(item);
         } else {
             out.push(item);
@@ -122,12 +122,12 @@ fn collect(
     Ok(None)
 }
 
-/// Resolve `<base>/<module>.<ext>`. Aceita `module` como nome simples ou caminho
-/// relativo (`./foo`, `foo/bar`), com ou sem a extensão já no nome.
+/// Resolves `<base>/<module>.<ext>`. Accepts `module` as a simple name or a
+/// relative path (`./foo`, `foo/bar`), with or without the extension already in the name.
 fn sibling(base: &Path, module: &str, ext: &str) -> Option<PathBuf> {
     let m = module.trim_start_matches("./");
     if m.is_empty() || m.contains("::") {
-        return None; // caminho Rust (std::num::…), não um arquivo local
+        return None; // Rust path (std::num::…), not a local file
     }
     let p = base.join(m);
     if p.extension().and_then(|e| e.to_str()) == Some(ext) {

@@ -28,30 +28,30 @@ fn main() -> ExitCode {
         Some("update") => match backend::check_update() {
             info if info.available => match backend::apply_update(&info.asset_url) {
                 Ok(()) => {
-                    println!("Alloy atualizado para {}", info.latest);
+                    println!("Alloy updated to {}", info.latest);
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("alloy: atualização falhou: {e}");
+                    eprintln!("alloy: update failed: {e}");
                     ExitCode::FAILURE
                 }
             },
             info => {
-                println!("Alloy {} já é a versão mais recente ({})", info.current, info.latest);
+                println!("Alloy {} is already the latest version ({})", info.current, info.latest);
                 ExitCode::SUCCESS
             }
         },
         Some("run") => match args.get(1) {
             Some(file) => cli_run(Path::new(file)),
             None => {
-                eprintln!("uso: alloy run <arquivo.crs>");
+                eprintln!("usage: alloy run <file.crs>");
                 ExitCode::FAILURE
             }
         },
         // Bare path: `alloy foo.crs`
         Some(path) if Path::new(path).exists() => cli_run(Path::new(path)),
         Some(other) => {
-            eprintln!("alloy: comando desconhecido `{other}` (use: run <arquivo> | update | gui)");
+            eprintln!("alloy: unknown command `{other}` (use: run <file> | update | gui)");
             ExitCode::FAILURE
         }
     }
@@ -66,7 +66,7 @@ fn cli_run(file: &Path) -> ExitCode {
     let src = match std::fs::read_to_string(file) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("alloy: não consegui ler {}: {e}", file.display());
+            eprintln!("alloy: could not read {}: {e}", file.display());
             return ExitCode::FAILURE;
         }
     };
@@ -74,7 +74,7 @@ fn cli_run(file: &Path) -> ExitCode {
     if !prog.errors.is_empty() {
         for err in &prog.errors {
             eprintln!(
-                "alloy: erro de sintaxe @ {}..{}: {}",
+                "alloy: syntax error @ {}..{}: {}",
                 err.span.start, err.span.end, err.message
             );
         }
@@ -84,7 +84,7 @@ fn cli_run(file: &Path) -> ExitCode {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!(
-                "alloy: erro de runtime @ {}..{}: {}",
+                "alloy: runtime error @ {}..{}: {}",
                 e.span.start, e.span.end, e.message
             );
             ExitCode::FAILURE
@@ -102,7 +102,7 @@ fn run_gui() -> ExitCode {
     match try_run_gui() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("alloy: falha ao abrir a GUI: {e}");
+            eprintln!("alloy: failed to open the GUI: {e}");
             ExitCode::FAILURE
         }
     }
@@ -118,7 +118,7 @@ fn try_run_gui() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Parse the .mui to extract the App{} config + entry view.
     let doc = mui_syntax::parse(MUI_SOURCE);
-    let view = mui_runtime::entry_view(&doc).ok_or("nenhuma view em alloy.mui")?;
+    let view = mui_runtime::entry_view(&doc).ok_or("no view found in alloy.mui")?;
     let view_name = view.name.clone();
     let cfg = mui_runtime::window_config(&doc, &view_name);
 
@@ -167,7 +167,7 @@ fn try_run_gui() -> Result<(), Box<dyn std::error::Error>> {
         mui_runtime::build_view_seeded(view, &components, &HashMap::new())?;
     reactive.set_str("version", &backend::current_version());
     reactive.set_str("output", "");
-    reactive.set_str("source", "func main() {\n    println(\"olá do Alloy\")\n}\n");
+    reactive.set_str("source", "func main() {\n    println(\"hello from Alloy\")\n}\n");
 
     let slot: Rc<RefCell<Option<Reactive>>> = Rc::new(RefCell::new(Some(reactive)));
     app.set_children(children);
@@ -211,11 +211,11 @@ fn try_run_gui() -> Result<(), Box<dyn std::error::Error>> {
                 let info = backend::check_update();
                 let msg = if info.available {
                     match backend::apply_update(&info.asset_url) {
-                        Ok(()) => format!("Atualizado para {} — reinicie o Alloy.", info.latest),
-                        Err(e) => format!("Atualização falhou: {e}"),
+                        Ok(()) => format!("Updated to {} — restart Alloy.", info.latest),
+                        Err(e) => format!("Update failed: {e}"),
                     }
                 } else {
-                    format!("Já está atualizado ({}).", info.latest)
+                    format!("Already up to date ({}).", info.latest)
                 };
                 r.set_str("update_status", &msg);
             }

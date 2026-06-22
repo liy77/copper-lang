@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Cross-compila e empacota o runtime `alloy` para várias plataformas.
+"""Cross-compiles and packages the `alloy` runtime for multiple platforms.
 
-O `alloy` vive no crate portátil `alloy-vm` (sem mocida; deps puro-Rust), então
-cross-compila limpo. Para cada alvo cujo toolchain está instalado, builda em
-release e empacota o binário em `dist/alloy/alloy-<versão>-<target>.{tar.gz|zip}`.
-Alvos sem toolchain são pulados com aviso (em vez de falhar) — útil localmente.
+`alloy` lives in the portable `alloy-vm` crate (no mocida; pure-Rust deps), so
+it cross-compiles cleanly. For each target whose toolchain is installed, builds
+in release mode and packages the binary into
+`dist/alloy/alloy-<version>-<target>.{tar.gz|zip}`.
+Targets without a toolchain are skipped with a warning (rather than failing) —
+useful for local runs.
 
-Uso:
-    python scripts/release-alloy.py            # todos os alvos disponíveis
-    python scripts/release-alloy.py --host     # só o alvo do host
+Usage:
+    python scripts/release-alloy.py            # all available targets
+    python scripts/release-alloy.py --host     # host target only
 """
 
 import argparse
@@ -70,7 +72,7 @@ def build_target(target: str) -> Path | None:
         cwd=ROOT,
     )
     if r.returncode != 0:
-        print(f"    !! build falhou para {target} (pulando)")
+        print(f"    !! build failed for {target} (skipping)")
         return None
     exe = "alloy.exe" if "windows" in target else "alloy"
     bin_path = ROOT / "target" / target / "release" / exe
@@ -100,7 +102,7 @@ def package(target: str, bin_path: Path, version: str):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", action="store_true", help="empacota só o alvo do host")
+    ap.add_argument("--host", action="store_true", help="package the host target only")
     args = ap.parse_args()
 
     version = alloy_version()
@@ -117,10 +119,10 @@ def main():
         targets = [t for t in TARGETS if t in avail]
         skipped = [t for t in TARGETS if t not in avail]
         for t in skipped:
-            print(f"    (pulado: {t} — toolchain não instalado; `rustup target add {t}`)")
+            print(f"    (skipped: {t} — toolchain not installed; `rustup target add {t}`)")
 
     if not targets:
-        print("Nenhum alvo disponível. Instale toolchains com `rustup target add <target>`.")
+        print("No targets available. Install toolchains with `rustup target add <target>`.")
         return 1
 
     built = 0
@@ -130,7 +132,7 @@ def main():
             package(t, bin_path, version)
             built += 1
 
-    print(f"\nPronto: {built}/{len(targets)} alvos empacotados em {DIST.relative_to(ROOT)}/")
+    print(f"\nDone: {built}/{len(targets)} targets packaged in {DIST.relative_to(ROOT)}/")
     return 0 if built else 1
 
 

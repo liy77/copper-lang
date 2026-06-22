@@ -162,14 +162,14 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
                 .about("Parse + validate a .crs through Alloy without running it")
                 .arg(Arg::new("input").value_name("FILE").required(true).index(1)))
         )
-        // `cforge check <file.crs>` — verificação Rust real (borrow + Miri),
-        // com toolchain auto-provisionado (~/.alloy/rustup).
+        // `cforge check <file.crs>` — real Rust verification (borrow + Miri),
+        // with auto-provisioned toolchain (~/.alloy/rustup).
         .subcommand(ClapCommand::new("check")
-            .about("Verifica um .crs com o Rust real (borrow checker + Miri), provisionando o toolchain automaticamente")
+            .about("Check a .crs with real Rust (borrow checker + Miri), provisioning the toolchain automatically")
             .arg(Arg::new("input").value_name("FILE").required(true).index(1))
             .arg(Arg::new("no-miri").long("no-miri")
                 .action(clap::ArgAction::SetTrue)
-                .help("Só type + borrow check (cargo check), sem interpretar com Miri"))
+                .help("Type + borrow check only (cargo check), without running Miri"))
         )
 });
 
@@ -184,7 +184,7 @@ fn run_vm(sub: &str, file: &str) -> i32 {
         let src = match std::fs::read_to_string(file) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("cforge vm: não consegui ler {file}: {e}");
+                eprintln!("cforge vm: could not read {file}: {e}");
                 return 1;
             }
         };
@@ -194,19 +194,19 @@ fn run_vm(sub: &str, file: &str) -> i32 {
                 let bytes = alloy_vm::bytecode::compile(&prog.items);
                 match std::fs::write(&out, bytes) {
                     Ok(()) => {
-                        println!("compilado: {}", out.display());
+                        println!("compiled: {}", out.display());
                         0
                     }
                     Err(e) => {
-                        eprintln!("cforge vm: não consegui gravar {}: {e}", out.display());
+                        eprintln!("cforge vm: could not write {}: {e}", out.display());
                         1
                     }
                 }
             }
             Ok(LoadOutcome::NeedsCforge { module, .. }) => {
                 eprintln!(
-                    "cforge vm build: `{module}` é Rust (.rs) — o `.loy` não embute Rust. \
-                     Compile nativo com: cforge build {file}"
+                    "cforge vm build: `{module}` is Rust (.rs) — `.loy` does not embed Rust. \
+                     Compile natively with: cforge build {file}"
                 );
                 1
             }
@@ -222,19 +222,19 @@ fn run_vm(sub: &str, file: &str) -> i32 {
                     Ok(_) => 0,
                     Err(e) => {
                         eprintln!(
-                            "cforge vm: erro de runtime @ {}..{}: {}",
+                            "cforge vm: runtime error @ {}..{}: {}",
                             e.span.start, e.span.end, e.message
                         );
                         1
                     }
                 }
             }
-            // Importou Rust: o caminho do interpretador não roda `.rs`;
-            // use o transpile nativo do próprio cforge.
+            // Imported Rust: the interpreter path does not run `.rs`;
+            // use cforge's own native transpile.
             Ok(LoadOutcome::NeedsCforge { module, .. }) => {
                 eprintln!(
-                    "cforge vm: `{module}` é Rust (.rs) — o interpretador não roda Rust. \
-                     Rode com o transpile nativo: cforge run {file}"
+                    "cforge vm: `{module}` is Rust (.rs) — the interpreter does not run Rust. \
+                     Run with the native transpile: cforge run {file}"
                 );
                 1
             }
@@ -534,7 +534,7 @@ async fn main() {
             let (sub, sm) = match vm_matches.subcommand() {
                 Some(pair) => pair,
                 None => {
-                    eprintln!("uso: cforge vm <run|build> <arquivo.crs>");
+                    eprintln!("usage: cforge vm <run|build> <file.crs>");
                     std::process::exit(1);
                 }
             };
@@ -571,14 +571,14 @@ async fn main() {
         );
     }
 
-    // `cforge check <file.crs>` — transpila e roda o verificador do Rust
-    // (borrow + Miri), com toolchain auto-provisionado. Precisa de cargo (já
-    // checado acima), por isso vem após as checagens de toolchain.
+    // `cforge check <file.crs>` — transpiles and runs the Rust verifier
+    // (borrow + Miri), with auto-provisioned toolchain. Requires cargo (already
+    // checked above), so it comes after the toolchain checks.
     if let Some(("check", cm)) = BASE_CMD.clone().get_matches().subcommand() {
         let file = cm.get_one::<String>("input").cloned().unwrap_or_default();
         let no_miri = cm.get_flag("no-miri");
         if !path::Path::new(&file).is_file() {
-            eprintln!("cforge check: arquivo não encontrado: {file}");
+            eprintln!("cforge check: file not found: {file}");
             std::process::exit(1);
         }
         let deps = cforge::compile(vec![file], None, Some("./dist".to_string()));

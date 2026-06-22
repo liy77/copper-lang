@@ -69,9 +69,7 @@ fn top_level_only_emits_single_main() {
 
 #[test]
 fn both_top_level_and_user_main_is_a_compile_error() {
-    let rust = transpile(
-        "mut y = 5\nprintln!(\"top {}\", y)\nfunc int main() {\n  return 0\n}\n",
-    );
+    let rust = transpile("mut y = 5\nprintln!(\"top {}\", y)\nfunc int main() {\n  return 0\n}\n");
     assert!(
         rust.contains("compile_error!"),
         "ambiguous top-level + main should emit compile_error!: {rust}"
