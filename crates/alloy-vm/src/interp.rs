@@ -39,6 +39,8 @@ pub struct Interpreter {
     /// tipo -> (nome do método/função associada -> def). Métodos têm `self`
     /// como primeiro parâmetro; funções associadas (ex.: `Rect::new`) não.
     methods: HashMap<String, HashMap<String, FuncDef>>,
+    /// símbolo importado -> módulo de origem (ex.: "input" -> "cstd").
+    imports: HashMap<String, String>,
     globals: Option<Rc<RefCell<Env>>>,
     out: Sink,
 }
@@ -142,6 +144,14 @@ impl Interpreter {
                 }
                 Item::Struct { name, .. } => {
                     self.methods.entry(name.clone()).or_default();
+                }
+                Item::Import { kind, path, .. } => {
+                    use copper_syntax::program::ImportKind;
+                    if let ImportKind::Items(names) = kind {
+                        for n in names {
+                            self.imports.insert(n.clone(), path.clone());
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -402,6 +412,14 @@ impl Interpreter {
                     )),
                     ExprKind::Ident(name) => {
                         let name = name.clone();
+                        // Função de stdlib importada?
+                        if let Some(module) = self.imports.get(&name).cloned() {
+                            if let Some(res) =
+                                crate::stdlib::dispatch(&module, &name, &arg_vals, expr.span)
+                            {
+                                return res;
+                            }
+                        }
                         self.call_user(&name, arg_vals, expr.span)
                     }
                     // Chamada de método: `recv.metodo(args)`.
