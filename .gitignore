@@ -34,3 +34,7 @@ __pycache__/
 
 # lson submodule build output (lson-src/ has its own .gitignore, but be explicit)
 lson-src/target/
+
+# stray download/test artifacts
+example.html
+*.loy
