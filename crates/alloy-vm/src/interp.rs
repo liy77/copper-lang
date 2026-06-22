@@ -6,7 +6,9 @@ use crate::value::Value;
 use copper_syntax::expr::{
     AssignOp, BinOp, Block, Expr, ExprKind, Literal, Pattern, Stmt, StrPart, UnOp,
 };
+use copper_syntax::program::{Item, Program};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 /// Resultado interno de executar uma sequência de statements.
@@ -18,12 +20,93 @@ enum Outcome {
     Continue,
 }
 
+#[derive(Clone)]
+struct FuncDef {
+    params: Vec<String>,
+    body: Block,
+}
+
 #[derive(Default)]
-pub struct Interpreter;
+pub struct Interpreter {
+    funcs: HashMap<String, FuncDef>,
+    globals: Option<Rc<RefCell<Env>>>,
+}
 
 impl Interpreter {
     pub fn new() -> Self {
-        Interpreter
+        Self::default()
+    }
+
+    pub fn load_program(&mut self, prog: &Program) {
+        for item in &prog.items {
+            if let Item::Function {
+                name, params, body, ..
+            } = item
+            {
+                self.funcs.insert(
+                    name.clone(),
+                    FuncDef {
+                        params: params.iter().map(|p| p.name.clone()).collect(),
+                        body: body.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    pub fn run_program(&mut self, prog: &Program) -> Result<Value, RuntimeError> {
+        self.load_program(prog);
+        let globals = Env::new();
+        self.globals = Some(Rc::clone(&globals));
+        let mut last = Value::Unit;
+        for item in &prog.items {
+            if let Item::Stmt(stmt) = item {
+                match self.exec_stmt(stmt, &globals)? {
+                    Outcome::Return(v) => return Ok(v),
+                    Outcome::Normal(v) => last = v,
+                    _ => {}
+                }
+            }
+        }
+        if self.funcs.contains_key("main") {
+            return self.call_user("main", vec![], copper_syntax::ast::Span::default());
+        }
+        Ok(last)
+    }
+
+    fn call_user(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        span: copper_syntax::ast::Span,
+    ) -> Result<Value, RuntimeError> {
+        let def = self
+            .funcs
+            .get(name)
+            .cloned()
+            .ok_or_else(|| RuntimeError::new(format!("função `{name}` não definida"), span))?;
+        if def.params.len() != args.len() {
+            return Err(RuntimeError::new(
+                format!(
+                    "`{name}` espera {} args, recebeu {}",
+                    def.params.len(),
+                    args.len()
+                ),
+                span,
+            ));
+        }
+        let base = self.globals.clone().unwrap_or_default();
+        let scope = Env::child(&base);
+        for (p, a) in def.params.iter().zip(args) {
+            scope.borrow_mut().define(p.clone(), a);
+        }
+        match self.run_block_in(&def.body, &scope)? {
+            Outcome::Return(v) => Ok(v),
+            Outcome::Normal(v) => Ok(v),
+            Outcome::Break | Outcome::Continue => {
+                Err(RuntimeError::new("break/continue fora de loop", span))
+            }
+        }
     }
 
     pub fn eval_expr(
@@ -97,6 +180,35 @@ impl Interpreter {
                     ));
                 }
                 Ok(Value::Unit)
+            }
+            ExprKind::Call { callee, args, .. } => {
+                let arg_vals: Vec<Value> = args
+                    .iter()
+                    .map(|a| self.eval_expr(a, env))
+                    .collect::<Result<_, _>>()?;
+                match &callee.kind {
+                    ExprKind::Ident(name) if name == "println" || name == "print" => {
+                        let line = arg_vals
+                            .iter()
+                            .map(|v| v.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        if name == "println" {
+                            println!("{line}");
+                        } else {
+                            print!("{line}");
+                        }
+                        Ok(Value::Unit)
+                    }
+                    ExprKind::Ident(name) => {
+                        let name = name.clone();
+                        self.call_user(&name, arg_vals, expr.span)
+                    }
+                    _ => Err(RuntimeError::new(
+                        "alvo de chamada não suportado",
+                        callee.span,
+                    )),
+                }
             }
             _ => Err(RuntimeError::new(
                 "construção ainda não suportada pela VM",
@@ -498,6 +610,27 @@ mod tests {
     }
 
     use copper_syntax::expr::parse_stmts;
+    use copper_syntax::program::parse_program;
+
+    fn run_prog(src: &str) -> Value {
+        let prog = parse_program(src);
+        assert!(prog.errors.is_empty(), "prog errs: {:?}", prog.errors);
+        Interpreter::new()
+            .run_program(&prog)
+            .expect("erro de runtime")
+    }
+
+    #[test]
+    fn user_function_with_return() {
+        let v = run_prog("func int add(a: int, b: int) { return a + b }\nmut r = add(2, 3)\nr");
+        assert_eq!(v, Value::Int(5));
+    }
+
+    #[test]
+    fn recursion_factorial() {
+        let src = "func int fac(n: int) { if n <= 1 { return 1 }; return n * fac(n - 1) }\nfac(5)";
+        assert_eq!(run_prog(src), Value::Int(120));
+    }
 
     fn run_block(src: &str) -> Value {
         let (block, errs) = parse_stmts(src);
