@@ -24,19 +24,16 @@ a forma concreta de "Alloy continua compatível com Rust".
 ## Arquitetura
 
 ```
-                         crates/copper-syntax   (AST — a completar)
+                 crates/copper-syntax::program  (Program AST — JÁ EXISTE)
                                    │
                   ┌────────────────┴────────────────┐
                   ▼                                  ▼
-        crates/alloy-compiler                 crates/copper-parser
-        (AST → bytecode Alloy)                (AST/tokens → Rust source)  ← já existe
+        crates/alloy-vm                       crates/copper-parser
+        (interpretador tree-walking)          (AST/tokens → Rust source)  ← já existe
                   │                                  │
                   ▼                                  ▼
-        crates/alloy-vm                          cargo build
-        (interpretador + runtime)              (binário nativo, release)
-                  │
-                  ▼
-        bin: alloy   (run / build / repl / check)
+        bin: alloy                               cargo build
+        (run / build / repl / check)           (binário nativo, release)
 ```
 
 **Princípios**
@@ -51,38 +48,46 @@ a forma concreta de "Alloy continua compatível com Rust".
 
 ## Componentes
 
-### 1. `copper-syntax` (estender)
+### 1. `copper-syntax` (JÁ EXISTE — fundação pronta)
 
-A AST hoje é Phase 1 (corpos de função capturados por *span*, não em árvore).
-Precisa virar árvore completa:
+**Atualização (2026-06-22):** a AST completa **já está implementada** no repo,
+não precisa ser construída:
 
-- `Expr`: literais, binário/unário, chamadas, index, closures, match,
-  interpolação de string, `?` (try), `?.` (optional chain), ternário.
-- `Stmt`: `let`/`mut`, atribuição, loops (`loop`/`while`/`for`), `if`/`else`,
-  `return`/`break`/`continue`, expr-stmt.
-- Itens: `struct`/`enum`/`impl`/`trait`/`func` com genéricos.
+- `crates/copper-syntax/src/expr.rs` — AST tipada completa (`Expr`/`ExprKind`,
+  `Stmt`, `Pattern`, `Block`, `Type`) + Pratt parser (`parse_expr`,
+  `parse_stmts`, `parse_stmts_tokens`). Cobre literais, member, call (turbofish),
+  path, index, cast, try, unary/binary, ternário, assign, range, array, closure,
+  struct-lit, `if`/`match` como expressão, block. Fallback `ExprKind::Raw` para
+  o que o subset ainda não forma.
+- `crates/copper-syntax/src/program.rs` — `parse_program(source) -> Program`,
+  AST de programa inteiro: `Item` (func/struct/class/impl/trait/enum/import/stmt)
+  com **corpos `Block` totalmente parseados** (reusa o Pratt parser de `expr`).
+  Descrita no próprio arquivo como "the faithful program AST a backend
+  (Cranelift, or a re-emitter) can walk".
+- `crates/copper-syntax/src/ast.rs` — árvore span-based nível-item (corpos =
+  span), usada pelo LSP; permanece como está.
 
-Mantém-se **recuperável** (já é) para o LSP renderizar diagnósticos sobre árvore
-parcial. Completar a AST é o **pré-requisito de todo o resto** e beneficia
-também o transpiler e o LSP.
+Logo o primeiro trabalho de Alloy **não** é AST, é o backend. Gaps residuais
+(casos que ainda caem em `Raw`, genéricos em itens) são tratados sob demanda
+conforme a VM os exercita, não como uma fase prévia.
 
-### 2. `alloy-compiler` (AST → bytecode)
+### 2. `alloy-vm` (runtime — interpretador tree-walking primeiro)
 
-- Lowering da AST para **bytecode de pilha** (stack-based — simples de
-  implementar e depurar).
-- Resolução de nomes/escopos, layout de structs/enums, tabela de funções.
-- **Tipagem leve estilo-Rust**: o suficiente para que divergência com o `rustc`
-  seja rara. Não é um borrow-checker estático completo. Casos ambíguos → erro
-  pedindo anotação, como o Rust faz.
+Decisão de implementação: começar como **interpretador tree-walking** que
+executa o `Program` de `program.rs` diretamente — caminho mais curto até
+`alloy run` funcional, reaproveita 100% da AST e é trivial de depurar.
+Bytecode de pilha e/ou JIT Cranelift são **otimizações posteriores** (a AST já
+suporta Cranelift), cada uma em seu próprio plano.
 
-### 3. `alloy-vm` (runtime)
-
-- Loop de execução do bytecode: pilha de valores + frames de chamada.
+- Loop de avaliação por nó da AST: ambiente de escopos encadeados + frames de
+  chamada.
 - Modelo de valores: `Int`/`Float`/`Bool`/`Str`/`Vec`/`Map`/`Struct`/`Enum`/
-  `Closure`/`Ref`.
+  `Closure`/`Unit`.
 - **Memória:** ownership/move/borrow **simulados em runtime** (não estáticos).
   Move invalida a origem; borrows checados dinamicamente. Mantém a semântica
   Rust *observável* sem reimplementar o borrow-checker.
+- Checagem leve de nomes/tipos sob demanda; casos ambíguos → erro pedindo
+  anotação, como o Rust faz.
 - **Interop Rust** (ver abaixo).
 
 ### 4. Interop com Rust
@@ -135,14 +140,18 @@ compara stdout/exit. Divergência = falha de CI.
 ## Fases internas
 
 Entrega "tudo no fim" (paridade ampla), mas estruturada para nunca ficar com um
-sistema meio-quebrado sem nada rodando:
+sistema meio-quebrado sem nada rodando. Cada fase é um plano de implementação
+próprio.
 
-1. **AST completa** (`Expr`/`Stmt`/itens) — pré-requisito de tudo.
-2. **VM núcleo:** expr, vars, funcs, controle de fluxo. → primeiro `alloy run`.
-3. **Tipos compostos:** struct/enum/impl/match/closures.
-4. **Genéricos + traits.**
+1. ~~**AST completa**~~ — **JÁ EXISTE** (`expr.rs` + `program.rs`). Pulada.
+2. **VM núcleo (tree-walking):** avaliação de expr, vars, funcs, controle de
+   fluxo, `println`. Crate `alloy-vm` + binário `alloy` com `run`. → primeiro
+   `alloy run`. **(primeiro plano de implementação)**
+3. **Tipos compostos:** struct/class/enum/impl/match/closures na VM.
+4. **Genéricos + traits** na VM (e fechar gaps de `Raw` na AST sob demanda).
 5. **Interop:** stdlib registrada + shim C-ABI cacheado sob demanda.
-6. **`alloy build`** self-contained + harness de paridade no CI.
+6. **`alloy build`** self-contained + `repl` + harness de paridade no CI.
+7. **(futuro, opcional)** backend bytecode e/ou JIT Cranelift como otimização.
 
 ## Riscos
 
