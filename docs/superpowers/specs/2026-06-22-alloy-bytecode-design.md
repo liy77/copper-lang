@@ -1,4 +1,4 @@
-# Alloy `.alloybc` — artefato portátil + runtime cross-platform (modelo "JVM")
+# Alloy `.loy` — artefato portátil + runtime cross-platform (modelo "JVM")
 
 **Data:** 2026-06-22
 **Status:** Design aprovado (pré-implementação)
@@ -8,7 +8,7 @@
 
 Tornar o Alloy "write once, run anywhere" como Java/JVM, em duas peças:
 
-- **A — artefato portátil (`.alloybc`):** compila um `.crs` **uma vez** num arquivo
+- **A — artefato portátil (`.loy`):** compila um `.crs` **uma vez** num arquivo
   binário independente de plataforma, que roda em qualquer `alloy` de qualquer
   SO, sem reenviar o fonte e sem recompilar (equivale ao `.jar`).
 - **C — runtime distribuído:** o binário `alloy` cross-compilado e empacotado
@@ -18,7 +18,7 @@ O "mesmo código roda igual em todo lugar" já vale hoje no nível de fonte (o
 interpretador normaliza o comportamento). Este trabalho adiciona o artefato
 compilado e garante o runtime em todas as plataformas.
 
-## A — Formato `.alloybc` (AST serializada)
+## A — Formato `.loy` (AST serializada)
 
 Decisão: o artefato é a **AST (`Program`) serializada**, não um bytecode de
 pilha. Reaproveita 100% o interpretador tree-walking; a fronteira natural de
@@ -50,7 +50,7 @@ offset 8:  fmt_ver    : u16 LE        (versão do formato; muda se a AST mudar)
 pub const MAGIC: &[u8; 8] = b"ALLOYBC\0";
 pub const FMT_VERSION: u16 = 1;
 
-/// Serializa um Program em bytes `.alloybc` (header + bincode dos itens).
+/// Serializa um Program em bytes `.loy` (header + bincode dos itens).
 pub fn compile(items: &[Item]) -> Vec<u8>;
 
 /// `true` se os bytes começam com o magic do formato.
@@ -65,22 +65,22 @@ pub fn load(bytes: &[u8]) -> Result<Vec<Item>, String>;
 
 ### Comandos
 
-- **`alloy build app.crs [-o app.alloybc]`** — parseia; em sucesso grava o
-  `.alloybc` (saída default: mesmo stem + `.alloybc`). Erros de sintaxe →
+- **`alloy build app.crs [-o app.loy]`** — parseia; em sucesso grava o
+  `.loy` (saída default: mesmo stem + `.loy`). Erros de sintaxe →
   stderr + exit 1. Nada é executado.
 - **`alloy run <arquivo>`** — lê os bytes; se `is_bytecode` → `load` + interpreta;
-  senão trata como fonte `.crs`. Logo `alloy run app.alloybc` roda em qualquer SO.
-- **`cforge vm build app.crs`** — passa a **emitir `.alloybc`** (antes só
+  senão trata como fonte `.crs`. Logo `alloy run app.loy` roda em qualquer SO.
+- **`cforge vm build app.crs`** — passa a **emitir `.loy`** (antes só
   validava), e **`cforge vm run`** também detecta o formato. Mantém os aliases
   (`virtual`).
-- **Erros de artefato:** magic inválido/arquivo truncado → "arquivo .alloybc
+- **Erros de artefato:** magic inválido/arquivo truncado → "arquivo .loy
   inválido"; `fmt_ver` diferente de `FMT_VERSION` → "artefato gerado por outra
   versão do Alloy (formato vX, runtime espera vY)". Ambos exit 1, sem panic.
 
 ### Self-contained
 
 A stdlib (`cstd`/`fs`/`http`/`json`/…) é resolvida **nativamente em runtime**
-pelo interpretador, então o `.alloybc` não embute o fonte dela — basta o
+pelo interpretador, então o `.loy` não embute o fonte dela — basta o
 runtime `alloy`. Projetos **multi-arquivo** com `import` local de `.crs`/`.rs`
 ficam fora de escopo aqui (os exemplos são single-file); evolução futura:
 bundlar múltiplos `Program` no artefato.
@@ -105,7 +105,7 @@ então cross-compila limpo.
 ## Testes
 
 - **Round-trip (CI):** para cada `examples/copper/*.crs`,
-  `alloy build` → `.alloybc` → `alloy run app.alloybc` produz **a mesma saída**
+  `alloy build` → `.loy` → `alloy run app.loy` produz **a mesma saída**
   que `alloy run app.crs`. (Harness compara stdout/exit.)
 - **Unit:** `compile`/`load` round-trip de um `Program` em memória; `is_bytecode`
   positivo/negativo.
@@ -116,5 +116,5 @@ então cross-compila limpo.
 
 ## Fora de escopo
 - Bytecode de pilha / JIT (evolução futura).
-- Projetos multi-arquivo num único `.alloybc`.
+- Projetos multi-arquivo num único `.loy`.
 - Assinatura/compressão do artefato.
