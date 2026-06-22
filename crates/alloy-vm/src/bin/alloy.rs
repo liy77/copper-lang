@@ -1,6 +1,6 @@
 //! CLI do Alloy: interpretador tree-walking de Copper.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use alloy_vm::interp::Interpreter;
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(file: &PathBuf) -> ExitCode {
+fn run(file: &Path) -> ExitCode {
     let src = match std::fs::read_to_string(file) {
         Ok(s) => s,
         Err(e) => {
