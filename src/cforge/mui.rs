@@ -862,7 +862,11 @@ fn mocida_runtime_lib_dir(workspace: &Path) -> Option<PathBuf> {
     let stage = mocida_c.join("release").join("stage").join("lib");
     let build = mocida_c.join("build");
     let stage_newer = newer_libmocida(&stage, &build);
-    let dir = if stage_newer == Some(true) { stage } else { build };
+    let dir = if stage_newer == Some(true) {
+        stage
+    } else {
+        build
+    };
     if dir.join(mocida_lib_filename()).is_file() {
         Some(dir)
     } else {

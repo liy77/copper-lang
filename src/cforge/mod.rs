@@ -217,8 +217,7 @@ fn find_mocida_lib_dir(build_root: &path::Path) -> Option<path::PathBuf> {
                 Some((_, prev_t, prev_dylib)) => {
                     // Always prefer dylib over .a (even if older); within
                     // the same lib kind, the most recent build wins.
-                    is_dylib && !*prev_dylib
-                        || (is_dylib == *prev_dylib && mtime > *prev_t)
+                    is_dylib && !*prev_dylib || (is_dylib == *prev_dylib && mtime > *prev_t)
                 }
                 None => true,
             };
@@ -423,7 +422,10 @@ pub fn compile(
         // project path-depends on `copper_<name>` instead of inlining the
         // module's code. The dep spec `copper_<name>=path:<rel>` is honoured by
         // generate_toml.
-        let rust_root = format!("{}/rust", output_dir.clone().unwrap_or("./dist".to_string()));
+        let rust_root = format!(
+            "{}/rust",
+            output_dir.clone().unwrap_or("./dist".to_string())
+        );
         for (name, lib_src) in parser.std_lib_crates() {
             let rel = format!("__copper__/std/{name}");
             let crate_dir = format!("{rust_root}/{rel}");
