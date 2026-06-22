@@ -162,6 +162,15 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
                 .about("Parse + validate a .crs through Alloy without running it")
                 .arg(Arg::new("input").value_name("FILE").required(true).index(1)))
         )
+        // `cforge check <file.crs>` — verificação Rust real (borrow + Miri),
+        // com toolchain auto-provisionado (~/.alloy/rustup).
+        .subcommand(ClapCommand::new("check")
+            .about("Verifica um .crs com o Rust real (borrow checker + Miri), provisionando o toolchain automaticamente")
+            .arg(Arg::new("input").value_name("FILE").required(true).index(1))
+            .arg(Arg::new("no-miri").long("no-miri")
+                .action(clap::ArgAction::SetTrue)
+                .help("Só type + borrow check (cargo check), sem interpretar com Miri"))
+        )
 });
 
 /// `cforge vm run/build <file>` — drive the Alloy interpreter. Returns the
@@ -560,6 +569,21 @@ async fn main() {
                 .to_str()
                 .unwrap(),
         );
+    }
+
+    // `cforge check <file.crs>` — transpila e roda o verificador do Rust
+    // (borrow + Miri), com toolchain auto-provisionado. Precisa de cargo (já
+    // checado acima), por isso vem após as checagens de toolchain.
+    if let Some(("check", cm)) = BASE_CMD.clone().get_matches().subcommand() {
+        let file = cm.get_one::<String>("input").cloned().unwrap_or_default();
+        let no_miri = cm.get_flag("no-miri");
+        if !path::Path::new(&file).is_file() {
+            eprintln!("cforge check: arquivo não encontrado: {file}");
+            std::process::exit(1);
+        }
+        let deps = cforge::compile(vec![file], None, Some("./dist".to_string()));
+        cforge::generate_toml(deps).await;
+        std::process::exit(cforge::check::run_check(no_miri));
     }
 
     let commands = parse_commands();

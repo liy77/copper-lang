@@ -32,13 +32,42 @@ enum Cmd {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Verifica um `.crs` com o Rust real (borrow + Miri) — delega ao cforge,
+    /// que provisiona o toolchain automaticamente.
+    Check {
+        file: PathBuf,
+        /// Só type + borrow check, sem interpretar com Miri.
+        #[arg(long = "no-miri")]
+        no_miri: bool,
+    },
 }
 
 fn main() -> ExitCode {
     match Cli::parse().cmd {
         Cmd::Run { file } => run(&file),
         Cmd::Build { file, output } => build(&file, output.as_deref()),
+        Cmd::Check { file, no_miri } => check(&file, no_miri),
     }
+}
+
+/// `alloy check` delega ao `cforge check` (que transpila + roda o verificador
+/// do Rust com toolchain auto-provisionado).
+fn check(file: &Path, no_miri: bool) -> ExitCode {
+    for cf in cforge_candidates() {
+        let mut cmd = Command::new(&cf);
+        cmd.arg("check").arg(file);
+        if no_miri {
+            cmd.arg("--no-miri");
+        }
+        if let Ok(status) = cmd.status() {
+            return ExitCode::from(status.code().unwrap_or(1) as u8);
+        }
+    }
+    eprintln!(
+        "alloy: não encontrei o `cforge` para verificar. Instale o cforge e rode: cforge check {}",
+        file.display()
+    );
+    ExitCode::FAILURE
 }
 
 fn run(file: &Path) -> ExitCode {
