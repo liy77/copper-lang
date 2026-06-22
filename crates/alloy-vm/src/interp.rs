@@ -217,12 +217,44 @@ impl Interpreter {
                 }
                 Ok(Value::Unit)
             }
+            ExprKind::Array(items) => {
+                let vals = items
+                    .iter()
+                    .map(|e| self.eval_expr(e, env))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Value::Vec(Rc::new(RefCell::new(vals))))
+            }
+            ExprKind::Index { base, index } => {
+                let b = self.eval_expr(base, env)?;
+                let i = self.eval_expr(index, env)?;
+                self.index_value(b, i, expr.span)
+            }
+            ExprKind::Member {
+                base,
+                field,
+                optional,
+            } => {
+                let b = self.eval_expr(base, env)?;
+                self.member_value(b, field, *optional, expr.span)
+            }
             ExprKind::Call { callee, args, .. } => {
                 let arg_vals: Vec<Value> = args
                     .iter()
                     .map(|a| self.eval_expr(a, env))
                     .collect::<Result<_, _>>()?;
                 match &callee.kind {
+                    // `vec![..]` chega como Call{callee: Ident("vec"), args:[Array]}.
+                    ExprKind::Ident(name) if name == "vec" => {
+                        let items = if arg_vals.len() == 1 {
+                            match &arg_vals[0] {
+                                Value::Vec(v) => v.borrow().clone(),
+                                _ => arg_vals.clone(),
+                            }
+                        } else {
+                            arg_vals.clone()
+                        };
+                        Ok(Value::Vec(Rc::new(RefCell::new(items))))
+                    }
                     ExprKind::Ident(name) if name == "println" || name == "print" => {
                         let line = arg_vals
                             .iter()
@@ -246,6 +278,86 @@ impl Interpreter {
             _ => Err(RuntimeError::new(
                 "construção ainda não suportada pela VM",
                 expr.span,
+            )),
+        }
+    }
+
+    /// `base[index]` — indexação de `Vec` (por int) e tupla (por int).
+    fn index_value(
+        &mut self,
+        base: Value,
+        index: Value,
+        span: copper_syntax::ast::Span,
+    ) -> Result<Value, RuntimeError> {
+        let idx = match index {
+            Value::Int(n) if n >= 0 => n as usize,
+            other => {
+                return Err(RuntimeError::new(
+                    format!(
+                        "índice deve ser int não-negativo, achou {}",
+                        other.type_name()
+                    ),
+                    span,
+                ))
+            }
+        };
+        match base {
+            Value::Vec(items) => {
+                items.borrow().get(idx).cloned().ok_or_else(|| {
+                    RuntimeError::new(format!("índice {idx} fora dos limites"), span)
+                })
+            }
+            Value::Tuple(items) => items
+                .get(idx)
+                .cloned()
+                .ok_or_else(|| RuntimeError::new(format!("índice {idx} fora da tupla"), span)),
+            other => Err(RuntimeError::new(
+                format!("não dá para indexar {}", other.type_name()),
+                span,
+            )),
+        }
+    }
+
+    /// `base.field` (e `base?.field`). Cobre campo de struct, `.0`/`.1` de
+    /// tupla, e propagação de `None` no `?.`.
+    fn member_value(
+        &mut self,
+        base: Value,
+        field: &str,
+        optional: bool,
+        span: copper_syntax::ast::Span,
+    ) -> Result<Value, RuntimeError> {
+        // `?.` em `None` → continua `None`.
+        if optional {
+            if let Value::Enum {
+                variant, payload, ..
+            } = &base
+            {
+                if variant == "None" {
+                    return Ok(Value::none());
+                }
+                if variant == "Some" {
+                    let inner = payload.first().cloned().unwrap_or(Value::Unit);
+                    return self.member_value(inner, field, false, span);
+                }
+            }
+        }
+        match base {
+            Value::Struct { fields, name } => {
+                fields.borrow().get(field).cloned().ok_or_else(|| {
+                    RuntimeError::new(format!("`{name}` não tem o campo `{field}`"), span)
+                })
+            }
+            Value::Tuple(items) => field
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| items.get(i).cloned())
+                .ok_or_else(|| {
+                    RuntimeError::new(format!("tupla não tem o elemento `.{field}`"), span)
+                }),
+            other => Err(RuntimeError::new(
+                format!("não dá para acessar `.{field}` em {}", other.type_name()),
+                span,
             )),
         }
     }
@@ -583,6 +695,13 @@ mod tests {
         assert_eq!(eval("1 + 2 * 3"), Value::Int(7));
         assert_eq!(eval("(1 + 2) * 3"), Value::Int(9));
         assert_eq!(eval("10 / 2 - 1"), Value::Int(4));
+    }
+
+    #[test]
+    fn arrays_index_and_vec_macro() {
+        assert_eq!(eval("[10, 20, 30][1]"), Value::Int(20));
+        assert_eq!(eval("vec![1, 2, 3][2]"), Value::Int(3));
+        assert_eq!(eval("[1, 2, 3]").to_string(), "[1, 2, 3]");
     }
 
     #[test]
