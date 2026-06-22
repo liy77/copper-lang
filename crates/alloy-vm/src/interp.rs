@@ -27,14 +27,50 @@ struct FuncDef {
 }
 
 #[derive(Default)]
+enum Sink {
+    #[default]
+    Stdout,
+    Buffer(Rc<RefCell<String>>),
+}
+
+#[derive(Default)]
 pub struct Interpreter {
     funcs: HashMap<String, FuncDef>,
     globals: Option<Rc<RefCell<Env>>>,
+    out: Sink,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build an interpreter that writes program output into `buf` instead of
+    /// stdout. The caller keeps the `Rc` to read captured output.
+    pub fn with_output(buf: Rc<RefCell<String>>) -> Self {
+        Self {
+            out: Sink::Buffer(buf),
+            ..Self::default()
+        }
+    }
+
+    fn emit(&mut self, text: &str, newline: bool) {
+        match &self.out {
+            Sink::Stdout => {
+                if newline {
+                    println!("{text}");
+                } else {
+                    print!("{text}");
+                }
+            }
+            Sink::Buffer(buf) => {
+                let mut b = buf.borrow_mut();
+                b.push_str(text);
+                if newline {
+                    b.push('\n');
+                }
+            }
+        }
     }
 
     pub fn load_program(&mut self, prog: &Program) {
@@ -193,11 +229,8 @@ impl Interpreter {
                             .map(|v| v.to_string())
                             .collect::<Vec<_>>()
                             .join(" ");
-                        if name == "println" {
-                            println!("{line}");
-                        } else {
-                            print!("{line}");
-                        }
+                        let newline = name == "println";
+                        self.emit(&line, newline);
                         Ok(Value::Unit)
                     }
                     ExprKind::Ident(name) => {
@@ -692,5 +725,16 @@ mod tests {
             run_block("mut x = 0\nif 1 > 2 { x += 10 } else { x += 20 }\nx"),
             Value::Int(20)
         );
+    }
+
+    #[test]
+    fn with_output_captures_println_and_print() {
+        let buf = Rc::new(RefCell::new(String::new()));
+        let prog = parse_program("println(\"a\")\nprint(\"b\")");
+        assert!(prog.errors.is_empty(), "prog errs: {:?}", prog.errors);
+        Interpreter::with_output(Rc::clone(&buf))
+            .run_program(&prog)
+            .expect("erro de runtime");
+        assert_eq!(buf.borrow().as_str(), "a\nb");
     }
 }
