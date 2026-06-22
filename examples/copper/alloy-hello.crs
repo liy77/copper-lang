@@ -1,0 +1,13 @@
+func int soma_ate(n: int) {
+    mut total = 0
+    for i in 1..n {
+        total += i
+    }
+    return total
+}
+
+func main() {
+    println("Alloy VM")
+    mut s = soma_ate(5)
+    println("soma 1..5 = ${s}")
+}
