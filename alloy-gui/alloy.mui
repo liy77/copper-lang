@@ -80,7 +80,7 @@ view AlloyApp() {
 
       if tab == "playground" {
         Stack(orientation: vertical, align: stretch, gap: 8, padding: 22) {
-          Text("Copper code", size: 15, color: #6b6b6b, weight: bold, align: left)
+          Text("Copper code", size: 15, height: 20, color: #6b6b6b, weight: bold, align: left)
           TextArea(
             value: source,
             placeholder: "func main() { println(\"hello\") }",
@@ -94,43 +94,60 @@ view AlloyApp() {
             padding: 14,
             onChange: { |v| source = v },
           )
-          Stack(orientation: horizontal, align: center) {
+          Stack(orientation: horizontal, justify: start, width: Window.width - 60) {
             Button("Run", size: 14, width: 120, height: 34, radius: 8,
               background: #e0a92e, textColor: #ffffff,
               onClick: { run_trigger = run_trigger + 1 })
           }
-          Text("Output", size: 15, color: #6b6b6b, weight: bold, align: left)
+          Text("Output", size: 15, height: 20, color: #6b6b6b, weight: bold, align: left)
           Rectangle(width: Window.width - 60, height: 150, background: #fbfaf5, radius: 8,
             borderColor: #e6e1d3, borderWidth: 1) {
             Text(output, size: 13, color: #3a3a3a, align: left, vAlign: top, padding: 14)
           }
         }
       } else if tab == "runner" {
-        Stack(orientation: vertical, align: stretch, gap: 8, padding: 22) {
-          Text("Open a .crs file", size: 15, color: #6b6b6b, weight: bold, align: left)
-          Stack(orientation: horizontal, gap: 10, align: center) {
+        Stack(orientation: vertical, align: stretch, gap: 6, padding: 22) {
+          Text("Open a .crs file", size: 15, height: 20, color: #6b6b6b, weight: bold, align: left)
+          Input(
+            value: path_field,
+            placeholder: "Path to a .crs file (or use Choose file…)",
+            width: Window.width - 60,
+            height: 34,
+            background: #ffffff,
+            textColor: #2a2a2a,
+            borderColor: #e0dccf,
+            borderWidth: 1,
+            radius: 8,
+            padding: 10,
+            onChange: { |v| path_field = v },
+          )
+          Stack(orientation: horizontal, gap: 10, justify: start, align: center,
+            width: Window.width - 60) {
             Button("Choose file…", size: 13, width: 130, height: 34, radius: 8,
               background: #efebe0, textColor: #6b6b6b,
               onClick: { open_trigger = open_trigger + 1 })
             Button("Run", size: 13, width: 100, height: 34, radius: 8,
               background: #e0a92e, textColor: #ffffff,
               onClick: { run_trigger = run_trigger + 1 })
-            Text(path_field, size: 12, color: #9a948a, align: left)
           }
-          Text("Output", size: 15, color: #6b6b6b, weight: bold, align: left)
+          Text("Output", size: 15, height: 20, color: #6b6b6b, weight: bold, align: left)
           Rectangle(width: Window.width - 60, height: Window.height - 240, background: #fbfaf5,
             radius: 8, borderColor: #e6e1d3, borderWidth: 1) {
             Text(output, size: 13, color: #3a3a3a, align: left, vAlign: top, padding: 14)
           }
         }
       } else {
-        Stack(orientation: vertical, align: center, gap: 16, padding: 36) {
-          Text("Alloy Updater", size: 20, color: #2a2a2a, weight: bold)
-          Text("Current version: $version", size: 14, color: #6b6b6b)
-          Button("Check and update", size: 14, padding: 12, radius: 8,
-            background: #e0a92e, textColor: #ffffff,
-            onClick: { update_trigger = update_trigger + 1 })
-          Text(update_status, size: 13, color: #3a3a3a, align: center)
+        Stack(orientation: vertical, align: stretch, gap: 14, padding: 30) {
+          Text("Alloy Updater", size: 20, height: 26, color: #2a2a2a, weight: bold,
+            align: center, width: Window.width - 60)
+          Text("Current version: $version", size: 14, height: 18, color: #6b6b6b,
+            align: center, width: Window.width - 60)
+          Stack(orientation: horizontal, justify: center, width: Window.width - 60) {
+            Button("Check and update", size: 14, width: 200, height: 36, radius: 8,
+              background: #e0a92e, textColor: #ffffff,
+              onClick: { update_status = "Checking for updates…"; update_trigger = update_trigger + 1 })
+          }
+          Text(update_status, size: 13, color: #3a3a3a, align: center, width: Window.width - 60)
         }
       }
     }

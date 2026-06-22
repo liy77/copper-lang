@@ -24,6 +24,10 @@ enum Outcome {
 struct FuncDef {
     params: Vec<String>,
     body: Block,
+    /// Declared return type (`func <ret> name(...)`), for return-type checking.
+    return_type: Option<copper_syntax::expr::Type>,
+    /// Name, for clearer error messages.
+    name: String,
 }
 
 #[derive(Default)]
@@ -85,13 +89,19 @@ impl Interpreter {
         for item in &prog.items {
             match item {
                 Item::Function {
-                    name, params, body, ..
+                    name,
+                    params,
+                    body,
+                    return_type,
+                    ..
                 } => {
                     self.funcs.insert(
                         name.clone(),
                         FuncDef {
                             params: params.iter().map(|p| p.name.clone()).collect(),
                             body: body.clone(),
+                            return_type: return_type.clone(),
+                            name: name.clone(),
                         },
                     );
                 }
@@ -99,7 +109,11 @@ impl Interpreter {
                     let table = self.methods.entry(target.clone()).or_default();
                     for it in items {
                         if let Item::Function {
-                            name, params, body, ..
+                            name,
+                            params,
+                            body,
+                            return_type,
+                            ..
                         } = it
                         {
                             table.insert(
@@ -107,6 +121,8 @@ impl Interpreter {
                                 FuncDef {
                                     params: params.iter().map(|p| p.name.clone()).collect(),
                                     body: body.clone(),
+                                    return_type: return_type.clone(),
+                                    name: name.clone(),
                                 },
                             );
                         }
@@ -120,6 +136,7 @@ impl Interpreter {
                                 name: mname,
                                 params,
                                 body,
+                                return_type,
                                 ..
                             } => {
                                 table.insert(
@@ -127,6 +144,8 @@ impl Interpreter {
                                     FuncDef {
                                         params: params.iter().map(|p| p.name.clone()).collect(),
                                         body: body.clone(),
+                                        return_type: return_type.clone(),
+                                        name: mname.clone(),
                                     },
                                 );
                             }
@@ -138,6 +157,8 @@ impl Interpreter {
                                     FuncDef {
                                         params: params.iter().map(|p| p.name.clone()).collect(),
                                         body: body.clone(),
+                                        return_type: None,
+                                        name: format!("{name}::new"),
                                     },
                                 );
                             }
@@ -207,13 +228,14 @@ impl Interpreter {
         for (p, a) in def.params.iter().zip(args) {
             scope.borrow_mut().define(p.clone(), a);
         }
-        match self.run_block_in(&def.body, &scope)? {
-            Outcome::Return(v) => Ok(v),
-            Outcome::Normal(v) => Ok(v),
+        let ret = match self.run_block_in(&def.body, &scope)? {
+            Outcome::Return(v) | Outcome::Normal(v) => v,
             Outcome::Break | Outcome::Continue => {
-                Err(RuntimeError::new("break/continue outside of loop", span))
+                return Err(RuntimeError::new("break/continue outside of loop", span))
             }
-        }
+        };
+        check_return_type(&def, &ret, span)?;
+        Ok(ret)
     }
 
     pub fn eval_expr(
@@ -743,12 +765,14 @@ impl Interpreter {
         for (p, a) in rest.into_iter().zip(args) {
             scope.borrow_mut().define(p.clone(), a);
         }
-        match self.run_block_in(&def.body, &scope)? {
-            Outcome::Return(v) | Outcome::Normal(v) => Ok(v),
+        let ret = match self.run_block_in(&def.body, &scope)? {
+            Outcome::Return(v) | Outcome::Normal(v) => v,
             Outcome::Break | Outcome::Continue => {
-                Err(RuntimeError::new("break/continue outside of loop", span))
+                return Err(RuntimeError::new("break/continue outside of loop", span))
             }
-        }
+        };
+        check_return_type(def, &ret, span)?;
+        Ok(ret)
     }
 
     /// Applies a closure to arguments.
@@ -1399,6 +1423,88 @@ fn pattern_literal(lit: &Literal) -> Option<Value> {
             }
             Some(Value::Str(s))
         }
+    }
+}
+
+/// Verifies a function's returned value matches its declared return type.
+/// Lenient for user-defined / unknown types (only flags clear scalar mismatches)
+/// so valid programs aren't rejected.
+fn check_return_type(
+    def: &FuncDef,
+    v: &Value,
+    span: copper_syntax::ast::Span,
+) -> Result<(), RuntimeError> {
+    let Some(ty) = &def.return_type else {
+        return Ok(());
+    };
+    if type_matches(ty, v) {
+        Ok(())
+    } else {
+        Err(RuntimeError::new(
+            format!(
+                "`{}` declared to return `{}` but returned a `{}`",
+                def.name,
+                type_label(ty),
+                v.type_name()
+            ),
+            span,
+        ))
+    }
+}
+
+/// Does runtime value `v` satisfy declared type `ty`? Strict for scalars;
+/// lenient (true) for unknown/user types to avoid false positives.
+fn type_matches(ty: &copper_syntax::expr::Type, v: &Value) -> bool {
+    use copper_syntax::expr::Type as T;
+    match ty {
+        T::Int => matches!(v, Value::Int(_)),
+        T::Float => matches!(v, Value::Float(_) | Value::Int(_)),
+        T::Bool => matches!(v, Value::Bool(_)),
+        T::Str => matches!(v, Value::Str(_)),
+        T::Unit => matches!(v, Value::Unit),
+        T::Option(_) => matches!(v, Value::Enum { ty, .. } if ty == "Option"),
+        T::Vec(_) => matches!(v, Value::Vec(_)),
+        T::Fn(_, _) => matches!(v, Value::Closure(_)),
+        T::Named(name, _) => named_type_matches(name, v),
+        T::Unknown => true,
+    }
+}
+
+fn named_type_matches(name: &str, v: &Value) -> bool {
+    // Use the base name without generic args: `Result<i32, E>` → `Result`.
+    let name = name.split('<').next().unwrap_or(name).trim();
+    match name {
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "usize" | "int" => matches!(v, Value::Int(_)),
+        "f32" | "f64" | "float" => matches!(v, Value::Float(_) | Value::Int(_)),
+        "bool" => matches!(v, Value::Bool(_)),
+        "String" | "str" | "string" => matches!(v, Value::Str(_)),
+        "void" | "unit" | "()" => matches!(v, Value::Unit),
+        "Option" => matches!(v, Value::Enum { ty, .. } if ty == "Option"),
+        "Result" => matches!(v, Value::Enum { ty, .. } if ty == "Result"),
+        "Vec" => matches!(v, Value::Vec(_)),
+        other => match v {
+            Value::Struct { name, .. } => name == other,
+            Value::Enum { ty, .. } => ty == other,
+            _ => true,
+        },
+    }
+}
+
+/// Human-readable label for a declared type, for error messages.
+fn type_label(ty: &copper_syntax::expr::Type) -> String {
+    use copper_syntax::expr::Type as T;
+    match ty {
+        T::Int => "int".into(),
+        T::Float => "float".into(),
+        T::Bool => "bool".into(),
+        T::Str => "str".into(),
+        T::Unit => "void".into(),
+        T::Option(_) => "Option".into(),
+        T::Vec(_) => "Vec".into(),
+        T::Fn(_, _) => "closure".into(),
+        T::Named(n, _) => n.clone(),
+        T::Unknown => "?".into(),
     }
 }
 

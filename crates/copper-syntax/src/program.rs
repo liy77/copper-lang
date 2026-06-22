@@ -628,6 +628,10 @@ impl ItemParser {
             self.bump();
             return;
         }
+        // NB: errors from the top-level free-statement path are intentionally
+        // not surfaced — that path currently over-reports on some recovered
+        // constructs (e.g. tuple-destructuring assignments). Function-body
+        // errors (the common case) are surfaced in `parse_braced_block`.
         let (block, _errs) = expr::parse_stmts_tokens(&self.toks[start..end]);
         self.pos = end;
         for stmt in block.stmts {
@@ -673,10 +677,22 @@ impl ItemParser {
             return empty_block(open);
         }
         let close = self.matching_brace(self.pos + 1);
-        let (mut block, _errs) = expr::parse_stmts_tokens(&self.toks[self.pos + 1..close]);
+        let (mut block, errs) = expr::parse_stmts_tokens(&self.toks[self.pos + 1..close]);
+        self.record_expr_errors(errs);
         block.span = Span::merge(open, self.at(close).map(span_of).unwrap_or(open));
         self.pos = close + 1; // past the `}`
         block
+    }
+
+    /// Surface expr-layer parse errors (missing `)`, etc.) into the program's
+    /// error list so `parse_program(...).errors` is non-empty on malformed input.
+    fn record_expr_errors(&mut self, errs: Vec<expr::ParseError>) {
+        for e in errs {
+            self.errors.push(ProgramError {
+                span: e.span,
+                message: e.message,
+            });
+        }
     }
 
     /// Parse a `{ ... }` body as a list of items (impl / trait bodies).

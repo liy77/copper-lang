@@ -619,10 +619,11 @@ impl Parser {
             // token after `?` can start an expression it's a ternary, otherwise
             // it's the try operator. (`?.` was already handled above.)
             if op == "?" {
-                let next = self.toks.get(self.pos + 1).map(|t| t.value.as_str());
-                // `expr?` (try) vs `cond ? a : b` (ternário): é ternário só se
-                // houver um `:` no mesmo nível antes do fim do statement.
-                if !starts_expr(next) || !self.ternary_colon_ahead() {
+                // `expr?` (try) vs `cond ? a : b` (ternary): it's a ternary iff a
+                // matching `:` follows at the same paren level before the
+                // statement ends — regardless of what token starts the then-branch
+                // (e.g. `cond ? -x : y`, whose then-branch begins with `-`).
+                if !self.ternary_colon_ahead() {
                     // Postfix try.
                     let start = lhs.span;
                     self.bump();
@@ -927,7 +928,9 @@ impl Parser {
             }
         }
         let end = self.cur_span();
-        self.eat(")");
+        if !self.eat(")") {
+            self.err(end, "expected `)` to close the call arguments");
+        }
         Expr::new(
             ExprKind::Call {
                 callee: Box::new(callee),
@@ -1776,40 +1779,6 @@ fn bin_op(op: &str) -> Option<(BinOp, u8, u8)> {
 /// expression — used to tell a ternary (`cond ? a : b`) from the postfix try
 /// operator (`expr?`). Closers, separators, and infix operators cannot start
 /// an expression, so `?` before them is a try.
-fn starts_expr(next: Option<&str>) -> bool {
-    match next {
-        None => false,
-        Some(v) => !matches!(
-            v,
-            ")" | "]"
-                | "}"
-                | ","
-                | ";"
-                | ":"
-                | "."
-                | "?"
-                | "="
-                | "=="
-                | "!="
-                | "<="
-                | ">="
-                | "+"
-                | "-"
-                | "*"
-                | "/"
-                | "%"
-                | "&&"
-                | "||"
-                | "&"
-                | "|"
-                | "^"
-                | ".."
-                | "..="
-                | "=>"
-        ),
-    }
-}
-
 /// Resolve a collected type string into a [`Type`], honouring the shared
 /// Copper alias table (so `int`/`uint`/`string`/`void`/... map exactly as the
 /// transpiler does) and a few structural forms.

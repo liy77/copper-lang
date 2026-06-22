@@ -280,7 +280,14 @@ fn try_run_gui() -> Result<(), Box<dyn std::error::Error>> {
             let run_n = r.get("run_trigger").unwrap_or(0);
             if run_n != *last_run.borrow() {
                 *last_run.borrow_mut() = run_n;
-                let src = r.get_str("source").unwrap_or_default();
+                // Prefer the path field (File runner) when it points at a real
+                // file; otherwise run the editor `source` (Playground).
+                let path = r.get_str("path_field").unwrap_or_default();
+                let src = if !path.is_empty() && std::path::Path::new(&path).is_file() {
+                    backend::read_file(&path).unwrap_or_default()
+                } else {
+                    r.get_str("source").unwrap_or_default()
+                };
                 let res = backend::run_source(&src);
                 let shown = match res.error {
                     Some(err) => format!("{}{}", res.output, err),
