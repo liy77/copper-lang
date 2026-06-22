@@ -41,6 +41,8 @@ pub struct Interpreter {
     methods: HashMap<String, HashMap<String, FuncDef>>,
     /// símbolo importado -> módulo de origem (ex.: "input" -> "cstd").
     imports: HashMap<String, String>,
+    /// classes que têm construtor (`Class::new` cria a instância e roda o corpo).
+    constructors: std::collections::HashSet<String>,
     globals: Option<Rc<RefCell<Env>>>,
     out: Sink,
 }
@@ -130,6 +132,7 @@ impl Interpreter {
                             }
                             ClassMember::Constructor { params, body, .. } => {
                                 // `Class::new(...)` constrói uma instância.
+                                self.constructors.insert(name.clone());
                                 table.insert(
                                     "new".into(),
                                     FuncDef {
@@ -254,46 +257,78 @@ impl Interpreter {
                 }
             }
             ExprKind::Assign { target, op, value } => {
-                let name = match &target.kind {
-                    ExprKind::Ident(n) => n.clone(),
-                    _ => {
-                        return Err(RuntimeError::new(
-                            "alvo de atribuição não suportado (só nomes simples no MVP)",
+                let rhs = self.eval_expr(value, env)?;
+                // Desembrulha `*x`/`&x` (ponteiros são identidade aqui).
+                let mut place = &**target;
+                while let ExprKind::Unary {
+                    op: UnOp::Deref | UnOp::Ref | UnOp::RefMut,
+                    expr: inner,
+                } = &place.kind
+                {
+                    place = inner;
+                }
+                let compound = |me: &mut Self, cur: Value, span| -> Result<Value, RuntimeError> {
+                    let binop = match op {
+                        AssignOp::Plain => return Ok(rhs.clone()),
+                        AssignOp::Add => BinOp::Add,
+                        AssignOp::Sub => BinOp::Sub,
+                        AssignOp::Mul => BinOp::Mul,
+                        AssignOp::Div => BinOp::Div,
+                        AssignOp::Rem => BinOp::Rem,
+                        AssignOp::BitAnd => BinOp::BitAnd,
+                        AssignOp::BitOr => BinOp::BitOr,
+                        AssignOp::BitXor => BinOp::BitXor,
+                    };
+                    me.eval_binary(binop, cur, rhs.clone(), span)
+                };
+                match &place.kind {
+                    ExprKind::Ident(name) => {
+                        let cur = env.borrow().get(name).unwrap_or(Value::Unit);
+                        let nv = compound(self, cur, expr.span)?;
+                        if !env.borrow_mut().set(name, nv) {
+                            // primeira atribuição a um nome livre → define
+                            env.borrow_mut().define(name.clone(), rhs);
+                        }
+                        Ok(Value::Unit)
+                    }
+                    // `obj.campo = v` / `self.campo = v`.
+                    ExprKind::Member { base, field, .. } => {
+                        let recv = self.eval_expr(base, env)?;
+                        if let Value::Struct { fields, .. } = recv {
+                            let cur = fields.borrow().get(field).cloned().unwrap_or(Value::Unit);
+                            let nv = compound(self, cur, expr.span)?;
+                            fields.borrow_mut().insert(field.clone(), nv);
+                            Ok(Value::Unit)
+                        } else {
+                            Err(RuntimeError::new(
+                                "atribuição de campo em valor não-struct",
+                                target.span,
+                            ))
+                        }
+                    }
+                    // `vec[i] = v`.
+                    ExprKind::Index { base, index } => {
+                        let recv = self.eval_expr(base, env)?;
+                        let idx = self.eval_expr(index, env)?;
+                        if let (Value::Vec(items), Value::Int(i)) = (&recv, &idx) {
+                            let i = *i as usize;
+                            let cur = items.borrow().get(i).cloned().unwrap_or(Value::Unit);
+                            let nv = compound(self, cur, expr.span)?;
+                            if i < items.borrow().len() {
+                                items.borrow_mut()[i] = nv;
+                                return Ok(Value::Unit);
+                            }
+                        }
+                        Err(RuntimeError::new(
+                            "índice de atribuição inválido",
                             target.span,
                         ))
                     }
-                };
-                let rhs = self.eval_expr(value, env)?;
-                let new_val = match op {
-                    AssignOp::Plain => rhs,
-                    _ => {
-                        let cur = env.borrow().get(&name).ok_or_else(|| {
-                            RuntimeError::new(
-                                format!("variável `{name}` não definida"),
-                                target.span,
-                            )
-                        })?;
-                        let binop = match op {
-                            AssignOp::Add => BinOp::Add,
-                            AssignOp::Sub => BinOp::Sub,
-                            AssignOp::Mul => BinOp::Mul,
-                            AssignOp::Div => BinOp::Div,
-                            AssignOp::Rem => BinOp::Rem,
-                            AssignOp::BitAnd => BinOp::BitAnd,
-                            AssignOp::BitOr => BinOp::BitOr,
-                            AssignOp::BitXor => BinOp::BitXor,
-                            AssignOp::Plain => unreachable!(),
-                        };
-                        self.eval_binary(binop, cur, rhs, expr.span)?
-                    }
-                };
-                if !env.borrow_mut().set(&name, new_val.clone()) {
-                    return Err(RuntimeError::new(
-                        format!("variável `{name}` não definida"),
+                    _ => Err(RuntimeError::new(
+                        "alvo de atribuição não suportado",
                         target.span,
-                    ));
+                    )),
                 }
-                Ok(Value::Unit)
             }
             ExprKind::Array(items) => {
                 let vals = items
@@ -757,6 +792,18 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         if segments.len() == 2 {
             let (ty, name) = (&segments[0], &segments[1]);
+            // Construtor de classe: cria a instância, roda o corpo (que faz
+            // `self.campo = ...`) e devolve a instância.
+            if name == "new" && self.constructors.contains(ty) {
+                if let Some(def) = self.methods.get(ty).and_then(|m| m.get("new")).cloned() {
+                    let inst = Value::Struct {
+                        name: ty.clone(),
+                        fields: Rc::new(RefCell::new(HashMap::new())),
+                    };
+                    self.invoke(&def, Some(inst.clone()), args, span)?;
+                    return Ok(inst);
+                }
+            }
             if let Some(def) = self.methods.get(ty).and_then(|m| m.get(name)).cloned() {
                 return self.invoke(&def, None, args, span);
             }
@@ -999,6 +1046,8 @@ impl Interpreter {
                 Ok(Outcome::Normal(Value::Unit))
             }
             Stmt::BlockStmt(b) => self.run_block(b, env),
+            // `unsafe { ... }` — sem semântica especial no interpretador.
+            Stmt::Unsafe { body, .. } => self.run_block(body, env),
             _ => Err(RuntimeError::new(
                 "statement ainda não suportado pela VM",
                 stmt.span(),
@@ -1041,6 +1090,9 @@ impl Interpreter {
                 .ok_or_else(|| RuntimeError::new("overflow em negação de inteiro", span)),
             (UnOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
             (UnOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+            // Referência/deref: no interpretador são identidade (não há um
+            // modelo de ponteiros real; `unsafe`/raw-ptr executam sem aliasing).
+            (UnOp::Ref, v) | (UnOp::RefMut, v) | (UnOp::Deref, v) => Ok(v),
             (op, v) => Err(RuntimeError::new(
                 format!("operador unário {op:?} inválido para {}", v.type_name()),
                 span,

@@ -975,6 +975,15 @@ impl Parser {
     fn parse_type(&mut self) -> Type {
         let mut buf = String::new();
         let mut depth = 0i32;
+        // Prefixos de ponteiro/referência: `*const T`, `*mut T`, `&T`, `&mut T`.
+        while matches!(
+            self.peek_val(),
+            Some("*") | Some("&") | Some("&&") | Some("const") | Some("mut")
+        ) {
+            buf.push_str(self.peek_val().unwrap());
+            buf.push(' ');
+            self.bump();
+        }
         while let Some(t) = self.peek() {
             let v = t.value.as_str();
             if depth == 0 && matches!(v, ")" | "]" | "}" | "," | ";" | "=" | "{") {
