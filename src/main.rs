@@ -168,7 +168,7 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
 /// process exit code.
 fn run_vm(sub: &str, file: &str) -> i32 {
     use std::path::Path;
-    // `build`: compila o .crs para um artefato portátil `.alloybc`.
+    // `build`: compila o .crs para um artefato portátil `.loy`.
     if sub == "build" {
         let src = match std::fs::read_to_string(file) {
             Ok(s) => s,
@@ -187,7 +187,7 @@ fn run_vm(sub: &str, file: &str) -> i32 {
             }
             return 1;
         }
-        let out = Path::new(file).with_extension("alloybc");
+        let out = Path::new(file).with_extension("loy");
         let bytes = alloy_vm::bytecode::compile(&prog.items);
         match std::fs::write(&out, bytes) {
             Ok(()) => {
@@ -200,7 +200,7 @@ fn run_vm(sub: &str, file: &str) -> i32 {
             }
         }
     } else {
-        // `run`: executa um `.crs` (instantâneo) ou um `.alloybc`.
+        // `run`: executa um `.crs` (instantâneo) ou um `.loy`.
         let bytes = match std::fs::read(file) {
             Ok(b) => b,
             Err(e) => {
@@ -220,7 +220,7 @@ fn run_vm(sub: &str, file: &str) -> i32 {
             let src = match String::from_utf8(bytes) {
                 Ok(s) => s,
                 Err(_) => {
-                    eprintln!("cforge vm: arquivo não é UTF-8 nem .alloybc");
+                    eprintln!("cforge vm: arquivo não é UTF-8 nem .loy");
                     return 1;
                 }
             };

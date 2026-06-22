@@ -1,4 +1,4 @@
-//! Formato `.alloybc`: a AST (`Program`) serializada num artefato binário
+//! Formato `.loy`: a AST (`Program`) serializada num artefato binário
 //! independente de plataforma — o "compila uma vez, roda em qualquer `alloy`".
 //!
 //! Layout: `magic(8)` + `fmt_ver: u16 LE` + bincode(`alloy_ver: String`) +
@@ -14,7 +14,7 @@ pub const FMT_VERSION: u16 = 1;
 
 const ALLOY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Serializa os itens de um `Program` em bytes `.alloybc`.
+/// Serializa os itens de um `Program` em bytes `.loy`.
 pub fn compile(items: &[Item]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
@@ -27,7 +27,7 @@ pub fn compile(items: &[Item]) -> Vec<u8> {
     out
 }
 
-/// `true` se os bytes começam com o magic do formato `.alloybc`.
+/// `true` se os bytes começam com o magic do formato `.loy`.
 pub fn is_bytecode(bytes: &[u8]) -> bool {
     bytes.len() >= 8 && &bytes[..8] == MAGIC
 }
@@ -36,10 +36,10 @@ pub fn is_bytecode(bytes: &[u8]) -> bool {
 /// `Err` com mensagem clara em qualquer inconsistência.
 pub fn load(bytes: &[u8]) -> Result<Program, String> {
     if !is_bytecode(bytes) {
-        return Err("arquivo .alloybc inválido (magic ausente)".into());
+        return Err("arquivo .loy inválido (magic ausente)".into());
     }
     if bytes.len() < 10 {
-        return Err("arquivo .alloybc truncado".into());
+        return Err("arquivo .loy truncado".into());
     }
     let ver = u16::from_le_bytes([bytes[8], bytes[9]]);
     if ver != FMT_VERSION {

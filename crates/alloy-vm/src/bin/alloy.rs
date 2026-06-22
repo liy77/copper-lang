@@ -1,8 +1,8 @@
 //! CLI do Alloy: interpretador tree-walking de Copper.
 //!
 //! * `alloy run <arquivo>` — roda instantâneo (estilo node/python): interpreta
-//!   um `.crs` direto (sem etapa de compilação) OU executa um `.alloybc`.
-//! * `alloy build <arquivo.crs>` — compila para um artefato portátil `.alloybc`
+//!   um `.crs` direto (sem etapa de compilação) OU executa um `.loy`.
+//! * `alloy build <arquivo.crs>` — compila para um artefato portátil `.loy`
 //!   (AST serializada) que roda em qualquer `alloy` de qualquer SO.
 
 use std::path::{Path, PathBuf};
@@ -21,12 +21,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Interpreta um `.crs` (instantâneo) ou executa um `.alloybc`.
+    /// Interpreta um `.crs` (instantâneo) ou executa um `.loy`.
     Run { file: PathBuf },
-    /// Compila um `.crs` para um artefato portátil `.alloybc`.
+    /// Compila um `.crs` para um artefato portátil `.loy`.
     Build {
         file: PathBuf,
-        /// Caminho de saída (default: mesmo nome com extensão `.alloybc`).
+        /// Caminho de saída (default: mesmo nome com extensão `.loy`).
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -39,15 +39,14 @@ fn main() -> ExitCode {
     }
 }
 
-/// Carrega um `Program` de um arquivo: bytecode `.alloybc` ou fonte `.crs`.
+/// Carrega um `Program` de um arquivo: bytecode `.loy` ou fonte `.crs`.
 fn load_program(file: &Path) -> Result<Program, String> {
     let bytes =
         std::fs::read(file).map_err(|e| format!("não consegui ler {}: {e}", file.display()))?;
     if alloy_vm::bytecode::is_bytecode(&bytes) {
         return alloy_vm::bytecode::load(&bytes);
     }
-    let src =
-        String::from_utf8(bytes).map_err(|_| "arquivo não é UTF-8 nem .alloybc".to_string())?;
+    let src = String::from_utf8(bytes).map_err(|_| "arquivo não é UTF-8 nem .loy".to_string())?;
     let prog = parse_program(&src);
     if !prog.errors.is_empty() {
         let msg = prog
@@ -101,7 +100,7 @@ fn build(file: &Path, output: Option<&Path>) -> ExitCode {
     }
     let out = output
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| file.with_extension("alloybc"));
+        .unwrap_or_else(|| file.with_extension("loy"));
     let bytes = alloy_vm::bytecode::compile(&prog.items);
     match std::fs::write(&out, bytes) {
         Ok(()) => {
