@@ -152,9 +152,19 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match &expr.kind {
             ExprKind::Literal(lit) => self.eval_literal(lit, env),
-            ExprKind::Ident(name) => env.borrow().get(name).ok_or_else(|| {
-                RuntimeError::new(format!("variável `{name}` não definida"), expr.span)
-            }),
+            ExprKind::Ident(name) => {
+                if let Some(v) = env.borrow().get(name) {
+                    return Ok(v);
+                }
+                // Construtores nulares de enum embutidos.
+                match name.as_str() {
+                    "None" => Ok(Value::none()),
+                    _ => Err(RuntimeError::new(
+                        format!("variável `{name}` não definida"),
+                        expr.span,
+                    )),
+                }
+            }
             ExprKind::Unary { op, expr: inner } => {
                 let v = self.eval_expr(inner, env)?;
                 self.eval_unary(*op, v, expr.span)
@@ -256,15 +266,21 @@ impl Interpreter {
                         Ok(Value::Vec(Rc::new(RefCell::new(items))))
                     }
                     ExprKind::Ident(name) if name == "println" || name == "print" => {
-                        let line = arg_vals
-                            .iter()
-                            .map(|v| v.to_string())
-                            .collect::<Vec<_>>()
-                            .join(" ");
+                        let line = render_print(&arg_vals);
                         let newline = name == "println";
                         self.emit(&line, newline);
                         Ok(Value::Unit)
                     }
+                    // Construtores de Option/Result.
+                    ExprKind::Ident(name) if name == "Some" => Ok(Value::some(
+                        arg_vals.into_iter().next().unwrap_or(Value::Unit),
+                    )),
+                    ExprKind::Ident(name) if name == "Ok" => Ok(Value::ok(
+                        arg_vals.into_iter().next().unwrap_or(Value::Unit),
+                    )),
+                    ExprKind::Ident(name) if name == "Err" => Ok(Value::err(
+                        arg_vals.into_iter().next().unwrap_or(Value::Unit),
+                    )),
                     ExprKind::Ident(name) => {
                         let name = name.clone();
                         self.call_user(&name, arg_vals, expr.span)
@@ -673,6 +689,56 @@ impl Interpreter {
             )),
         }
     }
+}
+
+/// Renderiza os argumentos de `println!`/`print!`. Se o primeiro argumento for
+/// uma string com placeholders `{...}` e houver mais argumentos, faz
+/// substituição posicional estilo `format!` (o spec interno — `{}`, `{:?}`,
+/// `{:.2}` — é ignorado, usa-se `Display`). Senão, junta tudo por espaço.
+fn render_print(args: &[Value]) -> String {
+    if let Some(Value::Str(fmt)) = args.first() {
+        if args.len() > 1 && fmt.contains('{') {
+            return format_with(fmt, &args[1..]);
+        }
+    }
+    args.iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Substitui cada `{...}` por `args[i].to_string()`, na ordem. `{{`/`}}` são
+/// chaves literais. Placeholders extras sem argumento viram vazio.
+fn format_with(fmt: &str, args: &[Value]) -> String {
+    let mut out = String::new();
+    let mut next = 0usize;
+    let mut chars = fmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' if chars.peek() == Some(&'{') => {
+                chars.next();
+                out.push('{');
+            }
+            '}' if chars.peek() == Some(&'}') => {
+                chars.next();
+                out.push('}');
+            }
+            '{' => {
+                // Consome até o '}' de fechamento (ignora o spec de formato).
+                for n in chars.by_ref() {
+                    if n == '}' {
+                        break;
+                    }
+                }
+                if let Some(v) = args.get(next) {
+                    out.push_str(&v.to_string());
+                }
+                next += 1;
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
