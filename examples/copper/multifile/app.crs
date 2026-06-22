@@ -1,0 +1,7 @@
+// Importa um .crs irmão — o Alloy funde os itens e roda instantâneo.
+import { dobro, quadrado } from math
+
+func main() {
+    println!("dobro(5)    = {}", dobro(5))
+    println!("quadrado(6) = {}", quadrado(6))
+}

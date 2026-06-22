@@ -167,8 +167,10 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
 /// `cforge vm run/build <file>` — drive the Alloy interpreter. Returns the
 /// process exit code.
 fn run_vm(sub: &str, file: &str) -> i32 {
+    use alloy_vm::loader::{self, LoadOutcome};
     use std::path::Path;
-    // `build`: compila o .crs para um artefato portátil `.loy`.
+    let p = Path::new(file);
+
     if sub == "build" {
         let src = match std::fs::read_to_string(file) {
             Ok(s) => s,
@@ -177,72 +179,58 @@ fn run_vm(sub: &str, file: &str) -> i32 {
                 return 1;
             }
         };
-        let prog = copper_syntax::program::parse_program(&src);
-        if !prog.errors.is_empty() {
-            for err in &prog.errors {
-                eprintln!(
-                    "cforge vm: erro de sintaxe @ {}..{}: {}",
-                    err.span.start, err.span.end, err.message
-                );
+        match loader::resolve_source(&src, p) {
+            Ok(LoadOutcome::Program(prog)) => {
+                let out = p.with_extension("loy");
+                let bytes = alloy_vm::bytecode::compile(&prog.items);
+                match std::fs::write(&out, bytes) {
+                    Ok(()) => {
+                        println!("compilado: {}", out.display());
+                        0
+                    }
+                    Err(e) => {
+                        eprintln!("cforge vm: não consegui gravar {}: {e}", out.display());
+                        1
+                    }
+                }
             }
-            return 1;
-        }
-        let out = Path::new(file).with_extension("loy");
-        let bytes = alloy_vm::bytecode::compile(&prog.items);
-        match std::fs::write(&out, bytes) {
-            Ok(()) => {
-                println!("compilado: {}", out.display());
-                0
+            Ok(LoadOutcome::NeedsCforge { module, .. }) => {
+                eprintln!(
+                    "cforge vm build: `{module}` é Rust (.rs) — o `.loy` não embute Rust. \
+                     Compile nativo com: cforge build {file}"
+                );
+                1
             }
             Err(e) => {
-                eprintln!("cforge vm: não consegui gravar {}: {e}", out.display());
+                eprintln!("cforge vm: {e}");
                 1
             }
         }
     } else {
-        // `run`: executa um `.crs` (instantâneo) ou um `.loy`.
-        let bytes = match std::fs::read(file) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("cforge vm: não consegui ler {file}: {e}");
-                return 1;
-            }
-        };
-        let prog = if alloy_vm::bytecode::is_bytecode(&bytes) {
-            match alloy_vm::bytecode::load(&bytes) {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("cforge vm: {e}");
-                    return 1;
+        match loader::load_runnable(p) {
+            Ok(LoadOutcome::Program(prog)) => {
+                match alloy_vm::interp::Interpreter::new().run_program(&prog) {
+                    Ok(_) => 0,
+                    Err(e) => {
+                        eprintln!(
+                            "cforge vm: erro de runtime @ {}..{}: {}",
+                            e.span.start, e.span.end, e.message
+                        );
+                        1
+                    }
                 }
             }
-        } else {
-            let src = match String::from_utf8(bytes) {
-                Ok(s) => s,
-                Err(_) => {
-                    eprintln!("cforge vm: arquivo não é UTF-8 nem .loy");
-                    return 1;
-                }
-            };
-            let prog = copper_syntax::program::parse_program(&src);
-            if !prog.errors.is_empty() {
-                for err in &prog.errors {
-                    eprintln!(
-                        "cforge vm: erro de sintaxe @ {}..{}: {}",
-                        err.span.start, err.span.end, err.message
-                    );
-                }
-                return 1;
-            }
-            prog
-        };
-        match alloy_vm::interp::Interpreter::new().run_program(&prog) {
-            Ok(_) => 0,
-            Err(e) => {
+            // Importou Rust: o caminho do interpretador não roda `.rs`;
+            // use o transpile nativo do próprio cforge.
+            Ok(LoadOutcome::NeedsCforge { module, .. }) => {
                 eprintln!(
-                    "cforge vm: erro de runtime @ {}..{}: {}",
-                    e.span.start, e.span.end, e.message
+                    "cforge vm: `{module}` é Rust (.rs) — o interpretador não roda Rust. \
+                     Rode com o transpile nativo: cforge run {file}"
                 );
+                1
+            }
+            Err(e) => {
+                eprintln!("cforge vm: {e}");
                 1
             }
         }

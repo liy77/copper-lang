@@ -1,16 +1,18 @@
 //! CLI do Alloy: interpretador tree-walking de Copper.
 //!
 //! * `alloy run <arquivo>` — roda instantâneo (estilo node/python): interpreta
-//!   um `.crs` direto (sem etapa de compilação) OU executa um `.loy`.
+//!   um `.crs` direto (sem etapa de compilação), funde imports de `.crs` locais,
+//!   ou executa um `.loy`. Se o programa importar Rust (`.rs`), delega ao
+//!   `cforge` (transpila + compila nativo).
 //! * `alloy build <arquivo.crs>` — compila para um artefato portátil `.loy`
-//!   (AST serializada) que roda em qualquer `alloy` de qualquer SO.
+//!   (AST serializada, com os `.crs` locais já fundidos).
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use alloy_vm::interp::Interpreter;
+use alloy_vm::loader::{self, LoadOutcome};
 use clap::{Parser, Subcommand};
-use copper_syntax::program::{parse_program, Program};
 
 #[derive(Parser)]
 #[command(name = "alloy", about = "Interpretador Alloy para Copper")]
@@ -39,42 +41,25 @@ fn main() -> ExitCode {
     }
 }
 
-/// Carrega um `Program` de um arquivo: bytecode `.loy` ou fonte `.crs`.
-fn load_program(file: &Path) -> Result<Program, String> {
-    let bytes =
-        std::fs::read(file).map_err(|e| format!("não consegui ler {}: {e}", file.display()))?;
-    if alloy_vm::bytecode::is_bytecode(&bytes) {
-        return alloy_vm::bytecode::load(&bytes);
-    }
-    let src = String::from_utf8(bytes).map_err(|_| "arquivo não é UTF-8 nem .loy".to_string())?;
-    let prog = parse_program(&src);
-    if !prog.errors.is_empty() {
-        let msg = prog
-            .errors
-            .iter()
-            .map(|e| format!("sintaxe @ {}..{}: {}", e.span.start, e.span.end, e.message))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(msg);
-    }
-    Ok(prog)
-}
-
 fn run(file: &Path) -> ExitCode {
-    let prog = match load_program(file) {
-        Ok(p) => p,
+    match loader::load_runnable(file) {
+        Ok(LoadOutcome::Program(prog)) => match Interpreter::new().run_program(&prog) {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!(
+                    "alloy: erro de runtime @ {}..{}: {}",
+                    e.span.start, e.span.end, e.message
+                );
+                ExitCode::FAILURE
+            }
+        },
+        // Importou Rust: o interpretador não roda `.rs` → delega ao cforge.
+        Ok(LoadOutcome::NeedsCforge { module, .. }) => {
+            eprintln!("alloy: `{module}` é Rust (.rs); delegando para o cforge…");
+            delegate_to_cforge(file)
+        }
         Err(e) => {
             eprintln!("alloy: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match Interpreter::new().run_program(&prog) {
-        Ok(_) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!(
-                "alloy: erro de runtime @ {}..{}: {}",
-                e.span.start, e.span.end, e.message
-            );
             ExitCode::FAILURE
         }
     }
@@ -88,28 +73,71 @@ fn build(file: &Path, output: Option<&Path>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let prog = parse_program(&src);
-    if !prog.errors.is_empty() {
-        for err in &prog.errors {
-            eprintln!(
-                "alloy: erro de sintaxe @ {}..{}: {}",
-                err.span.start, err.span.end, err.message
-            );
+    match loader::resolve_source(&src, file) {
+        Ok(LoadOutcome::Program(prog)) => {
+            let out = output
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| file.with_extension("loy"));
+            let bytes = alloy_vm::bytecode::compile(&prog.items);
+            match std::fs::write(&out, bytes) {
+                Ok(()) => {
+                    println!("compilado: {}", out.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("alloy: não consegui gravar {}: {e}", out.display());
+                    ExitCode::FAILURE
+                }
+            }
         }
-        return ExitCode::FAILURE;
-    }
-    let out = output
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| file.with_extension("loy"));
-    let bytes = alloy_vm::bytecode::compile(&prog.items);
-    match std::fs::write(&out, bytes) {
-        Ok(()) => {
-            println!("compilado: {}", out.display());
-            ExitCode::SUCCESS
+        Ok(LoadOutcome::NeedsCforge { module, .. }) => {
+            eprintln!(
+                "alloy build: `{module}` é Rust (.rs) — o `.loy` não embute Rust.\n\
+                 Compile nativo com: cforge build {}",
+                file.display()
+            );
+            ExitCode::FAILURE
         }
         Err(e) => {
-            eprintln!("alloy: não consegui gravar {}: {e}", out.display());
+            eprintln!("alloy: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Localiza o binário `cforge` e roda `cforge run <file>`, propagando o código
+/// de saída. Procura ao lado do próprio `alloy`, depois no PATH.
+fn delegate_to_cforge(file: &Path) -> ExitCode {
+    let candidates = cforge_candidates();
+    for cf in &candidates {
+        match Command::new(cf).arg("run").arg(file).status() {
+            Ok(status) => {
+                return ExitCode::from(status.code().unwrap_or(1) as u8);
+            }
+            Err(_) => continue,
+        }
+    }
+    eprintln!(
+        "alloy: não encontrei o `cforge` para compilar o Rust. \
+         Instale o cforge e rode: cforge run {}",
+        file.display()
+    );
+    ExitCode::FAILURE
+}
+
+fn cforge_candidates() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let name = if cfg!(windows) {
+                "cforge.exe"
+            } else {
+                "cforge"
+            };
+            v.push(dir.join(name));
+        }
+    }
+    // fallback: resolve via PATH.
+    v.push(PathBuf::from("cforge"));
+    v
 }
