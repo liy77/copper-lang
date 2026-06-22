@@ -1,0 +1,21 @@
+[package]
+name = "alloy-vm"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "alloy"
+path = "src/bin/alloy.rs"
+
+[lib]
+name = "alloy_vm"
+path = "src/lib.rs"
+
+[dependencies]
+copper-syntax = { path = "../copper-syntax" }
+clap = { version = "4", features = ["derive"] }
+# stdlib nativa (json/crypto/http) — mesmos crates que o cforge injeta.
+serde_json = "1"
+sha2 = "0.10"
+hmac = "0.12"
+ureq = "2"

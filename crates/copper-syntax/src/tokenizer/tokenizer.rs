@@ -660,7 +660,8 @@ impl Tokenizer {
                     let prev_gt_closes_generic = matches!(
                         self.last_token().map(|t| (t.kind, t.value.clone())),
                         Some((TokenKind::Operator, v)) if v == ">"
-                    ) && self.second_last_nonws_value().as_deref() != Some("=");
+                    ) && self.second_last_nonws_value().as_deref()
+                        != Some("=");
                     let prev_is_type_name = matches!(
                         self.last_token().map(|t| (t.kind, t.value.clone())),
                         Some((TokenKind::Identifier, _)) | Some((TokenKind::ReturnType, _))
@@ -1050,8 +1051,7 @@ impl Tokenizer {
                     // (a continuation). Detect the pair so `count++\n if ...`
                     // gets its terminator instead of fusing into the next line.
                     let is_postfix_pair = (t.value == "+" || t.value == "-")
-                        && self.second_last_nonws_value().as_deref()
-                            == Some(t.value.as_str());
+                        && self.second_last_nonws_value().as_deref() == Some(t.value.as_str());
                     !is_postfix_pair && !matches!(t.value.as_str(), "?" | "++" | "--")
                 }
                 _ => false,

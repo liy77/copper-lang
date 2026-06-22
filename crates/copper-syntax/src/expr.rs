@@ -220,6 +220,8 @@ pub enum ExprKind {
     },
     /// `[a, b, c]`.
     Array(Vec<Expr>),
+    /// `(a, b, ...)` — tupla (2+ elementos, ou 1 com vírgula final).
+    Tuple(Vec<Expr>),
     /// `|a, b| body` — body is a single expression (block expressions count).
     Closure {
         params: Vec<String>,
@@ -539,7 +541,13 @@ impl Parser {
                     let optional = op == "?.";
                     let start = lhs.span;
                     self.bump();
-                    let field = self.expect_ident("field name after `.`");
+                    // Acesso a tupla por índice: `.0`, `.1` (e encadeado `.0.0`,
+                    // que o tokenizer pode emitir como o número `0.0`).
+                    let field = if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Number)) {
+                        self.bump().map(|t| t.value).unwrap_or_default()
+                    } else {
+                        self.expect_ident("field name after `.`")
+                    };
                     let end = self.span_at(self.pos.saturating_sub(1));
                     lhs = Expr::new(
                         ExprKind::Member {
@@ -612,7 +620,9 @@ impl Parser {
             // it's the try operator. (`?.` was already handled above.)
             if op == "?" {
                 let next = self.toks.get(self.pos + 1).map(|t| t.value.as_str());
-                if !starts_expr(next) {
+                // `expr?` (try) vs `cond ? a : b` (ternário): é ternário só se
+                // houver um `:` no mesmo nível antes do fim do statement.
+                if !starts_expr(next) || !self.ternary_colon_ahead() {
                     // Postfix try.
                     let start = lhs.span;
                     self.bump();
@@ -804,12 +814,33 @@ impl Parser {
             _ => match t.value.as_str() {
                 "(" => {
                     self.bump();
-                    let inner = self.parse_expr_bp(0)?;
+                    if self.peek_val() == Some(")") {
+                        self.bump();
+                        return Some(Expr::new(ExprKind::Tuple(vec![]), span));
+                    }
+                    // `(mut p, q)` — destructuring com `mut` inline por binding.
+                    self.eat("mut");
+                    let first = self.parse_expr_bp(0)?;
+                    if self.peek_val() == Some(",") {
+                        let mut elems = vec![first];
+                        while self.eat(",") {
+                            if self.peek_val() == Some(")") {
+                                break;
+                            }
+                            self.eat("mut");
+                            if let Some(e) = self.parse_expr_bp(0) {
+                                elems.push(e);
+                            }
+                        }
+                        self.eat(")");
+                        let sp = Span::merge(span, self.span_at(self.pos.saturating_sub(1)));
+                        return Some(Expr::new(ExprKind::Tuple(elems), sp));
+                    }
                     if !self.eat(")") {
                         let sp = self.cur_span();
                         self.err(sp, "expected `)`");
                     }
-                    Some(inner)
+                    Some(first)
                 }
                 "[" => Some(self.parse_array(span)),
                 "{" => Some(self.parse_block_expr(span)),
@@ -973,6 +1004,15 @@ impl Parser {
     fn parse_type(&mut self) -> Type {
         let mut buf = String::new();
         let mut depth = 0i32;
+        // Prefixos de ponteiro/referência: `*const T`, `*mut T`, `&T`, `&mut T`.
+        while matches!(
+            self.peek_val(),
+            Some("*") | Some("&") | Some("&&") | Some("const") | Some("mut")
+        ) {
+            buf.push_str(self.peek_val().unwrap());
+            buf.push(' ');
+            self.bump();
+        }
         while let Some(t) = self.peek() {
             let v = t.value.as_str();
             if depth == 0 && matches!(v, ")" | "]" | "}" | "," | ";" | "=" | "{") {
@@ -1035,6 +1075,43 @@ impl Parser {
         Expr::new(ExprKind::Array(elems), Span::merge(open, end))
     }
 
+    /// A partir do `?` na posição atual, há um `:` de ternário no mesmo nível
+    /// de parênteses antes do fim do statement? (Distingue `expr?` de
+    /// `cond ? a : b`.) Pula `::` (paths/turbofish).
+    fn ternary_colon_ahead(&self) -> bool {
+        let mut depth = 0i32;
+        let mut i = self.pos + 1;
+        while let Some(t) = self.toks.get(i) {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Eof) {
+                return false;
+            }
+            match t.value.as_str() {
+                "(" | "[" | "{" => depth += 1,
+                ")" | "]" | "}" => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                }
+                ";" | "," if depth == 0 => return false,
+                "::" => {}
+                ":" if depth == 0 => {
+                    // Evita confundir com `::` quebrado em dois tokens.
+                    if self.toks.get(i + 1).map(|t| t.value.as_str()) == Some(":")
+                        || self.toks.get(i - 1).map(|t| t.value.as_str()) == Some(":")
+                    {
+                        // parte de `::`
+                    } else {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
     fn parse_closure(&mut self, open: Span) -> Expr {
         self.bump(); // |
         let mut params = Vec::new();
@@ -1042,8 +1119,15 @@ impl Parser {
             if v == "|" {
                 break;
             }
-            // Closure params tokenize as Identifier or Param; skip ref markers
-            // like `&` / `&&` (e.g. `|&&x| ...` in the collections example).
+            // Pula marcadores de referência/mut antes do nome do binding:
+            // `|&&x|`, `|&x|`, `|mut x|`, `|*p|`. Eles não vêm seguidos de
+            // vírgula, então precisam ser consumidos dentro do mesmo parâmetro.
+            while matches!(
+                self.peek_val(),
+                Some("&") | Some("&&") | Some("mut") | Some("*")
+            ) {
+                self.bump();
+            }
             if matches!(
                 self.peek().map(|t| &t.kind),
                 Some(TokenKind::Identifier) | Some(TokenKind::Param)
@@ -1051,6 +1135,8 @@ impl Parser {
                 if let Some(tok) = self.bump() {
                     params.push(tok.value);
                 }
+            } else if self.peek_val() == Some("|") {
+                break;
             } else {
                 self.bump();
             }
@@ -1586,7 +1672,14 @@ impl Parser {
             Some(t)
                 if matches!(
                     t.kind,
-                    TokenKind::Identifier | TokenKind::Keyword | TokenKind::Type
+                    TokenKind::Identifier
+                        | TokenKind::Keyword
+                        | TokenKind::Type
+                        // Dentro de `(...)` o tokenizer marca identificadores
+                        // como `Param`/`ParamType`; um campo após `.` num
+                        // argumento (`f(a.w)`) chega assim.
+                        | TokenKind::Param
+                        | TokenKind::ParamType
                 ) =>
             {
                 self.bump();
@@ -1847,13 +1940,20 @@ fn unescape(s: &str) -> String {
                 let mut hex = String::new();
                 while hex.len() < 2 {
                     match chars.peek() {
-                        Some(h) if h.is_ascii_hexdigit() => { hex.push(*h); chars.next(); }
+                        Some(h) if h.is_ascii_hexdigit() => {
+                            hex.push(*h);
+                            chars.next();
+                        }
                         _ => break,
                     }
                 }
                 match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
                     Some(ch) => out.push(ch),
-                    None => { out.push('\\'); out.push('x'); out.push_str(&hex); }
+                    None => {
+                        out.push('\\');
+                        out.push('x');
+                        out.push_str(&hex);
+                    }
                 }
             }
             Some('u') => {
@@ -1862,19 +1962,34 @@ fn unescape(s: &str) -> String {
                     chars.next();
                     let mut hex = String::new();
                     while let Some(h) = chars.peek() {
-                        if *h == '}' { chars.next(); break; }
-                        if h.is_ascii_hexdigit() && hex.len() < 6 { hex.push(*h); chars.next(); }
-                        else { break; }
+                        if *h == '}' {
+                            chars.next();
+                            break;
+                        }
+                        if h.is_ascii_hexdigit() && hex.len() < 6 {
+                            hex.push(*h);
+                            chars.next();
+                        } else {
+                            break;
+                        }
                     }
                     match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
                         Some(ch) => out.push(ch),
-                        None => { out.push_str("\\u{"); out.push_str(&hex); out.push('}'); }
+                        None => {
+                            out.push_str("\\u{");
+                            out.push_str(&hex);
+                            out.push('}');
+                        }
                     }
                 } else {
-                    out.push('\\'); out.push('u');
+                    out.push('\\');
+                    out.push('u');
                 }
             }
-            Some(other) => { out.push('\\'); out.push(other); }
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
             None => out.push('\\'),
         }
     }

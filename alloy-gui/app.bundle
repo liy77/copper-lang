@@ -1,0 +1,7 @@
+{
+  "name": "Alloy",
+  "id": "net.liy77.alloy",
+  "assets": {
+    "alloy-icon.png": "assets/alloy-icon.png"
+  }
+}

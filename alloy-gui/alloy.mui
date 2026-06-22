@@ -1,0 +1,118 @@
+// Alloy — GUI declarativa (MUI). Renderizada pelo host nativo `alloy-gui`
+// (src/main.rs), que linka backend.rs e dirige os signals abaixo.
+//
+// Signals dirigidos pelo host:
+//   version        (str)  preenchido no startup com a versão do binário
+//   source         (str)  o código .crs no editor / runner
+//   output         (str)  saída capturada da última execução
+//   run_trigger    (int)  o host observa a mudança e roda `source`
+//   open_path      (str)  caminho a abrir; host lê o arquivo → source
+//   update_trigger (int)  host observa → checa/aplica update
+//   update_status  (str)  resultado do update
+
+import { run_source, read_file, check_update, apply_update, current_version } from "./backend.rs"
+
+App() {
+  name: "Alloy"
+  width: 860
+  height: 620
+  minWidth: 720
+  minHeight: 520
+  background: #14161a
+  renderer: vulkan
+  mainContent: AlloyApp
+  host: "alloy-gui"
+}
+
+view AlloyApp() {
+  mut tab            = signal("playground")  // playground | runner | update
+  mut source         = signal("")
+  mut output         = signal("")
+  mut run_trigger    = signal(0)
+  mut open_path      = signal("")
+  mut path_field     = signal("")
+  mut update_trigger = signal(0)
+  mut update_status  = signal("")
+  mut version        = signal("...")
+
+  Stack(orientation: vertical, align: stretch) {
+
+    // ---- Cabeçalho + abas ------------------------------------------------
+    Rectangle(width: Window.width, height: 64, background: #1b1e24) {
+      Stack(orientation: horizontal, align: center, gap: 8, paddingLeft: 18) {
+        Text("Alloy", size: 26, color: #f4f4f4, weight: bold, align: left)
+        Text("v$version", size: 12, color: #7d8794, align: left)
+        Button("Playground", size: 13, padding: 9, radius: 6,
+          background: if tab == "playground" { #2b5fb0 } else { #232830 },
+          textColor: #e6e6e6, onClick: { tab = "playground" })
+        Button("File runner", size: 13, padding: 9, radius: 6,
+          background: if tab == "runner" { #2b5fb0 } else { #232830 },
+          textColor: #e6e6e6, onClick: { tab = "runner" })
+        Button("Update", size: 13, padding: 9, radius: 6,
+          background: if tab == "update" { #2b5fb0 } else { #232830 },
+          textColor: #e6e6e6, onClick: { tab = "update" })
+      }
+    }
+
+    // ---- Playground ------------------------------------------------------
+    if tab == "playground" {
+      Stack(orientation: vertical, align: stretch, gap: 10, padding: 18) {
+        Text("Código Copper", size: 13, color: #aaaaaa, align: left)
+        Input(
+          value: source,
+          multiline: true,
+          placeholder: "func main() { println(\"olá\") }",
+          width: Window.width - 36,
+          height: 260,
+          background: #0e1014,
+          textColor: #d6e2ee,
+          radius: 6,
+          onInput: { source = value },
+        )
+        Button("Run  ▶", size: 14, padding: 11, radius: 6,
+          background: #2f9e6e, textColor: #ffffff,
+          onClick: { run_trigger = run_trigger + 1 })
+        Text("Saída", size: 13, color: #aaaaaa, align: left)
+        Rectangle(width: Window.width - 36, height: 160, background: #0e1014, radius: 6) {
+          Text(output, size: 13, color: #c8d2dc, align: left, padding: 10)
+        }
+      }
+    } else if tab == "runner" {
+      // ---- File runner ---------------------------------------------------
+      Stack(orientation: vertical, align: stretch, gap: 10, padding: 18) {
+        Text("Abrir um arquivo .crs", size: 13, color: #aaaaaa, align: left)
+        Input(
+          value: path_field,
+          placeholder: "Caminho para um arquivo .crs",
+          width: Window.width - 36,
+          background: #0e1014,
+          textColor: #d6e2ee,
+          radius: 6,
+          onInput: { path_field = value },
+        )
+        Stack(orientation: horizontal, gap: 8) {
+          Button("Abrir", size: 13, padding: 10, radius: 6,
+            background: #232830, textColor: #e6e6e6,
+            onClick: { open_path = path_field })
+          Button("Run  ▶", size: 13, padding: 10, radius: 6,
+            background: #2f9e6e, textColor: #ffffff,
+            onClick: { run_trigger = run_trigger + 1 })
+        }
+        Text("Saída", size: 13, color: #aaaaaa, align: left)
+        Rectangle(width: Window.width - 36, height: 300, background: #0e1014, radius: 6) {
+          Text(output, size: 13, color: #c8d2dc, align: left, padding: 10)
+        }
+      }
+    } else {
+      // ---- Update --------------------------------------------------------
+      Stack(orientation: vertical, align: center, gap: 14, padding: 30) {
+        Text("Atualizador do Alloy", size: 18, color: #e6e6e6, weight: bold)
+        Text("Versão atual: $version", size: 13, color: #9aa7b4)
+        Button("Verificar e atualizar", size: 14, padding: 12, radius: 6,
+          background: #2b5fb0, textColor: #ffffff,
+          onClick: { update_trigger = update_trigger + 1 })
+        Text(update_status, size: 13, color: #c8d2dc, align: center)
+      }
+    }
+  }
+}
