@@ -96,7 +96,20 @@ fn cli_run(file: &Path) -> ExitCode {
 // GUI host (mocida + mui-runtime)
 // ===========================================================================
 
-const MUI_SOURCE: &str = include_str!("../alloy.mui");
+/// The `.mui` baked into the binary (used in release / when the source file
+/// isn't on disk). In dev, the on-disk `alloy.mui` is preferred and watched for
+/// changes so edits hot-reload live.
+const MUI_BAKED: &str = include_str!("../alloy.mui");
+
+/// On-disk path of `alloy.mui` (next to the crate), for dev hot-reload.
+fn mui_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("alloy.mui")
+}
+
+/// Current `.mui` source: the on-disk file if present, else the baked copy.
+fn read_mui_source() -> String {
+    std::fs::read_to_string(mui_path()).unwrap_or_else(|_| MUI_BAKED.to_string())
+}
 
 fn run_gui() -> ExitCode {
     match try_run_gui() {
@@ -116,8 +129,10 @@ fn try_run_gui() -> Result<(), Box<dyn std::error::Error>> {
     use mocida::{App, Color};
     use mui_runtime::Reactive;
 
-    // 1. Parse the .mui to extract the App{} config + entry view.
-    let doc = mui_syntax::parse(MUI_SOURCE);
+    // 1. Parse the .mui to extract the App{} config + entry view. Read from
+    //    disk when available (dev hot-reload), else the baked copy.
+    let mui_src = read_mui_source();
+    let doc = mui_syntax::parse(&mui_src);
     let view = mui_runtime::entry_view(&doc).ok_or("no view found in alloy.mui")?;
     let view_name = view.name.clone();
     let cfg = mui_runtime::window_config(&doc, &view_name);
@@ -126,10 +141,21 @@ fn try_run_gui() -> Result<(), Box<dyn std::error::Error>> {
     mui_runtime::prefer_custom_titlebar(&cfg);
     mui_runtime::prefer_renderer(&cfg);
 
-    // 3. Load app.bundle (registers mocida://alloy-icon.png, name, id).
-    let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("app.bundle");
+    // 3. Load app.bundle (name, id) and register the icon with an ABSOLUTE
+    //    path, so `mocida://alloy-icon.png` resolves regardless of the CWD the
+    //    binary is launched from (the manifest's relative path would not).
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bundle = manifest_dir.join("app.bundle");
     if bundle.is_file() {
         mocida::bundle::load_manifest(&bundle.to_string_lossy());
+    }
+    let icon = manifest_dir.join("assets").join("alloy-icon.png");
+    if icon.is_file() {
+        mocida::bundle::set("mocida://alloy-icon.png", &icon.to_string_lossy());
+    }
+    let logo = manifest_dir.join("assets").join("alloy-logo.png");
+    if logo.is_file() {
+        mocida::bundle::set("mocida://alloy-logo.png", &logo.to_string_lossy());
     }
 
     // 4. Create the window.
@@ -160,32 +186,108 @@ fn try_run_gui() -> Result<(), Box<dyn std::error::Error>> {
     mocida::text::search_fonts();
     let _ = mocida::text::get_font("Arial");
 
-    // 7. Build the initial tree, seed signals.
-    let loaded = mui_syntax::loader::load_from(MUI_SOURCE, Path::new("alloy.mui"));
+    // 7. Build the initial tree, seed signals. `source_cell` holds the live
+    //    `.mui` text so the on-tick hot-reload can swap it without a restart.
+    let source_cell = Rc::new(RefCell::new(mui_src.clone()));
+    let loaded = mui_syntax::loader::load_from(&mui_src, Path::new("alloy.mui"));
     let components = loaded.registry();
     let (children, reactive) =
         mui_runtime::build_view_seeded(view, &components, &HashMap::new())?;
     reactive.set_str("version", &backend::current_version());
     reactive.set_str("output", "");
-    reactive.set_str("source", "func main() {\n    println(\"hello from Alloy\")\n}\n");
+    // TextArea renders real newlines, so a multi-line default is fine.
+    reactive.set_str(
+        "source",
+        "func main() {\n    println(\"hello from Alloy\")\n}\n",
+    );
 
     let slot: Rc<RefCell<Option<Reactive>>> = Rc::new(RefCell::new(Some(reactive)));
     app.set_children(children);
 
-    // 8. On-tick: handle Run/Open/Update requests + rebuild on structural change.
+    // 8. On-tick: handle Run/Open/Update requests + rebuild on resize / structural change.
     let app_ptr = app.as_ptr();
     let tick_slot = Rc::clone(&slot);
     // Remember the last-seen trigger counters so we only act on a change.
     let last_run = Rc::new(RefCell::new(0i32));
     let last_update = Rc::new(RefCell::new(0i32));
+    let last_open = Rc::new(RefCell::new(0i32));
+    // Last (win w, win h, screen w, screen h) we built against — seeded zeros so
+    // the first tick rebuilds against the realized size, then again on any resize
+    // so `Window.width`/`Window.height` (and `width: Window.width - N`) re-resolve.
+    let last_size = std::rc::Rc::new(std::cell::Cell::new((0i32, 0i32, 0i32, 0i32)));
+    // Hot-reload watch: the live `.mui` source cell + the last-seen mtime.
+    let watch_source = Rc::clone(&source_cell);
+    let last_mtime: Rc<RefCell<Option<std::time::SystemTime>>> = Rc::new(RefCell::new(None));
+
+    // Shared rebuild closure — re-runs build against the current window size,
+    // seeding from the live signal values so user state survives the swap.
+    let rebuild = {
+        let tick_slot = Rc::clone(&tick_slot);
+        let source_cell = Rc::clone(&source_cell);
+        move || {
+            let seed = tick_slot
+                .borrow()
+                .as_ref()
+                .map(|r| r.values())
+                .unwrap_or_default();
+            let src = source_cell.borrow().clone();
+            let loaded = mui_syntax::loader::load_from(&src, Path::new("alloy.mui"));
+            let comps = loaded.registry();
+            if let Some(v) = mui_runtime::entry_view(&loaded.entry) {
+                if let Ok((c, r)) = mui_runtime::build_view_seeded(v, &comps, &seed) {
+                    let raw = c.into_raw();
+                    unsafe {
+                        mocida::sys::UIApp_SetChildren(app_ptr, raw);
+                    }
+                    *tick_slot.borrow_mut() = Some(r);
+                }
+            }
+        }
+    };
 
     app.on_tick(move || {
+        // (-1) Hot-reload: if alloy.mui changed on disk, reload + rebuild live.
+        let cur_m = std::fs::metadata(mui_path())
+            .ok()
+            .and_then(|md| md.modified().ok());
+        if let Some(m) = cur_m {
+            let prev = *last_mtime.borrow();
+            if prev != Some(m) {
+                *last_mtime.borrow_mut() = Some(m);
+                if prev.is_some() {
+                    *watch_source.borrow_mut() = read_mui_source();
+                    rebuild();
+                }
+            }
+        }
+
+        // (0) Window resize / monitor change → rebuild so `Window.*` re-resolve.
+        let cur_size = unsafe {
+            (
+                mocida::sys::UIApp_GetWidthG(),
+                mocida::sys::UIApp_GetHeightG(),
+                mocida::sys::UIScreen_GetWidth(),
+                mocida::sys::UIScreen_GetHeight(),
+            )
+        };
+        if cur_size.0 > 0 && cur_size.1 > 0 && cur_size != last_size.get() {
+            last_size.set(cur_size);
+            rebuild();
+        }
+
         if let Some(r) = tick_slot.borrow().as_ref() {
             // --- Run trigger (incremented by the Run button in the .mui) ---
             let run_n = r.get("run_trigger").unwrap_or(0);
             if run_n != *last_run.borrow() {
                 *last_run.borrow_mut() = run_n;
-                let src = r.get_str("source").unwrap_or_default();
+                // Prefer the path field (File runner) when it points at a real
+                // file; otherwise run the editor `source` (Playground).
+                let path = r.get_str("path_field").unwrap_or_default();
+                let src = if !path.is_empty() && std::path::Path::new(&path).is_file() {
+                    backend::read_file(&path).unwrap_or_default()
+                } else {
+                    r.get_str("source").unwrap_or_default()
+                };
                 let res = backend::run_source(&src);
                 let shown = match res.error {
                     Some(err) => format!("{}{}", res.output, err),
@@ -194,13 +296,23 @@ fn try_run_gui() -> Result<(), Box<dyn std::error::Error>> {
                 r.set_str("output", &shown);
             }
 
-            // --- Open file trigger: `open_path` holds a path to load ---
-            let path = r.get_str("open_path").unwrap_or_default();
-            if !path.is_empty() {
-                r.set_str("open_path", "");
-                match backend::read_file(&path) {
-                    Ok(src) => r.set_str("source", &src),
-                    Err(e) => r.set_str("output", &e),
+            // --- Open file trigger: native OS file picker (rfd) ---
+            let open_n = r.get("open_trigger").unwrap_or(0);
+            if open_n != *last_open.borrow() {
+                *last_open.borrow_mut() = open_n;
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Copper", &["crs"])
+                    .pick_file()
+                {
+                    let p = path.to_string_lossy().into_owned();
+                    match backend::read_file(&p) {
+                        Ok(src) => {
+                            r.set_str("source", &src);
+                            r.set_str("path_field", &p);
+                            r.set_str("output", "");
+                        }
+                        Err(e) => r.set_str("output", &e),
+                    }
                 }
             }
 
@@ -221,29 +333,14 @@ fn try_run_gui() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // --- Structural rebuild when an if/for signal changed ---
+        // --- Structural rebuild when an if/for signal changed (e.g. tab) ---
         let dirty = tick_slot
             .borrow()
             .as_ref()
             .map(|r| r.take_dirty())
             .unwrap_or(false);
         if dirty {
-            let seed = tick_slot
-                .borrow()
-                .as_ref()
-                .map(|r| r.values())
-                .unwrap_or_default();
-            let loaded = mui_syntax::loader::load_from(MUI_SOURCE, Path::new("alloy.mui"));
-            let comps = loaded.registry();
-            if let Some(v) = mui_runtime::entry_view(&loaded.entry) {
-                if let Ok((c, r)) = mui_runtime::build_view_seeded(v, &comps, &seed) {
-                    let raw = c.into_raw();
-                    unsafe {
-                        mocida::sys::UIApp_SetChildren(app_ptr, raw);
-                    }
-                    *tick_slot.borrow_mut() = Some(r);
-                }
-            }
+            rebuild();
         }
     });
 
