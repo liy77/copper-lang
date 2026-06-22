@@ -36,6 +36,9 @@ enum Sink {
 #[derive(Default)]
 pub struct Interpreter {
     funcs: HashMap<String, FuncDef>,
+    /// tipo -> (nome do método/função associada -> def). Métodos têm `self`
+    /// como primeiro parâmetro; funções associadas (ex.: `Rect::new`) não.
+    methods: HashMap<String, HashMap<String, FuncDef>>,
     globals: Option<Rc<RefCell<Env>>>,
     out: Sink,
 }
@@ -74,18 +77,73 @@ impl Interpreter {
     }
 
     pub fn load_program(&mut self, prog: &Program) {
+        use copper_syntax::program::ClassMember;
         for item in &prog.items {
-            if let Item::Function {
-                name, params, body, ..
-            } = item
-            {
-                self.funcs.insert(
-                    name.clone(),
-                    FuncDef {
-                        params: params.iter().map(|p| p.name.clone()).collect(),
-                        body: body.clone(),
-                    },
-                );
+            match item {
+                Item::Function {
+                    name, params, body, ..
+                } => {
+                    self.funcs.insert(
+                        name.clone(),
+                        FuncDef {
+                            params: params.iter().map(|p| p.name.clone()).collect(),
+                            body: body.clone(),
+                        },
+                    );
+                }
+                Item::Impl { target, items, .. } => {
+                    let table = self.methods.entry(target.clone()).or_default();
+                    for it in items {
+                        if let Item::Function {
+                            name, params, body, ..
+                        } = it
+                        {
+                            table.insert(
+                                name.clone(),
+                                FuncDef {
+                                    params: params.iter().map(|p| p.name.clone()).collect(),
+                                    body: body.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+                Item::Class { name, members, .. } => {
+                    let table = self.methods.entry(name.clone()).or_default();
+                    for m in members {
+                        match m {
+                            ClassMember::Method {
+                                name: mname,
+                                params,
+                                body,
+                                ..
+                            } => {
+                                table.insert(
+                                    mname.clone(),
+                                    FuncDef {
+                                        params: params.iter().map(|p| p.name.clone()).collect(),
+                                        body: body.clone(),
+                                    },
+                                );
+                            }
+                            ClassMember::Constructor { params, body, .. } => {
+                                // `Class::new(...)` constrói uma instância.
+                                table.insert(
+                                    "new".into(),
+                                    FuncDef {
+                                        params: params.iter().map(|p| p.name.clone()).collect(),
+                                        body: body.clone(),
+                                    },
+                                );
+                            }
+                            ClassMember::Field(_) => {}
+                        }
+                    }
+                }
+                Item::Struct { name, .. } => {
+                    self.methods.entry(name.clone()).or_default();
+                }
+                _ => {}
             }
         }
     }
@@ -247,6 +305,22 @@ impl Interpreter {
                 let b = self.eval_expr(base, env)?;
                 self.member_value(b, field, *optional, expr.span)
             }
+            ExprKind::StructLit { name, fields, .. } => {
+                let mut map = HashMap::new();
+                for (fname, fexpr) in fields {
+                    map.insert(fname.clone(), self.eval_expr(fexpr, env)?);
+                }
+                Ok(Value::Struct {
+                    name: name.clone(),
+                    fields: Rc::new(RefCell::new(map)),
+                })
+            }
+            // `as` cast: no interpretador tratamos como identidade (sem checagem
+            // estática de tipos), exceto conversões numéricas óbvias.
+            ExprKind::Cast { expr: inner, ty } => {
+                let v = self.eval_expr(inner, env)?;
+                Ok(cast_value(v, ty))
+            }
             ExprKind::Call { callee, args, .. } => {
                 let arg_vals: Vec<Value> = args
                     .iter()
@@ -285,6 +359,25 @@ impl Interpreter {
                         let name = name.clone();
                         self.call_user(&name, arg_vals, expr.span)
                     }
+                    // Chamada de método: `recv.metodo(args)`.
+                    ExprKind::Member {
+                        base,
+                        field,
+                        optional,
+                    } => {
+                        let recv = self.eval_expr(base, env)?;
+                        // `recv?.metodo()` em None → None.
+                        if *optional {
+                            if let Value::Enum { variant, .. } = &recv {
+                                if variant == "None" {
+                                    return Ok(Value::none());
+                                }
+                            }
+                        }
+                        self.call_method(recv, field, arg_vals, expr.span)
+                    }
+                    // Função associada: `Tipo::func(args)` ou variante de enum.
+                    ExprKind::Path { segments } => self.call_path(segments, arg_vals, expr.span),
                     _ => Err(RuntimeError::new(
                         "alvo de chamada não suportado",
                         callee.span,
@@ -376,6 +469,91 @@ impl Interpreter {
                 span,
             )),
         }
+    }
+
+    /// Invoca um `FuncDef` (função, método ou associada). Se `receiver` for
+    /// `Some`, ele é vinculado ao primeiro parâmetro `self`; os demais
+    /// parâmetros recebem `args` em ordem.
+    fn invoke(
+        &mut self,
+        def: &FuncDef,
+        receiver: Option<Value>,
+        args: Vec<Value>,
+        span: copper_syntax::ast::Span,
+    ) -> Result<Value, RuntimeError> {
+        let base = self.globals.clone().unwrap_or_default();
+        let scope = Env::child(&base);
+        let mut params = def.params.iter();
+        if let Some(recv) = receiver {
+            // Pula o parâmetro `self` (se declarado) e o vincula.
+            if def.params.first().map(|p| p.as_str()) == Some("self") {
+                params.next();
+            }
+            scope.borrow_mut().define("self".to_string(), recv);
+        }
+        let rest: Vec<&String> = params.collect();
+        if rest.len() != args.len() {
+            return Err(RuntimeError::new(
+                format!("função espera {} args, recebeu {}", rest.len(), args.len()),
+                span,
+            ));
+        }
+        for (p, a) in rest.into_iter().zip(args) {
+            scope.borrow_mut().define(p.clone(), a);
+        }
+        match self.run_block_in(&def.body, &scope)? {
+            Outcome::Return(v) | Outcome::Normal(v) => Ok(v),
+            Outcome::Break | Outcome::Continue => {
+                Err(RuntimeError::new("break/continue fora de loop", span))
+            }
+        }
+    }
+
+    /// `recv.metodo(args)` — tenta métodos built-in, depois métodos de usuário.
+    fn call_method(
+        &mut self,
+        recv: Value,
+        name: &str,
+        args: Vec<Value>,
+        span: copper_syntax::ast::Span,
+    ) -> Result<Value, RuntimeError> {
+        if let Some(res) = builtin_method(&recv, name, &args, span) {
+            return res;
+        }
+        if let Value::Struct { name: ty, .. } = &recv {
+            if let Some(def) = self.methods.get(ty).and_then(|m| m.get(name)).cloned() {
+                return self.invoke(&def, Some(recv), args, span);
+            }
+        }
+        Err(RuntimeError::new(
+            format!("método `{name}` não encontrado em {}", recv.type_name()),
+            span,
+        ))
+    }
+
+    /// `Tipo::func(args)` — função associada, ou construção de variante de enum.
+    fn call_path(
+        &mut self,
+        segments: &[String],
+        args: Vec<Value>,
+        span: copper_syntax::ast::Span,
+    ) -> Result<Value, RuntimeError> {
+        if segments.len() == 2 {
+            let (ty, name) = (&segments[0], &segments[1]);
+            if let Some(def) = self.methods.get(ty).and_then(|m| m.get(name)).cloned() {
+                return self.invoke(&def, None, args, span);
+            }
+            // Não é função associada conhecida → variante de enum.
+            return Ok(Value::Enum {
+                ty: ty.clone(),
+                variant: name.clone(),
+                payload: args,
+            });
+        }
+        Err(RuntimeError::new(
+            format!("caminho `{}` não suportado", segments.join("::")),
+            span,
+        ))
     }
 
     pub fn eval_block(
@@ -688,6 +866,165 @@ impl Interpreter {
                 span,
             )),
         }
+    }
+}
+
+/// Métodos built-in (estilo Rust) sobre os valores. Retorna `None` quando o
+/// método não é built-in (aí o chamador tenta métodos de usuário). Nunca
+/// panica: erros viram `RuntimeError`.
+fn builtin_method(
+    recv: &Value,
+    name: &str,
+    args: &[Value],
+    span: copper_syntax::ast::Span,
+) -> Option<Result<Value, RuntimeError>> {
+    // Métodos válidos em qualquer valor.
+    match name {
+        "to_string" => return Some(Ok(Value::Str(recv.to_string()))),
+        "clone" => return Some(Ok(recv.clone())),
+        _ => {}
+    }
+    match recv {
+        Value::Str(s) => match name {
+            "len" => Some(Ok(Value::Int(s.chars().count() as i64))),
+            "is_empty" => Some(Ok(Value::Bool(s.is_empty()))),
+            "to_uppercase" => Some(Ok(Value::Str(s.to_uppercase()))),
+            "to_lowercase" => Some(Ok(Value::Str(s.to_lowercase()))),
+            "trim" => Some(Ok(Value::Str(s.trim().to_string()))),
+            "chars" => Some(Ok(Value::Vec(Rc::new(RefCell::new(
+                s.chars().map(|c| Value::Str(c.to_string())).collect(),
+            ))))),
+            "count" => Some(Ok(Value::Int(s.chars().count() as i64))),
+            "parse" => Some(Ok(match s.trim().parse::<i64>() {
+                Ok(n) => Value::ok(Value::Int(n)),
+                Err(_) => match s.trim().parse::<f64>() {
+                    Ok(x) => Value::ok(Value::Float(x)),
+                    Err(_) => Value::err(Value::Str(format!("não consegui parsear `{s}`"))),
+                },
+            })),
+            "contains" => Some(Ok(Value::Bool(match args.first() {
+                Some(Value::Str(p)) => s.contains(p.as_str()),
+                _ => false,
+            }))),
+            _ => None,
+        },
+        Value::Vec(items) => match name {
+            "len" | "count" => Some(Ok(Value::Int(items.borrow().len() as i64))),
+            "is_empty" => Some(Ok(Value::Bool(items.borrow().is_empty()))),
+            // Modelo eager: adaptadores de iterador retornam o próprio vec.
+            "iter" | "into_iter" | "copied" | "cloned" | "collect" => {
+                Some(Ok(Value::Vec(Rc::clone(items))))
+            }
+            "rev" => {
+                let mut v = items.borrow().clone();
+                v.reverse();
+                Some(Ok(Value::Vec(Rc::new(RefCell::new(v)))))
+            }
+            "sum" => {
+                let b = items.borrow();
+                if b.iter().all(|v| matches!(v, Value::Int(_))) {
+                    let s: i64 = b
+                        .iter()
+                        .map(|v| if let Value::Int(n) = v { *n } else { 0 })
+                        .sum();
+                    Some(Ok(Value::Int(s)))
+                } else {
+                    let s: f64 = b
+                        .iter()
+                        .map(|v| match v {
+                            Value::Int(n) => *n as f64,
+                            Value::Float(x) => *x,
+                            _ => 0.0,
+                        })
+                        .sum();
+                    Some(Ok(Value::Float(s)))
+                }
+            }
+            "push" => {
+                if let Some(a) = args.first() {
+                    items.borrow_mut().push(a.clone());
+                }
+                Some(Ok(Value::Unit))
+            }
+            "first" => Some(Ok(items
+                .borrow()
+                .first()
+                .cloned()
+                .map(Value::some)
+                .unwrap_or_else(Value::none))),
+            "last" => Some(Ok(items
+                .borrow()
+                .last()
+                .cloned()
+                .map(Value::some)
+                .unwrap_or_else(Value::none))),
+            _ => None,
+        },
+        Value::Int(n) => match name {
+            "abs" => Some(Ok(Value::Int(n.abs()))),
+            "to_float" => Some(Ok(Value::Float(*n as f64))),
+            _ => None,
+        },
+        Value::Float(x) => match name {
+            "abs" => Some(Ok(Value::Float(x.abs()))),
+            "recip" => Some(Ok(Value::Float(x.recip()))),
+            "sqrt" => Some(Ok(Value::Float(x.sqrt()))),
+            "round" => Some(Ok(Value::Float(x.round()))),
+            "floor" => Some(Ok(Value::Float(x.floor()))),
+            "ceil" => Some(Ok(Value::Float(x.ceil()))),
+            _ => None,
+        },
+        Value::Enum {
+            ty,
+            variant,
+            payload,
+        } => match name {
+            "is_some" => Some(Ok(Value::Bool(variant == "Some"))),
+            "is_none" => Some(Ok(Value::Bool(variant == "None"))),
+            "is_ok" => Some(Ok(Value::Bool(variant == "Ok"))),
+            "is_err" => Some(Ok(Value::Bool(variant == "Err"))),
+            "unwrap" | "expect" => {
+                if matches!(variant.as_str(), "Some" | "Ok") {
+                    Some(Ok(payload.first().cloned().unwrap_or(Value::Unit)))
+                } else {
+                    Some(Err(RuntimeError::new(
+                        format!("unwrap em `{variant}` de {ty}"),
+                        span,
+                    )))
+                }
+            }
+            "unwrap_or" => {
+                if matches!(variant.as_str(), "Some" | "Ok") {
+                    Some(Ok(payload.first().cloned().unwrap_or(Value::Unit)))
+                } else {
+                    Some(Ok(args.first().cloned().unwrap_or(Value::Unit)))
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `expr as Tipo` — conversões numéricas; o resto é identidade.
+fn cast_value(v: Value, ty: &copper_syntax::expr::Type) -> Value {
+    use copper_syntax::expr::Type;
+    match (ty, &v) {
+        (Type::Int, Value::Float(x)) => Value::Int(*x as i64),
+        (Type::Int, Value::Bool(b)) => Value::Int(*b as i64),
+        (Type::Float, Value::Int(n)) => Value::Float(*n as f64),
+        (Type::Named(name, _), Value::Float(x))
+            if matches!(
+                name.as_str(),
+                "i8" | "i16" | "i32" | "i64" | "u8" | "u32" | "u64" | "usize" | "isize"
+            ) =>
+        {
+            Value::Int(*x as i64)
+        }
+        (Type::Named(name, _), Value::Int(n)) if matches!(name.as_str(), "f32" | "f64") => {
+            Value::Float(*n as f64)
+        }
+        _ => v,
     }
 }
 
