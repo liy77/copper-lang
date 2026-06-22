@@ -1,6 +1,5 @@
 //! Erros e fluxo de controle não-local da VM.
 
-use crate::value::Value;
 use copper_syntax::ast::Span;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,16 +15,4 @@ impl RuntimeError {
             span,
         }
     }
-}
-
-/// Resultado de avaliar um statement: ou seguiu normalmente, ou disparou
-/// controle de fluxo não-local (return/break/continue), ou erro.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Flow {
-    /// Seguiu normal.
-    Normal,
-    Return(Value),
-    Break,
-    Continue,
-    Err(RuntimeError),
 }

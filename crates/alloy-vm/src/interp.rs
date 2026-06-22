@@ -418,10 +418,14 @@ impl Interpreter {
                         Outcome::Return(v) => return Ok(Outcome::Return(v)),
                         _ => {}
                     }
-                    i += 1;
+                    match i.checked_add(1) {
+                        Some(n) => i = n,
+                        None => break,
+                    }
                 }
                 Ok(Outcome::Normal(Value::Unit))
             }
+            Stmt::BlockStmt(b) => self.run_block(b, env),
             _ => Err(RuntimeError::new(
                 "statement ainda não suportado pela VM",
                 stmt.span(),
@@ -678,6 +682,15 @@ mod tests {
         assert_eq!(
             run_block("mut x = 0\nif 1 < 2 { x += 10 } else { x += 20 }\nx"),
             Value::Int(10)
+        );
+    }
+
+    #[test]
+    fn if_else_takes_else_branch() {
+        // condition false → else block must run (was crashing before BlockStmt arm was added)
+        assert_eq!(
+            run_block("mut x = 0\nif 1 > 2 { x += 10 } else { x += 20 }\nx"),
+            Value::Int(20)
         );
     }
 }
