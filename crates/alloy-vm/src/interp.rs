@@ -321,6 +321,51 @@ impl Interpreter {
                 let v = self.eval_expr(inner, env)?;
                 Ok(cast_value(v, ty))
             }
+            ExprKind::Match { scrutinee, arms } => {
+                let val = self.eval_expr(scrutinee, env)?;
+                for arm in arms {
+                    let scope = Env::child(env);
+                    if !self.match_pattern(&arm.pattern, &val, &scope) {
+                        continue;
+                    }
+                    if let Some(guard) = &arm.guard {
+                        match self.eval_expr(guard, &scope)?.as_bool() {
+                            Some(true) => {}
+                            _ => continue,
+                        }
+                    }
+                    return self.eval_expr(&arm.body, &scope);
+                }
+                Err(RuntimeError::new("nenhum braço do match casou", expr.span))
+            }
+            ExprKind::If { cond, then, els } => {
+                let c = self.eval_expr(cond, env)?;
+                match c.as_bool() {
+                    Some(true) => self.eval_expr(then, env),
+                    Some(false) => match els {
+                        Some(e) => self.eval_expr(e, env),
+                        None => Ok(Value::Unit),
+                    },
+                    None => Err(RuntimeError::new("condição de `if` não é bool", cond.span)),
+                }
+            }
+            ExprKind::Block(block) => self.eval_block(block, env),
+            ExprKind::Try { expr: inner } => {
+                // `expr?`: Ok(v)/Some(v) → v; Err/None propaga como erro de
+                // runtime (modelo simplificado, sem early-return de função).
+                let v = self.eval_expr(inner, env)?;
+                match &v {
+                    Value::Enum {
+                        variant, payload, ..
+                    } if matches!(variant.as_str(), "Ok" | "Some") => {
+                        Ok(payload.first().cloned().unwrap_or(Value::Unit))
+                    }
+                    Value::Enum { variant, .. } => {
+                        Err(RuntimeError::new(format!("`?` em `{variant}`"), expr.span))
+                    }
+                    _ => Ok(v),
+                }
+            }
             ExprKind::Call { callee, args, .. } => {
                 let arg_vals: Vec<Value> = args
                     .iter()
@@ -468,6 +513,44 @@ impl Interpreter {
                 format!("não dá para acessar `.{field}` em {}", other.type_name()),
                 span,
             )),
+        }
+    }
+
+    /// Tenta casar `pat` contra `val`, vinculando bindings em `scope`.
+    /// Retorna `true` se casou.
+    fn match_pattern(&self, pat: &Pattern, val: &Value, scope: &Rc<RefCell<Env>>) -> bool {
+        match pat {
+            Pattern::Wildcard => true,
+            Pattern::Ident(name) => {
+                // Variante nulária (ex.: `None`) casa por igualdade de variante;
+                // senão é um binding que casa com qualquer valor.
+                if let Value::Enum {
+                    variant, payload, ..
+                } = val
+                {
+                    if variant == name && payload.is_empty() {
+                        return true;
+                    }
+                }
+                scope.borrow_mut().define(name.clone(), val.clone());
+                true
+            }
+            Pattern::Literal(lit) => pattern_literal(lit).as_ref() == Some(val),
+            Pattern::TupleStruct { name, elems } => {
+                if let Value::Enum {
+                    variant, payload, ..
+                } = val
+                {
+                    if variant == name && payload.len() >= elems.len() {
+                        return elems
+                            .iter()
+                            .zip(payload.iter())
+                            .all(|(p, v)| self.match_pattern(p, v, scope));
+                    }
+                }
+                false
+            }
+            Pattern::Or(pats) => pats.iter().any(|p| self.match_pattern(p, val, scope)),
         }
     }
 
@@ -655,12 +738,18 @@ impl Interpreter {
                 els,
                 span,
             } => {
-                if let_pattern.is_some() {
-                    return Err(RuntimeError::new(
-                        "`if let` ainda não suportado pela VM",
-                        *span,
-                    ));
+                if let Some(pat) = let_pattern {
+                    let v = self.eval_expr(cond, env)?;
+                    let scope = Env::child(env);
+                    if self.match_pattern(pat, &v, &scope) {
+                        return self.run_block_in(then, &scope);
+                    }
+                    return match els {
+                        Some(s) => self.exec_stmt(s, env),
+                        None => Ok(Outcome::Normal(Value::Unit)),
+                    };
                 }
+                let _ = span;
                 let c = self.eval_expr(cond, env)?;
                 match c.as_bool() {
                     Some(true) => self.run_block(then, env),
@@ -677,11 +766,22 @@ impl Interpreter {
                 body,
                 span,
             } => {
-                if let_pattern.is_some() {
-                    return Err(RuntimeError::new(
-                        "`while let` ainda não suportado pela VM",
-                        *span,
-                    ));
+                let _ = span;
+                if let Some(pat) = let_pattern {
+                    loop {
+                        let v = self.eval_expr(cond, env)?;
+                        let scope = Env::child(env);
+                        if self.match_pattern(pat, &v, &scope) {
+                            match self.run_block_in(body, &scope)? {
+                                Outcome::Break => break,
+                                Outcome::Return(v) => return Ok(Outcome::Return(v)),
+                                _ => {}
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    return Ok(Outcome::Normal(Value::Unit));
                 }
                 loop {
                     let c = self.eval_expr(cond, env)?;
@@ -911,9 +1011,21 @@ fn builtin_method(
         Value::Vec(items) => match name {
             "len" | "count" => Some(Ok(Value::Int(items.borrow().len() as i64))),
             "is_empty" => Some(Ok(Value::Bool(items.borrow().is_empty()))),
-            // Modelo eager: adaptadores de iterador retornam o próprio vec.
-            "iter" | "into_iter" | "copied" | "cloned" | "collect" => {
-                Some(Ok(Value::Vec(Rc::clone(items))))
+            // `into_iter` devolve um cursor independente (clone) para que
+            // `.next()` consuma sem afetar o vec original.
+            "into_iter" => Some(Ok(Value::Vec(Rc::new(RefCell::new(
+                items.borrow().clone(),
+            ))))),
+            // Demais adaptadores: modelo eager, retornam o próprio vec.
+            "iter" | "copied" | "cloned" | "collect" => Some(Ok(Value::Vec(Rc::clone(items)))),
+            // Consome o primeiro elemento (drena a frente do cursor).
+            "next" => {
+                let mut b = items.borrow_mut();
+                if b.is_empty() {
+                    Some(Ok(Value::none()))
+                } else {
+                    Some(Ok(Value::some(b.remove(0))))
+                }
             }
             "rev" => {
                 let mut v = items.borrow().clone();
@@ -1003,6 +1115,26 @@ fn builtin_method(
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Converte um literal de pattern em `Value` para comparação.
+fn pattern_literal(lit: &Literal) -> Option<Value> {
+    match lit {
+        Literal::Int(n) => Some(Value::Int(*n)),
+        Literal::Float(x) => Some(Value::Float(*x)),
+        Literal::Bool(b) => Some(Value::Bool(*b)),
+        Literal::Str(tpl) => {
+            let mut s = String::new();
+            for part in &tpl.parts {
+                if let StrPart::Lit(t) = part {
+                    s.push_str(t);
+                } else {
+                    return None; // interpolação em pattern não é suportada
+                }
+            }
+            Some(Value::Str(s))
+        }
     }
 }
 
