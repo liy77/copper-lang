@@ -628,11 +628,8 @@ impl ItemParser {
             self.bump();
             return;
         }
-        // NB: errors from the top-level free-statement path are intentionally
-        // not surfaced — that path currently over-reports on some recovered
-        // constructs (e.g. tuple-destructuring assignments). Function-body
-        // errors (the common case) are surfaced in `parse_braced_block`.
-        let (block, _errs) = expr::parse_stmts_tokens(&self.toks[start..end]);
+        let (block, errs) = expr::parse_stmts_tokens(&self.toks[start..end]);
+        self.record_expr_errors(errs);
         self.pos = end;
         for stmt in block.stmts {
             out.push(Item::Stmt(stmt));

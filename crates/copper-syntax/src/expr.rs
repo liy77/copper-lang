@@ -1393,6 +1393,14 @@ impl Parser {
                 continue;
             }
             let before = self.pos;
+            // `mut (a, b) = expr` — mutable tuple destructuring. The `mut` is a
+            // modifier on the bindings, not a `mut name =` declaration; consume it
+            // and let the tuple-assignment be parsed as an expression statement.
+            if self.peek_val() == Some("mut")
+                && self.toks.get(self.pos + 1).map(|t| t.value.as_str()) == Some("(")
+            {
+                self.bump(); // `mut`
+            }
             // A Copper binding is `mut name = expr` / `name = expr` /
             // `name: Type = expr` (NO `let`). A leading `mut`, or an identifier
             // whose next token is `=` or `:`, is a binding; anything else
