@@ -3,7 +3,7 @@ members = [".", "crates/copper-syntax", "crates/copper-parser", "crates/copper-l
 # `dist/rust` is the output dir for cforge-transpiled programs; it has its
 # own Cargo.toml that must NOT be a workspace member. The installer-gui
 # is its own self-contained Tauri app — also kept out.
-exclude = ["dist", "installer-gui", "lson-src"]
+exclude = ["dist", "installer-gui", "lson-src", "alloy-gui"]
 resolver = "2"
 
 [package]

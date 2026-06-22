@@ -1,0 +1,36 @@
+# alloy-gui — native host crate for the Alloy GUI.
+#
+# NOT a member of the copper-lang workspace (it links mocida, which the portable
+# crates must not). Build it explicitly:
+#   cargo build --release --manifest-path alloy-gui/Cargo.toml
+# Requires MOCIDA_INCLUDE_DIR / MOCIDA_LIB_DIR (see mocida-sys build.rs).
+#
+# Paths assume the mocida-rs workspace sits as a sibling:
+#   <root>/copper-lang/        (this repo)
+#   <root>/mocida/mocida-rs/   (mocida runtime)
+
+[package]
+name = "alloy-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Alloy — GUI + dual-mode binary (playground, file runner, updater)"
+
+# The shipped binary is named `alloy` (the dual-mode GUI/CLI executable).
+[[bin]]
+name = "alloy"
+path = "src/main.rs"
+
+[dependencies]
+# Portable Alloy interpreter (lib) — reused for the CLI passthrough and the
+# playground/runner "Run".
+alloy-vm = { path = "../crates/alloy-vm" }
+copper-syntax = { path = "../crates/copper-syntax" }
+
+# MUI / mocida runtime (the part the portable crates can't link).
+mocida = { path = "../../mocida/mocida-rs/mocida" }
+mui-runtime = { path = "../../mocida/mocida-rs/mui-runtime" }
+mui-syntax = { path = "../crates/mui-syntax" }
+
+[target.'cfg(windows)'.build-dependencies]
+# Embeds assets/alloy-icon.ico into the .exe PE header (taskbar/Explorer icon).
+winresource = "0.1"
