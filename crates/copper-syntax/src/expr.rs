@@ -612,7 +612,9 @@ impl Parser {
             // it's the try operator. (`?.` was already handled above.)
             if op == "?" {
                 let next = self.toks.get(self.pos + 1).map(|t| t.value.as_str());
-                if !starts_expr(next) {
+                // `expr?` (try) vs `cond ? a : b` (ternário): é ternário só se
+                // houver um `:` no mesmo nível antes do fim do statement.
+                if !starts_expr(next) || !self.ternary_colon_ahead() {
                     // Postfix try.
                     let start = lhs.span;
                     self.bump();
@@ -1035,6 +1037,43 @@ impl Parser {
         Expr::new(ExprKind::Array(elems), Span::merge(open, end))
     }
 
+    /// A partir do `?` na posição atual, há um `:` de ternário no mesmo nível
+    /// de parênteses antes do fim do statement? (Distingue `expr?` de
+    /// `cond ? a : b`.) Pula `::` (paths/turbofish).
+    fn ternary_colon_ahead(&self) -> bool {
+        let mut depth = 0i32;
+        let mut i = self.pos + 1;
+        while let Some(t) = self.toks.get(i) {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Eof) {
+                return false;
+            }
+            match t.value.as_str() {
+                "(" | "[" | "{" => depth += 1,
+                ")" | "]" | "}" => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                }
+                ";" | "," if depth == 0 => return false,
+                "::" => {}
+                ":" if depth == 0 => {
+                    // Evita confundir com `::` quebrado em dois tokens.
+                    if self.toks.get(i + 1).map(|t| t.value.as_str()) == Some(":")
+                        || self.toks.get(i - 1).map(|t| t.value.as_str()) == Some(":")
+                    {
+                        // parte de `::`
+                    } else {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
     fn parse_closure(&mut self, open: Span) -> Expr {
         self.bump(); // |
         let mut params = Vec::new();
@@ -1042,8 +1081,15 @@ impl Parser {
             if v == "|" {
                 break;
             }
-            // Closure params tokenize as Identifier or Param; skip ref markers
-            // like `&` / `&&` (e.g. `|&&x| ...` in the collections example).
+            // Pula marcadores de referência/mut antes do nome do binding:
+            // `|&&x|`, `|&x|`, `|mut x|`, `|*p|`. Eles não vêm seguidos de
+            // vírgula, então precisam ser consumidos dentro do mesmo parâmetro.
+            while matches!(
+                self.peek_val(),
+                Some("&") | Some("&&") | Some("mut") | Some("*")
+            ) {
+                self.bump();
+            }
             if matches!(
                 self.peek().map(|t| &t.kind),
                 Some(TokenKind::Identifier) | Some(TokenKind::Param)
@@ -1051,6 +1097,8 @@ impl Parser {
                 if let Some(tok) = self.bump() {
                     params.push(tok.value);
                 }
+            } else if self.peek_val() == Some("|") {
+                break;
             } else {
                 self.bump();
             }

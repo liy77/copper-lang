@@ -359,6 +359,13 @@ impl Interpreter {
                     None => Err(RuntimeError::new("condição de `if` não é bool", cond.span)),
                 }
             }
+            ExprKind::Closure { params, body } => {
+                Ok(Value::Closure(Rc::new(crate::value::ClosureData {
+                    params: params.clone(),
+                    body: (**body).clone(),
+                    env: Rc::clone(env),
+                })))
+            }
             ExprKind::Block(block) => self.eval_block(block, env),
             ExprKind::Try { expr: inner } => {
                 // `expr?`: Ok(v)/Some(v) → v; Err/None propaga como erro de
@@ -610,6 +617,21 @@ impl Interpreter {
         }
     }
 
+    /// Aplica uma closure a argumentos.
+    fn call_closure(
+        &mut self,
+        cl: &crate::value::ClosureData,
+        args: Vec<Value>,
+        span: copper_syntax::ast::Span,
+    ) -> Result<Value, RuntimeError> {
+        let scope = Env::child(&cl.env);
+        for (p, a) in cl.params.iter().zip(args) {
+            scope.borrow_mut().define(p.clone(), a);
+        }
+        let _ = span;
+        self.eval_expr(&cl.body, &scope)
+    }
+
     /// `recv.metodo(args)` — tenta métodos built-in, depois métodos de usuário.
     fn call_method(
         &mut self,
@@ -618,6 +640,56 @@ impl Interpreter {
         args: Vec<Value>,
         span: copper_syntax::ast::Span,
     ) -> Result<Value, RuntimeError> {
+        // Adaptadores de iterador com closure (precisam do interpretador).
+        if let Value::Vec(items) = &recv {
+            if let Some(Value::Closure(cl)) = args.first() {
+                let cl = Rc::clone(cl);
+                let src = items.borrow().clone();
+                match name {
+                    "map" => {
+                        let mut out = Vec::with_capacity(src.len());
+                        for v in src {
+                            out.push(self.call_closure(&cl, vec![v], span)?);
+                        }
+                        return Ok(Value::Vec(Rc::new(RefCell::new(out))));
+                    }
+                    "filter" => {
+                        let mut out = Vec::new();
+                        for v in src {
+                            if self.call_closure(&cl, vec![v.clone()], span)?.as_bool()
+                                == Some(true)
+                            {
+                                out.push(v);
+                            }
+                        }
+                        return Ok(Value::Vec(Rc::new(RefCell::new(out))));
+                    }
+                    "for_each" => {
+                        for v in src {
+                            self.call_closure(&cl, vec![v], span)?;
+                        }
+                        return Ok(Value::Unit);
+                    }
+                    "any" => {
+                        for v in src {
+                            if self.call_closure(&cl, vec![v], span)?.as_bool() == Some(true) {
+                                return Ok(Value::Bool(true));
+                            }
+                        }
+                        return Ok(Value::Bool(false));
+                    }
+                    "all" => {
+                        for v in src {
+                            if self.call_closure(&cl, vec![v], span)?.as_bool() != Some(true) {
+                                return Ok(Value::Bool(false));
+                            }
+                        }
+                        return Ok(Value::Bool(true));
+                    }
+                    _ => {}
+                }
+            }
+        }
         if let Some(res) = builtin_method(&recv, name, &args, span) {
             return res;
         }

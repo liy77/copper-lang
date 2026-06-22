@@ -1,11 +1,21 @@
 //! Valores em runtime da VM Alloy.
 
+use crate::env::Env;
+use copper_syntax::expr::Expr;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-#[derive(Debug, Clone, PartialEq)]
+/// Uma closure: parâmetros, corpo e o ambiente capturado.
+#[derive(Debug)]
+pub struct ClosureData {
+    pub params: Vec<String>,
+    pub body: Expr,
+    pub env: Rc<RefCell<Env>>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Int(i64),
     Float(f64),
@@ -28,6 +38,47 @@ pub enum Value {
         variant: String,
         payload: Vec<Value>,
     },
+    /// `|x| corpo` — com ambiente capturado.
+    Closure(Rc<ClosureData>),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        use Value::*;
+        match (self, other) {
+            (Int(a), Int(b)) => a == b,
+            (Float(a), Float(b)) => a == b,
+            (Bool(a), Bool(b)) => a == b,
+            (Str(a), Str(b)) => a == b,
+            (Unit, Unit) => true,
+            (Vec(a), Vec(b)) => *a.borrow() == *b.borrow(),
+            (Tuple(a), Tuple(b)) => a == b,
+            (
+                Struct {
+                    name: n1,
+                    fields: f1,
+                },
+                Struct {
+                    name: n2,
+                    fields: f2,
+                },
+            ) => n1 == n2 && *f1.borrow() == *f2.borrow(),
+            (
+                Enum {
+                    ty: t1,
+                    variant: v1,
+                    payload: p1,
+                },
+                Enum {
+                    ty: t2,
+                    variant: v2,
+                    payload: p2,
+                },
+            ) => t1 == t2 && v1 == v2 && p1 == p2,
+            // Closures nunca são iguais.
+            _ => false,
+        }
+    }
 }
 
 impl Value {
@@ -43,6 +94,7 @@ impl Value {
             Value::Tuple(_) => "tuple".into(),
             Value::Struct { name, .. } => name.clone(),
             Value::Enum { ty, .. } => ty.clone(),
+            Value::Closure(_) => "closure".into(),
         }
     }
 
@@ -134,6 +186,7 @@ impl fmt::Display for Value {
                     write!(f, "{variant}({inner})")
                 }
             }
+            Value::Closure(_) => write!(f, "<closure>"),
         }
     }
 }
