@@ -15,7 +15,9 @@ path = "src/lib.rs"
 copper-syntax = { path = "../copper-syntax" }
 clap = { version = "4", features = ["derive"] }
 # stdlib nativa (json/crypto/http) — mesmos crates que o cforge injeta.
+serde = "1"
 serde_json = "1"
+bincode = "1"
 sha2 = "0.10"
 hmac = "0.12"
 ureq = "2"

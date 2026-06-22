@@ -18,7 +18,7 @@ use crate::tokenizer::tokens::Token;
 
 /// Byte-offset range into the original source. `start` is inclusive,
 /// `end` is exclusive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Span {
     pub start: u32,
     pub end: u32,

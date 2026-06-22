@@ -22,13 +22,13 @@ use crate::tokenizer::tokenizer::Tokenizer;
 use crate::tokenizer::tokens::Token;
 
 /// A parsed Copper source file.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Program {
     pub items: Vec<Item>,
     pub errors: Vec<ProgramError>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ProgramError {
     pub span: Span,
     pub message: String,
@@ -36,7 +36,7 @@ pub struct ProgramError {
 
 /// A function / method parameter: `name: Type`. A `self` / `&self` / `&mut
 /// self` receiver is captured as a param named `self` with no type.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,
     pub ty: Option<Type>,
@@ -44,7 +44,7 @@ pub struct Param {
 }
 
 /// A `struct` / `class` field: `name: Type`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct Field {
     pub name: String,
     pub ty: Option<Type>,
@@ -52,7 +52,7 @@ pub struct Field {
 }
 
 /// A member inside a `class` body.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub enum ClassMember {
     Field(Field),
     /// `ClassName(params) { body }` — the constructor.
@@ -72,7 +72,7 @@ pub enum ClassMember {
 }
 
 /// One import binding form.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub enum ImportKind {
     /// `import name from path` → bring `path` in under alias `name`.
     Alias(String),
@@ -83,7 +83,7 @@ pub enum ImportKind {
 }
 
 /// A top-level item.
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub enum Item {
     /// `func RetType name(params) { body }` (or `unsafe func ...`).
     Function {
