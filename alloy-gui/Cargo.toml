@@ -9,6 +9,10 @@
 #   <root>/copper-lang/        (this repo)
 #   <root>/mocida/mocida-rs/   (mocida runtime)
 
+# Standalone workspace root (this crate is excluded from the copper-lang
+# workspace because it links mocida, which the portable crates must not).
+[workspace]
+
 [package]
 name = "alloy-gui"
 version = "0.1.0"
@@ -30,6 +34,10 @@ copper-syntax = { path = "../crates/copper-syntax" }
 mocida = { path = "../../mocida/mocida-rs/mocida" }
 mui-runtime = { path = "../../mocida/mocida-rs/mui-runtime" }
 mui-syntax = { path = "../crates/mui-syntax" }
+
+# Native OS file-open dialog for the File runner's "Open" button (mocida has no
+# native file picker — only an in-app modal `Dialog`).
+rfd = "0.14"
 
 [target.'cfg(windows)'.build-dependencies]
 # Embeds assets/alloy-icon.ico into the .exe PE header (taskbar/Explorer icon).

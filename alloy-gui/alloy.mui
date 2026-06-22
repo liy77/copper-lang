@@ -1,5 +1,6 @@
 // Alloy — declarative GUI (MUI). Rendered by the native host `alloy-gui`
 // (src/main.rs), which links backend.rs and drives the signals below.
+// Light "angelic" theme (white + halo gold) matching the Alloy icon.
 //
 // Signals driven by the host:
 //   version        (str)  set at startup with the binary version
@@ -14,12 +15,11 @@ import { run_source, read_file, check_update, apply_update, current_version } fr
 
 App() {
   name: "Alloy"
-  width: 860
-  height: 620
-  minWidth: 720
-  minHeight: 520
-  background: #14161a
-  renderer: vulkan
+  width: 880
+  height: 640
+  minWidth: 640
+  minHeight: 420
+  background: #f7f5ef
   mainContent: AlloyApp
   host: "alloy-gui"
 }
@@ -30,6 +30,7 @@ view AlloyApp() {
   mut output         = signal("")
   mut run_trigger    = signal(0)
   mut open_path      = signal("")
+  mut open_trigger   = signal(0)
   mut path_field     = signal("")
   mut update_trigger = signal(0)
   mut update_status  = signal("")
@@ -37,81 +38,100 @@ view AlloyApp() {
 
   Stack(orientation: vertical, align: stretch) {
 
-    // ---- Header + tabs -------------------------------------------------------
-    Rectangle(width: Window.width, height: 64, background: #1b1e24) {
-      Stack(orientation: horizontal, align: center, gap: 8, paddingLeft: 18) {
-        Text("Alloy", size: 26, color: #f4f4f4, weight: bold, align: left)
-        Text("v$version", size: 12, color: #7d8794, align: left)
-        Button("Playground", size: 13, padding: 9, radius: 6,
-          background: if tab == "playground" { #2b5fb0 } else { #232830 },
-          textColor: #e6e6e6, onClick: { tab = "playground" })
-        Button("File runner", size: 13, padding: 9, radius: 6,
-          background: if tab == "runner" { #2b5fb0 } else { #232830 },
-          textColor: #e6e6e6, onClick: { tab = "runner" })
-        Button("Update", size: 13, padding: 9, radius: 6,
-          background: if tab == "update" { #2b5fb0 } else { #232830 },
-          textColor: #e6e6e6, onClick: { tab = "update" })
+    // ---- Header: logo + title (left), tabs (right) --------------------------
+    Rectangle(width: Window.width, height: 68, background: #ffffff,
+      borderColor: #e6e1d3, borderWidth: 1) {
+      Stack(orientation: horizontal, align: center, justify: spaceBetween,
+        paddingLeft: 18, paddingRight: 18, gap: 12) {
+
+        Stack(orientation: horizontal, align: center, gap: 12, height: 48) {
+          Image("mocida://alloy-icon.png", width: 46, height: 46, fillMode: fit, antialiasing: true)
+          Text("Alloy", size: 24, color: #2a2a2a, weight: bold, vAlign: center, height: 48)
+        }
+
+        Stack(orientation: horizontal, align: center, gap: 8) {
+          if tab == "playground" {
+            Button("Playground", size: 12, padding: 6, radius: 7,
+              background: #e0a92e, textColor: #ffffff, onClick: { tab = "playground" })
+          } else {
+            Button("Playground", size: 12, padding: 6, radius: 7,
+              background: #efebe0, textColor: #6b6b6b, onClick: { tab = "playground" })
+          }
+          if tab == "runner" {
+            Button("File runner", size: 12, padding: 6, radius: 7,
+              background: #e0a92e, textColor: #ffffff, onClick: { tab = "runner" })
+          } else {
+            Button("File runner", size: 12, padding: 6, radius: 7,
+              background: #efebe0, textColor: #6b6b6b, onClick: { tab = "runner" })
+          }
+          if tab == "update" {
+            Button("Update", size: 12, padding: 6, radius: 7,
+              background: #e0a92e, textColor: #ffffff, onClick: { tab = "update" })
+          } else {
+            Button("Update", size: 12, padding: 6, radius: 7,
+              background: #efebe0, textColor: #6b6b6b, onClick: { tab = "update" })
+          }
+        }
       }
     }
 
-    // ---- Playground ----------------------------------------------------------
-    if tab == "playground" {
-      Stack(orientation: vertical, align: stretch, gap: 10, padding: 18) {
-        Text("Copper code", size: 13, color: #aaaaaa, align: left)
-        Input(
-          value: source,
-          multiline: true,
-          placeholder: "func main() { println(\"hello\") }",
-          width: Window.width - 36,
-          height: 260,
-          background: #0e1014,
-          textColor: #d6e2ee,
-          radius: 6,
-          onInput: { source = value },
-        )
-        Button("Run  ▶", size: 14, padding: 11, radius: 6,
-          background: #2f9e6e, textColor: #ffffff,
-          onClick: { run_trigger = run_trigger + 1 })
-        Text("Output", size: 13, color: #aaaaaa, align: left)
-        Rectangle(width: Window.width - 36, height: 160, background: #0e1014, radius: 6) {
-          Text(output, size: 13, color: #c8d2dc, align: left, padding: 10)
+    // ---- Body (scrolls when the window is too short) ------------------------
+    Scroll(direction: vertical, width: Window.width, height: Window.height - 69) {
+
+      if tab == "playground" {
+        Stack(orientation: vertical, align: stretch, gap: 8, padding: 22) {
+          Text("Copper code", size: 15, color: #6b6b6b, weight: bold, align: left)
+          TextArea(
+            value: source,
+            placeholder: "func main() { println(\"hello\") }",
+            width: Window.width - 60,
+            height: Window.height - 360,
+            background: #ffffff,
+            textColor: #2a2a2a,
+            borderColor: #e0dccf,
+            borderWidth: 1,
+            radius: 8,
+            padding: 14,
+            onChange: { |v| source = v },
+          )
+          Stack(orientation: horizontal, align: center) {
+            Button("Run", size: 14, width: 120, height: 34, radius: 8,
+              background: #e0a92e, textColor: #ffffff,
+              onClick: { run_trigger = run_trigger + 1 })
+          }
+          Text("Output", size: 15, color: #6b6b6b, weight: bold, align: left)
+          Rectangle(width: Window.width - 60, height: 150, background: #fbfaf5, radius: 8,
+            borderColor: #e6e1d3, borderWidth: 1) {
+            Text(output, size: 13, color: #3a3a3a, align: left, vAlign: top, padding: 14)
+          }
         }
-      }
-    } else if tab == "runner" {
-      // ---- File runner -------------------------------------------------------
-      Stack(orientation: vertical, align: stretch, gap: 10, padding: 18) {
-        Text("Open a .crs file", size: 13, color: #aaaaaa, align: left)
-        Input(
-          value: path_field,
-          placeholder: "Path to a .crs file",
-          width: Window.width - 36,
-          background: #0e1014,
-          textColor: #d6e2ee,
-          radius: 6,
-          onInput: { path_field = value },
-        )
-        Stack(orientation: horizontal, gap: 8) {
-          Button("Open", size: 13, padding: 10, radius: 6,
-            background: #232830, textColor: #e6e6e6,
-            onClick: { open_path = path_field })
-          Button("Run  ▶", size: 13, padding: 10, radius: 6,
-            background: #2f9e6e, textColor: #ffffff,
-            onClick: { run_trigger = run_trigger + 1 })
+      } else if tab == "runner" {
+        Stack(orientation: vertical, align: stretch, gap: 8, padding: 22) {
+          Text("Open a .crs file", size: 15, color: #6b6b6b, weight: bold, align: left)
+          Stack(orientation: horizontal, gap: 10, align: center) {
+            Button("Choose file…", size: 13, width: 130, height: 34, radius: 8,
+              background: #efebe0, textColor: #6b6b6b,
+              onClick: { open_trigger = open_trigger + 1 })
+            Button("Run", size: 13, width: 100, height: 34, radius: 8,
+              background: #e0a92e, textColor: #ffffff,
+              onClick: { run_trigger = run_trigger + 1 })
+            Text(path_field, size: 12, color: #9a948a, align: left)
+          }
+          Text("Output", size: 15, color: #6b6b6b, weight: bold, align: left)
+          Rectangle(width: Window.width - 60, height: Window.height - 240, background: #fbfaf5,
+            radius: 8, borderColor: #e6e1d3, borderWidth: 1) {
+            Text(output, size: 13, color: #3a3a3a, align: left, vAlign: top, padding: 14)
+          }
         }
-        Text("Output", size: 13, color: #aaaaaa, align: left)
-        Rectangle(width: Window.width - 36, height: 300, background: #0e1014, radius: 6) {
-          Text(output, size: 13, color: #c8d2dc, align: left, padding: 10)
+      } else {
+        Stack(orientation: vertical, align: center, gap: 16, padding: 36) {
+          Text("Alloy Updater", size: 20, color: #2a2a2a, weight: bold)
+          Text("Current version: $version", size: 14, color: #6b6b6b)
+          Button("Check and update", size: 14, padding: 12, radius: 8,
+            background: #e0a92e, textColor: #ffffff,
+            onClick: { update_trigger = update_trigger + 1 })
+          Text(update_status, size: 13, color: #3a3a3a, align: center)
         }
-      }
-    } else {
-      // ---- Update ------------------------------------------------------------
-      Stack(orientation: vertical, align: center, gap: 14, padding: 30) {
-        Text("Alloy Updater", size: 18, color: #e6e6e6, weight: bold)
-        Text("Current version: $version", size: 13, color: #9aa7b4)
-        Button("Check and update", size: 14, padding: 12, radius: 6,
-          background: #2b5fb0, textColor: #ffffff,
-          onClick: { update_trigger = update_trigger + 1 })
-        Text(update_status, size: 13, color: #c8d2dc, align: center)
       }
     }
   }

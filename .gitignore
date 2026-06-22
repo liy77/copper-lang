@@ -38,3 +38,6 @@ lson-src/target/
 # stray download/test artifacts
 example.html
 *.loy
+
+# alloy-gui build artifacts
+alloy-gui/target/
