@@ -324,6 +324,11 @@ impl Interpreter {
                             target.span,
                         ))
                     }
+                    // Destructuring: `(a, b) = (1, 2)`, aninhado também.
+                    ExprKind::Tuple(targets) => {
+                        self.destructure(targets, rhs, env, target.span)?;
+                        Ok(Value::Unit)
+                    }
                     _ => Err(RuntimeError::new(
                         "alvo de atribuição não suportado",
                         target.span,
@@ -336,6 +341,13 @@ impl Interpreter {
                     .map(|e| self.eval_expr(e, env))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Value::Vec(Rc::new(RefCell::new(vals))))
+            }
+            ExprKind::Tuple(items) => {
+                let vals = items
+                    .iter()
+                    .map(|e| self.eval_expr(e, env))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Value::Tuple(vals))
             }
             ExprKind::Index { base, index } => {
                 let b = self.eval_expr(base, env)?;
@@ -540,6 +552,58 @@ impl Interpreter {
         }
     }
 
+    /// Destructuring de tupla: vincula cada alvo (ident ou tupla aninhada) ao
+    /// elemento correspondente de `val`.
+    fn destructure(
+        &mut self,
+        targets: &[Expr],
+        val: Value,
+        env: &Rc<RefCell<Env>>,
+        span: copper_syntax::ast::Span,
+    ) -> Result<(), RuntimeError> {
+        let elems = match val {
+            Value::Tuple(e) => e,
+            other => {
+                return Err(RuntimeError::new(
+                    format!("destructuring espera tupla, achou {}", other.type_name()),
+                    span,
+                ))
+            }
+        };
+        if elems.len() != targets.len() {
+            return Err(RuntimeError::new(
+                format!(
+                    "tupla de {} elementos para {} alvos",
+                    elems.len(),
+                    targets.len()
+                ),
+                span,
+            ));
+        }
+        for (t, v) in targets.iter().zip(elems) {
+            // Desembrulha `mut`/`&` se vierem como Unary no alvo.
+            let mut tk = t;
+            while let ExprKind::Unary { expr: inner, .. } = &tk.kind {
+                tk = inner;
+            }
+            match &tk.kind {
+                ExprKind::Ident(name) => {
+                    if !env.borrow_mut().set(name, v.clone()) {
+                        env.borrow_mut().define(name.clone(), v);
+                    }
+                }
+                ExprKind::Tuple(inner) => self.destructure(inner, v, env, span)?,
+                _ => {
+                    return Err(RuntimeError::new(
+                        "alvo de destructuring não suportado",
+                        tk.span,
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// `base[key]` por string — para objetos JSON (`Value::Struct`).
     fn index_str(
         &mut self,
@@ -588,13 +652,28 @@ impl Interpreter {
                     RuntimeError::new(format!("`{name}` não tem o campo `{field}`"), span)
                 })
             }
-            Value::Tuple(items) => field
-                .parse::<usize>()
-                .ok()
-                .and_then(|i| items.get(i).cloned())
-                .ok_or_else(|| {
-                    RuntimeError::new(format!("tupla não tem o elemento `.{field}`"), span)
-                }),
+            Value::Tuple(items) => {
+                // `.0.0` pode chegar como o campo "0.0" (o tokenizer fundiu o
+                // número). Trata cada segmento como um índice encadeado.
+                let mut cur = Value::Tuple(items);
+                for seg in field.split('.') {
+                    let idx: usize = seg.parse().map_err(|_| {
+                        RuntimeError::new(format!("índice de tupla inválido `.{seg}`"), span)
+                    })?;
+                    cur = match cur {
+                        Value::Tuple(ref t) => t.get(idx).cloned().ok_or_else(|| {
+                            RuntimeError::new(format!("tupla não tem `.{idx}`"), span)
+                        })?,
+                        other => {
+                            return Err(RuntimeError::new(
+                                format!("`.{idx}` em {}", other.type_name()),
+                                span,
+                            ))
+                        }
+                    };
+                }
+                Ok(cur)
+            }
             other => Err(RuntimeError::new(
                 format!("não dá para acessar `.{field}` em {}", other.type_name()),
                 span,

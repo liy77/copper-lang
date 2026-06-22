@@ -220,6 +220,8 @@ pub enum ExprKind {
     },
     /// `[a, b, c]`.
     Array(Vec<Expr>),
+    /// `(a, b, ...)` — tupla (2+ elementos, ou 1 com vírgula final).
+    Tuple(Vec<Expr>),
     /// `|a, b| body` — body is a single expression (block expressions count).
     Closure {
         params: Vec<String>,
@@ -539,7 +541,13 @@ impl Parser {
                     let optional = op == "?.";
                     let start = lhs.span;
                     self.bump();
-                    let field = self.expect_ident("field name after `.`");
+                    // Acesso a tupla por índice: `.0`, `.1` (e encadeado `.0.0`,
+                    // que o tokenizer pode emitir como o número `0.0`).
+                    let field = if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Number)) {
+                        self.bump().map(|t| t.value).unwrap_or_default()
+                    } else {
+                        self.expect_ident("field name after `.`")
+                    };
                     let end = self.span_at(self.pos.saturating_sub(1));
                     lhs = Expr::new(
                         ExprKind::Member {
@@ -806,12 +814,33 @@ impl Parser {
             _ => match t.value.as_str() {
                 "(" => {
                     self.bump();
-                    let inner = self.parse_expr_bp(0)?;
+                    if self.peek_val() == Some(")") {
+                        self.bump();
+                        return Some(Expr::new(ExprKind::Tuple(vec![]), span));
+                    }
+                    // `(mut p, q)` — destructuring com `mut` inline por binding.
+                    self.eat("mut");
+                    let first = self.parse_expr_bp(0)?;
+                    if self.peek_val() == Some(",") {
+                        let mut elems = vec![first];
+                        while self.eat(",") {
+                            if self.peek_val() == Some(")") {
+                                break;
+                            }
+                            self.eat("mut");
+                            if let Some(e) = self.parse_expr_bp(0) {
+                                elems.push(e);
+                            }
+                        }
+                        self.eat(")");
+                        let sp = Span::merge(span, self.span_at(self.pos.saturating_sub(1)));
+                        return Some(Expr::new(ExprKind::Tuple(elems), sp));
+                    }
                     if !self.eat(")") {
                         let sp = self.cur_span();
                         self.err(sp, "expected `)`");
                     }
-                    Some(inner)
+                    Some(first)
                 }
                 "[" => Some(self.parse_array(span)),
                 "{" => Some(self.parse_block_expr(span)),
