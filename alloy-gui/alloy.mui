@@ -79,30 +79,67 @@ view AlloyApp() {
     Scroll(direction: vertical, width: Window.width, height: Window.height - 69) {
 
       if tab == "playground" {
-        Stack(orientation: vertical, align: stretch, gap: 8, padding: 22) {
-          Text("Copper code", size: 15, height: 20, color: #6b6b6b, weight: bold, align: left)
-          TextArea(
-            value: source,
-            placeholder: "func main() { println(\"hello\") }",
-            width: Window.width - 60,
-            height: Window.height - 360,
-            background: #ffffff,
-            textColor: #2a2a2a,
-            borderColor: #e0dccf,
-            borderWidth: 1,
-            radius: 8,
-            padding: 14,
-            onChange: { |v| source = v },
-          )
-          Stack(orientation: horizontal, justify: start, width: Window.width - 60) {
-            Button("Run", size: 14, width: 120, height: 34, radius: 8,
-              background: #e0a92e, textColor: #ffffff,
-              onClick: { run_trigger = run_trigger + 1 })
+        if Window.width >= 1000 {
+          // ---- Wide layout: editor (left) | output (right) ------------------
+          Stack(orientation: horizontal, align: stretch, gap: 18, padding: 22) {
+            Stack(orientation: vertical, align: stretch, gap: 8,
+              width: Window.width / 2 - 30) {
+              Text("Copper code", size: 15, height: 20, color: #6b6b6b, weight: bold, align: left)
+              TextArea(
+                value: source,
+                placeholder: "func main() { println(\"hello\") }",
+                width: Window.width / 2 - 30,
+                height: Window.height - 200,
+                background: #ffffff,
+                textColor: #2a2a2a,
+                borderColor: #e0dccf,
+                borderWidth: 1,
+                radius: 8,
+                padding: 14,
+                onChange: { |v| source = v },
+              )
+              Stack(orientation: horizontal, justify: start, width: Window.width / 2 - 30) {
+                Button("Run", size: 14, width: 120, height: 34, radius: 8,
+                  background: #e0a92e, textColor: #ffffff,
+                  onClick: { run_trigger = run_trigger + 1 })
+              }
+            }
+            Stack(orientation: vertical, align: stretch, gap: 8,
+              width: Window.width / 2 - 30) {
+              Text("Output", size: 15, height: 20, color: #6b6b6b, weight: bold, align: left)
+              Rectangle(width: Window.width / 2 - 30, height: Window.height - 160,
+                background: #fbfaf5, radius: 8, borderColor: #e6e1d3, borderWidth: 1) {
+                Text(output, size: 13, color: #3a3a3a, align: left, vAlign: top, padding: 14)
+              }
+            }
           }
-          Text("Output", size: 15, height: 20, color: #6b6b6b, weight: bold, align: left)
-          Rectangle(width: Window.width - 60, height: 150, background: #fbfaf5, radius: 8,
-            borderColor: #e6e1d3, borderWidth: 1) {
-            Text(output, size: 13, color: #3a3a3a, align: left, vAlign: top, padding: 14)
+        } else {
+          // ---- Narrow layout: editor on top, output below -------------------
+          Stack(orientation: vertical, align: stretch, gap: 8, padding: 22) {
+            Text("Copper code", size: 15, height: 20, color: #6b6b6b, weight: bold, align: left)
+            TextArea(
+              value: source,
+              placeholder: "func main() { println(\"hello\") }",
+              width: Window.width - 60,
+              height: Window.height - 360,
+              background: #ffffff,
+              textColor: #2a2a2a,
+              borderColor: #e0dccf,
+              borderWidth: 1,
+              radius: 8,
+              padding: 14,
+              onChange: { |v| source = v },
+            )
+            Stack(orientation: horizontal, justify: start, width: Window.width - 60) {
+              Button("Run", size: 14, width: 120, height: 34, radius: 8,
+                background: #e0a92e, textColor: #ffffff,
+                onClick: { run_trigger = run_trigger + 1 })
+            }
+            Text("Output", size: 15, height: 20, color: #6b6b6b, weight: bold, align: left)
+            Rectangle(width: Window.width - 60, height: 150, background: #fbfaf5, radius: 8,
+              borderColor: #e6e1d3, borderWidth: 1) {
+              Text(output, size: 13, color: #3a3a3a, align: left, vAlign: top, padding: 14)
+            }
           }
         }
       } else if tab == "runner" {

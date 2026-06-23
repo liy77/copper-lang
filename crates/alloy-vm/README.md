@@ -57,19 +57,31 @@ Alloy VM
 sum 1..5 = 10
 ```
 
-## Supported today (MVP)
+## Supported today
 
-- Scalar literals (`int`, `float`, `bool`, `str`) and `"${expr}"` interpolation.
-- Binary/unary operators, ternary, assignment (`=`, `+=`, …), `++`/`--`.
-- Control flow: `if`/`else`, `while`, `loop`, `for x in a..b`,
-  `break`/`continue`.
-- User functions, calls and recursion.
-- Built-ins `println` / `print`.
+All 19 `examples/copper/*.crs` run under `alloy run`.
 
-Integer arithmetic is **checked** (overflow and division/remainder by zero
-become runtime errors, never a panic). Constructs outside the MVP subset
-(struct/enum/impl/match/closures, generics, traits) report a clear runtime
-error — they are on the roadmap.
+- Scalar literals (`int`, `float`, `bool`, `str`) and `"${expr}"` interpolation;
+  `println!`/`print!` with `{}`/`{:?}` format args.
+- Binary/unary, ternary, assignment (`=`, `+=`, …), `++`/`--`.
+- Control flow: `if`/`else`, `while`, `loop`, `for x in a..b`, `break`/`continue`.
+- User functions, recursion, **return-type checking** (`func int f()` returning a
+  non-int errors); `func name()` with no return type = void.
+- **Structs / classes / `impl` / methods** + method chains, **enums**,
+  `Some/None/Ok/Err`, **`match` / `if let` / `while let`**, **closures**
+  (`.map`/`.filter`), **tuples** (literals, `.0`, nested destructuring), arrays +
+  indexing, `?` try, `as` cast, `unsafe` blocks.
+- ~30 built-in methods (`.len()`, `.iter().sum()`, `.unwrap()`, `.chars()`,
+  `.to_uppercase()`, `.parse()`, …).
+- **Stdlib** via `import`: `cstd`, `fs`, `time`, `url`, `net`, `ws` (pure Rust)
+  and `json`, `crypto`, `http` (serde_json / sha2 / hmac / ureq).
+- Local `.crs` imports merged (and bundled into `.loy`); `.rs` imports
+  auto-delegate to `cforge`.
+- `alloy build` → portable **`.loy`** artifact; `alloy check` → Miri/rustc verify.
+
+Integer arithmetic is **checked** (overflow and division/remainder by zero become
+runtime errors, never a panic). The interpreter does **not** do static
+borrow/ownership checking — that's `cforge` (rustc) or `alloy check` (Miri).
 
 ## Roadmap
 
@@ -77,10 +89,10 @@ See the full design in
 [`docs/superpowers/specs/2026-06-22-alloy-vm-design.md`](../../docs/superpowers/specs/2026-06-22-alloy-vm-design.md):
 
 1. ✅ Tree-walking core (expr, vars, control flow, functions, `println`).
-2. Composite types: struct/class/enum/impl/match/closures.
-3. Generics + traits.
-4. Rust interop: registered stdlib + cached C-ABI shim on demand.
-5. `alloy build` (self-contained binary) + `alloy repl`.
+2. ✅ Composite types: struct/class/enum/impl/match/closures + tuples.
+3. ✅ Stdlib via `import` (registered natively) + return-type checking.
+4. ✅ `.loy` portable artifact (`alloy build`) + `alloy check` (Miri).
+5. Generics + traits (currently type-erased / lenient), `alloy repl`.
 6. *(future)* bytecode backend and/or Cranelift JIT as an optimisation.
 
 ## Architecture

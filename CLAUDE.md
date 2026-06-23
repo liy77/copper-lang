@@ -21,6 +21,13 @@ Pipeline:
 `cforge run foo.crs` does the full pipeline plus a final `cargo run` inside
 `dist/rust/`.
 
+Copper has a **second execution engine**: **Alloy**, a tree-walking interpreter
+(`crates/alloy-vm`, binary `alloy`) that runs `.crs` directly — no transpile, no
+cargo, instant like `python`/`node`. The transpiler (`cforge`) is the native
+release path; Alloy is the fast-iteration path. See the **Alloy** section below.
+
+<!-- conversa-longa: 2026-06-22 sessão "Alloy VM + GUI + .loy + checks" -->
+
 ### MUI files (`.mui` / `.crm`)
 
 `cforge run foo.mui` (or `.crm`) does **not** transpile — it renders the file
@@ -55,6 +62,59 @@ into codegen later).
 
 So the two MUI verbs mirror the `.crs` ones: `cforge run foo.mui` = dev render
 (M1), `cforge -c [-r] foo.mui` = generate code [+ native build] (M5).
+
+## Alloy — the Copper interpreter (VM)
+
+<!-- conversa-longa: 2026-06-22 sessão "Alloy VM + GUI + .loy + checks" -->
+
+**Alloy** (`crates/alloy-vm`, binary `alloy`) is a tree-walking interpreter that
+executes the **shared `copper-syntax` AST** (`program::parse_program` → `Program`
+with parsed bodies) — it does NOT transpile and never links mocida, so the crate
+stays portable (CI-safe). Design + roadmap: `docs/superpowers/specs/2026-06-22-alloy-vm-design.md`.
+
+Key decision: **do not fork rustc.** The native path (transpile → rustc) already
+gives full Rust semantics; Alloy adds a dynamic, instant interpreter. "Run Rust
+interpreted" = Miri (rustc frontend + MIR interpreter); embedding it means
+shipping a whole nightly rustc — rejected. See `2026-06-22-alloy-check-miri-design.md`.
+
+### Commands
+- `alloy run file.crs` — interpret instantly (no compile step).
+- `alloy build file.crs [-o out.loy]` — compile to a **`.loy`** portable artifact.
+- `alloy run app.loy` — run the artifact on any platform (auto-detected by magic header).
+- `alloy check file.crs [--no-miri]` — verify with real Rust (borrow checker + Miri).
+- `cforge vm run/build` (alias `cforge virtual ...`) — same VM via cforge; `cforge check` is the real worker that `alloy check` delegates to.
+
+### `.loy` portable artifact ("the .jar")
+`crates/alloy-vm/src/bytecode.rs`: a `.loy` is the serialized `Program` AST —
+`magic b"ALLOYBC\0"` + `fmt_ver: u16 LE` + bincode of `Vec<Item>`. Platform-
+independent data; same file runs on any `alloy`. Extension is **`.loy`** (the
+internal magic kept the old `ALLOYBC` bytes). serde derives live on the
+copper-syntax AST types. Spec: `2026-06-22-alloy-bytecode-design.md`.
+
+### Imports in Alloy (`crates/alloy-vm/src/loader.rs`)
+- `import { x } from cstd|fs|time|url|net|ws|json|crypto|http` → resolved
+  **natively at runtime** (stdlib registered in `stdlib.rs` / `stdlib_ext.rs`;
+  the latter pulls `serde_json`/`sha2`/`hmac`/`ureq`).
+- `import { f } from math` with a sibling `math.crs` → parsed and its items
+  **merged** (recursive, cycle-guarded); `alloy build` **bundles** them into the `.loy`.
+- `import { f } from foo` with a sibling `foo.rs` → the interpreter can't run
+  Rust, so it **auto-delegates to `cforge run`** (`LoadOutcome::NeedsCforge`).
+
+### Return-type checking
+The interpreter verifies a function's returned value matches its declared return
+type (`func int f() { return "x" }` → runtime error). Lenient for user/unknown
+types (compares the base name before `<…>`), strict for scalars/Option/Result/Vec.
+`func name()` with no return type = **void** (already the case; valid Copper). On
+the cforge path, rustc enforces return types at compile.
+
+### Cross-platform runtime distribution
+`scripts/release-alloy.py` cross-compiles + packages the `alloy` binary per
+target (linux/macOS/windows × x86_64/aarch64), skipping targets whose toolchain
+isn't installed. All Alloy deps are pure-Rust, so it cross-compiles cleanly.
+
+### Alloy GUI (`alloy-gui/`)
+A dual-mode `alloy` binary (CLI + MUI GUI) — see `## Alloy GUI host` under
+gotchas. Specs: `2026-06-22-alloy-gui-design.md`.
 
 ## Repository layout
 
@@ -126,6 +186,28 @@ copper-lang/
 ├── build.rs                Stamps `COPPER_BUILD_DATE` env into the binary
 ├── README.md               Top-level overview
 └── CLAUDE.md               This file
+```
+
+> **Note (drift):** the tokenizer and parser now live in workspace crates under
+> `crates/` — `copper-syntax` (tokenizer + AST: `expr.rs`, `program.rs`, `ast.rs`)
+> and `copper-parser` (the streaming transpiler parser). `src/` re-exports them
+> (`pub use copper_syntax::tokenizer; pub use copper_parser::parser;`). The
+> `src/parser/` / `src/tokenizer/` paths above are historical.
+
+<!-- conversa-longa: 2026-06-22 -->
+Alloy-related layout (added 2026-06-22):
+```
+crates/
+├── copper-syntax/          tokenizer + AST (shared by cforge, LSP, Alloy)
+├── copper-parser/          streaming transpiler parser (cforge)
+├── alloy-vm/               Alloy interpreter (lib) + `alloy` CLI
+│   └── src/{value,env,error,interp,bytecode,loader,stdlib,stdlib_ext}.rs
+├── mui-syntax / mui-codegen / mui-lsp / copper-lsp
+alloy-gui/                  dual-mode `alloy` GUI host (MUI; links mocida; NOT a
+│                           workspace member — has its own `[workspace]`)
+│   ├── alloy.mui  backend.rs  src/main.rs  build.rs  app.bundle  assets/  packaging/make-app.sh
+scripts/release-alloy.py    cross-compile + package the `alloy` runtime per target
+docs/superpowers/specs/     Alloy design specs (vm, bytecode, gui, check-miri)
 ```
 
 ## How a `.crs` file becomes a running program
@@ -284,6 +366,74 @@ copper-lang/
   `%COPPER_PATH%\bin` marker) plus a `WM_SETTINGCHANGE` broadcast; on Unix
   it manages a `>>> COPPER PATH >>>` block in `/etc/profile.d/copper.sh`
   or the user's rc files. Override with `--local` / `--global`.
+
+### Alloy interpreter / copper-syntax parser
+
+<!-- conversa-longa: 2026-06-22 -->
+- **`copper-syntax`'s AST parser is recoverable** — on malformed input it builds
+  a partial tree and records `ParseError`s instead of aborting. `program.rs`
+  surfaces function-body **and** top-level expr errors into `prog.errors` (via
+  `record_expr_errors`); `alloy run` rejects when `prog.errors` is non-empty.
+  Earlier these were discarded (`_errs`), so syntax errors ran silently.
+- **Inside `(...)` the tokenizer classifies identifiers as `Param`/`ParamType`**,
+  not `Identifier`. `expect_ident` and closure-param parsing must accept those,
+  or `f(a.w)` and `|&&x| …` break. (Both fixed.)
+- **`?` (try) vs `cond ? a : b` (ternary)** is decided by `ternary_colon_ahead`:
+  it's a ternary iff a `:` follows at the same paren depth before the statement
+  ends — regardless of what starts the then-branch (`cond ? -x : y` works).
+- **`mut (a, b) = …`** is mutable tuple destructuring, not a `mut name =`
+  binding: the stmt parser consumes the leading `mut` and parses the rest as a
+  tuple-assignment expression.
+- **Tuples are first-class** (`ExprKind::Tuple`): literals, `.0`/`.1` (incl.
+  chained `.0.0`), and destructuring (nested + inline `mut`). cforge transpiles
+  them to real Rust (`let (a,b) = …`, `fn f() -> (i64,i64)`); Alloy has
+  `Value::Tuple`.
+- **Alloy values** (`value.rs`): `Int/Float/Bool/Str/Unit/Vec/Tuple/Struct/Enum/
+  Closure`. `Option`/`Result` are `Enum{ty:"Option"|"Result", variant, payload}`.
+  `Value` has a manual `PartialEq` (closures never equal).
+- Arithmetic in the interpreter is **checked** (`checked_add/div/rem`, etc.) — it
+  must NEVER panic; every gap returns a `RuntimeError` with a `Span`.
+
+### Alloy GUI host (mocida)
+
+Build the GUI (`alloy-gui/`) against the **sibling** `mocida-rs` workspace at
+`/Volumes/MCUDevDisk/mocida/mocida-rs` with these env vars (from `mocida/build.py`):
+`MOCIDA_INCLUDE_DIR=<mocida>/mocida/src/headers`,
+`MOCIDA_LIB_DIR=<mocida>/mocida/build`, `MOCIDA_LIB_NAME=mocida`,
+`MOCIDA_STATIC=0`, `SDL3_INCLUDE_DIR=<mocida>/mocida/SDL/include`. At runtime set
+`DYLD_FALLBACK_LIBRARY_PATH=<mocida>/mocida/build` (libmocida.dylib).
+`mui-dev` (`/Volumes/MCUDevDisk/mocida/mocida-rs/mui-dev/src/main.rs`) is the
+reference host to copy patterns from.
+
+**mui-runtime quirks learned (a `.mui` host must work around these):**
+- **Renderer:** `renderer: vulkan` fails on macOS (no Vulkan → `UIApp_Create`
+  returns NULL). Omit `renderer:` so mocida auto-picks Metal.
+- **Button color is literal-only** — `background:`/`textColor:` on a `Button` do
+  NOT evaluate `if cond { a } else { b }` (falls back to a default blue). For
+  state-dependent colors render two Buttons via `if/else` with literal colors.
+  (Stack/Text/Rectangle DO evaluate conditional colors.)
+- **`Input`/`TextField` is single-line and vertically centers text**; there is
+  no `multiline:`. For a code editor use **`TextArea`** (multi-line, top-left,
+  renders real `\n`). `Text`/`Input` render a bare `\n` as a missing-glyph box.
+- **`Image(source:"mocida://name")`** resolves the asset relative to the process
+  CWD via `app.bundle`; register an **absolute** path with
+  `mocida::bundle::set("mocida://name", abs_path)` so it works regardless of CWD.
+  Use `antialiasing: true` + `fillMode: fit` for a crisp logo.
+- **Layout:** Stack `align:` = cross-axis (`center`/`start`/`end`), `justify:` =
+  main-axis (`start`/`center`/`end`/`spaceBetween`). `align: stretch` is NOT a
+  recognized value. To left-pin buttons in a stretched column, give the row an
+  explicit `width:` + `justify: start`. `Button` honours explicit `width:`/`height:`.
+- **Resize is host-driven:** the runtime does NOT re-resolve `Window.width`/
+  `Window.height` on resize by itself. The host must poll
+  `mocida::sys::UIApp_GetWidthG/HeightG` each tick and rebuild when the size
+  changes (mui-dev does this; alloy-gui replicates it). Same for structural
+  signal changes (`take_dirty()` → rebuild + `UIApp_SetChildren`).
+- **`.mui` hot-reload:** the host reads `alloy.mui` from disk (not just the baked
+  `include_str!`), watches its mtime each tick, and rebuilds on change. The Rust
+  `backend.rs` is compiled in and **cannot** hot-reload (needs recompile) — same
+  limitation as mui-dev; only markup and interpreted Copper code are live.
+- **No native file picker** in mocida (only an in-app `Dialog`); the GUI uses the
+  `rfd` crate for the OS file-open dialog.
 
 ## How to add a new feature
 
@@ -558,6 +708,23 @@ cforge after editing.
   `*mptr = expr` (deref-assign) survive transpilation. New prefix
   contexts (e.g. a future `move` capture in expression position) need
   explicit handling there.
+
+### Alloy-specific limitations
+
+<!-- conversa-longa: 2026-06-22 -->
+- **No static borrow/ownership checking.** Alloy is dynamic (shared `Rc<RefCell>`
+  values); `&`/`&mut`/`*` are identity, move isn't enforced, and pointer
+  aliasing does NOT propagate (e.g. `*mptr = *mptr + 1` doesn't write back to the
+  pointee). For real borrow-checking use `cforge` (rustc) or `alloy check` (Miri).
+  Return-type mismatch IS caught at runtime (see gotchas).
+- **`And`/`Or` are not short-circuit** in the interpreter (both operands are
+  pre-evaluated before `eval_binary`).
+- **Network/server examples** (`http`, `net`, `ws`) execute the real calls but
+  their success depends on the environment; `ws` needs a live server at
+  `ws://127.0.0.1:9999` and degrades gracefully (returns `""`/`false`) without one.
+- **`.loy` artifacts are single-program** — a `.crs` that imports sibling `.crs`
+  is bundled, but multi-file projects with `.rs` imports aren't embeddable
+  (`.rs` needs cforge). All 19 `examples/copper/*.crs` run under `alloy run`.
 
 ## Communication conventions
 

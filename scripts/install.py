@@ -11,8 +11,8 @@ What it does:
         normal user   -> local   (%USERPROFILE%\\.copper      |  $HOME/.copper)
   4. Build cforge in release mode (fresh link — deletes the old binary first).
   5. Build lson from lson-src/ (git submodule).
-  6. Copy cforge + copper-lsp + mui-lsp + Cargo.toml + std/ + built lson
-     binary into the install dir (LSP servers land in bin/, so on PATH).
+  6. Copy cforge + alloy + copper-lsp + mui-lsp + Cargo.toml + std/ + built lson
+     binary into the install dir (binaries land in bin/, so on PATH).
   7. Register COPPER_PATH and add %COPPER_PATH%/bin to PATH:
         Windows -> HKCU/HKLM registry (REG_EXPAND_SZ) + a settings broadcast
         Unix    -> /etc/profile.d/copper.sh  or  a managed block in your rc files
@@ -91,8 +91,10 @@ def build_release():
     if exe.exists():
         step("Removing stale release binary to force a fresh link…")
         exe.unlink()
-    head("Building Copper in release mode (cargo build --release)")
-    if subprocess.run(["cargo", "build", "--release"], cwd=str(ROOT)).returncode != 0:
+    head("Building Copper in release mode (cargo build --release --workspace)")
+    # --workspace so all members build (alloy, copper-lsp, mui-lsp), not just the
+    # root cforge package. Without it cargo builds only the current package.
+    if subprocess.run(["cargo", "build", "--release", "--workspace"], cwd=str(ROOT)).returncode != 0:
         fail("cargo build --release failed.")
         sys.exit(1)
     if not exe.exists():
@@ -114,6 +116,19 @@ def build_lson():
 
     binary_name = "lson.exe" if SYS == "Windows" else "lson"
     built_bin = lson_src / "target" / "release" / binary_name
+
+    # lson-src is a git submodule physically nested inside the copper-lang
+    # workspace. Even though it's in the root [workspace].exclude list, cargo
+    # (1.96) still attaches it to the parent workspace when built from within,
+    # failing with "believes it's in a workspace when it's not". The fix cargo
+    # itself recommends is an empty [workspace] table in the sub-manifest, which
+    # makes it a standalone workspace. We inject it idempotently into the
+    # working tree (not committed to the submodule).
+    manifest = lson_src / "Cargo.toml"
+    text = manifest.read_text(encoding="utf-8")
+    if "[workspace]" not in text:
+        manifest.write_text(text.rstrip() + "\n\n[workspace]\n", encoding="utf-8")
+        info("Added standalone [workspace] table to lson-src/Cargo.toml")
 
     head("Building lson from lson-src/ (cargo build --release)")
     target_dir = lson_src / "target"
@@ -147,6 +162,20 @@ def copy_payload(exe, install_dir, lson_bin=None):
     if SYS != "Windows":
         os.chmod(dst_exe, 0o755)
     ok(f"Installed {exe.name}")
+
+    # Alloy — the Copper interpreter (binary `alloy`, crate alloy-vm). It is a
+    # workspace member, so the release build above produced it for free. Ship it
+    # in bin/ next to cforge so it lands on PATH via %COPPER_PATH%\bin.
+    alloy_name = "alloy.exe" if SYS == "Windows" else "alloy"
+    src_alloy = exe.parent / alloy_name
+    if src_alloy.exists():
+        dst_alloy = bin_dir / alloy_name
+        shutil.copy2(src_alloy, dst_alloy)
+        if SYS != "Windows":
+            os.chmod(dst_alloy, 0o755)
+        ok(f"Installed {alloy_name}")
+    else:
+        warn(f"alloy not found at {src_alloy} — skipping (rebuild the workspace).")
 
     # Language servers (copper-lsp / mui-lsp) live in bin/ next to cforge, so
     # they land on PATH via %COPPER_PATH%\bin. OndaEngine resolves them through
@@ -309,6 +338,7 @@ def main():
     print(c("      cforge run main.crs", DIM))
     print(c("      cforge -c -i main.crs", DIM))
     print(c("      cforge --version", DIM))
+    print(c("      alloy run main.crs", DIM))
     uninst = install_dir / ("uninstall.bat" if SYS == "Windows" else "uninstall.py")
     info(f"Uninstall   : {uninst}" + ("  (run as Administrator)" if scope == "global" else ""))
     print()
