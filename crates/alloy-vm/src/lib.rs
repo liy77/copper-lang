@@ -9,3 +9,4 @@ pub mod loader;
 pub mod stdlib;
 pub mod stdlib_ext;
 pub mod value;
+pub mod wasm;

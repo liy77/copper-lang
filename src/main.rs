@@ -176,70 +176,105 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
 /// `cforge vm run/build <file>` — drive the Alloy interpreter. Returns the
 /// process exit code.
 fn run_vm(sub: &str, file: &str) -> i32 {
-    use alloy_vm::loader::{self, LoadOutcome};
+    use alloy_vm::loader;
     use std::path::Path;
     let p = Path::new(file);
 
     if sub == "build" {
-        let src = match std::fs::read_to_string(file) {
-            Ok(s) => s,
+        let resolved = match loader::resolve_runnable_wasm(p) {
+            Ok(x) => x,
             Err(e) => {
-                eprintln!("cforge vm: could not read {file}: {e}");
+                eprintln!("cforge vm: {e}");
                 return 1;
             }
         };
-        match loader::resolve_source(&src, p) {
-            Ok(LoadOutcome::Program(prog)) => {
-                let out = p.with_extension("loy");
-                let bytes = alloy_vm::bytecode::compile(&prog.items);
-                match std::fs::write(&out, bytes) {
-                    Ok(()) => {
-                        println!("compiled: {}", out.display());
-                        0
-                    }
-                    Err(e) => {
-                        eprintln!("cforge vm: could not write {}: {e}", out.display());
-                        1
-                    }
+        // Compile each imported `.rs` to wasm and embed it in the `.loy`.
+        let mut modules = resolved.wasm_modules.clone();
+        for imp in &resolved.rs_imports {
+            match alloy_vm::wasm::compile_rs_to_wasm(&imp.rs_path) {
+                Ok(bytes) => modules.push(alloy_vm::bytecode::WasmModule {
+                    names: imp.names.clone(),
+                    bytes,
+                }),
+                Err(e) => {
+                    eprintln!(
+                        "cforge vm build: could not compile {} to wasm: {e}",
+                        imp.rs_path.display()
+                    );
+                    return 1;
                 }
             }
-            Ok(LoadOutcome::NeedsCforge { module, .. }) => {
-                eprintln!(
-                    "cforge vm build: `{module}` is Rust (.rs) — `.loy` does not embed Rust. \
-                     Compile natively with: cforge build {file}"
-                );
-                1
+        }
+        let out = p.with_extension("loy");
+        let bytes = alloy_vm::bytecode::compile(&resolved.program.items, &modules);
+        match std::fs::write(&out, bytes) {
+            Ok(()) => {
+                if modules.is_empty() {
+                    println!("compiled: {}", out.display());
+                } else {
+                    println!(
+                        "compiled: {} ({} embedded wasm module(s))",
+                        out.display(),
+                        modules.len()
+                    );
+                }
+                0
             }
             Err(e) => {
-                eprintln!("cforge vm: {e}");
+                eprintln!("cforge vm: could not write {}: {e}", out.display());
                 1
             }
         }
     } else {
-        match loader::load_runnable(p) {
-            Ok(LoadOutcome::Program(prog)) => {
-                match alloy_vm::interp::Interpreter::new().run_program(&prog) {
-                    Ok(_) => 0,
-                    Err(e) => {
-                        eprintln!(
-                            "cforge vm: runtime error @ {}..{}: {}",
-                            e.span.start, e.span.end, e.message
-                        );
-                        1
-                    }
-                }
-            }
-            // Imported Rust: the interpreter path does not run `.rs`;
-            // use cforge's own native transpile.
-            Ok(LoadOutcome::NeedsCforge { module, .. }) => {
-                eprintln!(
-                    "cforge vm: `{module}` is Rust (.rs) — the interpreter does not run Rust. \
-                     Run with the native transpile: cforge run {file}"
-                );
-                1
-            }
+        // Resolve the Copper program + Rust to run via wasm.
+        let resolved = match loader::resolve_runnable_wasm(p) {
+            Ok(x) => x,
             Err(e) => {
                 eprintln!("cforge vm: {e}");
+                return 1;
+            }
+        };
+
+        let mut interp = alloy_vm::interp::Interpreter::new();
+        // Wasm already embedded in a `.loy` — no rustc needed.
+        for m in &resolved.wasm_modules {
+            if let Err(e) = interp.register_wasm_bytes(&m.names, &m.bytes) {
+                eprintln!("cforge vm: embedded wasm failed to load: {e}");
+                return 1;
+            }
+        }
+        for imp in &resolved.rs_imports {
+            let rt = match alloy_vm::wasm::WasmRuntime::from_rs(&imp.rs_path) {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!(
+                        "cforge vm: could not run {} via wasm ({e}). \
+                         Use the native transpile: cforge run {file}",
+                        imp.rs_path.display()
+                    );
+                    return 1;
+                }
+            };
+            // Plain `pub fn` (no `#[no_mangle] pub extern "C"`) isn't a wasm
+            // export yet → point at the native transpile.
+            if let Some(missing) = imp.names.iter().find(|n| !rt.exports(n)) {
+                eprintln!(
+                    "cforge vm: `{missing}` from {} isn't a wasm export \
+                     (needs `#[no_mangle] pub extern \"C\"`). Use: cforge run {file}",
+                    imp.rs_path.display()
+                );
+                return 1;
+            }
+            interp.register_wasm(&imp.names, std::rc::Rc::new(std::cell::RefCell::new(rt)));
+        }
+
+        match interp.run_program(&resolved.program) {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!(
+                    "cforge vm: runtime error @ {}..{}: {}",
+                    e.span.start, e.span.end, e.message
+                );
                 1
             }
         }

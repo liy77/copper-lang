@@ -78,8 +78,13 @@ All 19 `examples/copper/*.crs` run under `alloy run`.
   `std::` intrinsics; only `run`/`list_dir`/`append_file`/`rand_int` stay
   native). `fs`, `time`, `url`, `net`, `ws` are pure Rust; `json`, `crypto`,
   `http` use serde_json / sha2 / hmac / ureq.
-- Local `.crs` imports merged (and bundled into `.loy`); `.rs` imports
-  auto-delegate to `cforge`.
+- Local `.crs` imports merged (and bundled into `.loy`). **`.rs` imports run via
+  embedded WebAssembly** — `rustc` compiles the `.rs` to wasm once (cached under
+  `~/.alloy/cache`), `wasmi` runs it, the interpreter calls its exports. Copper
+  stays interpreted; only the Rust leaves cross into wasm. Prototype: scalar
+  `i64`/`bool` with `#[no_mangle] pub extern "C"` exports (richer types coming);
+  non-exported `.rs` falls back to `cforge`. See the
+  [wasm-interop spec](../../docs/superpowers/specs/2026-06-22-alloy-wasm-interop-design.md).
 - `alloy build` → portable **`.loy`** artifact; `alloy check` → Miri/rustc verify.
 
 Integer arithmetic is **checked** (overflow and division/remainder by zero become

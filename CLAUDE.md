@@ -85,11 +85,15 @@ shipping a whole nightly rustc — rejected. See `2026-06-22-alloy-check-miri-de
 - `cforge vm run/build` (alias `cforge virtual ...`) — same VM via cforge; `cforge check` is the real worker that `alloy check` delegates to.
 
 ### `.loy` portable artifact ("the .jar")
-`crates/alloy-vm/src/bytecode.rs`: a `.loy` is the serialized `Program` AST —
-`magic b"ALLOYBC\0"` + `fmt_ver: u16 LE` + bincode of `Vec<Item>`. Platform-
-independent data; same file runs on any `alloy`. Extension is **`.loy`** (the
-internal magic kept the old `ALLOYBC` bytes). serde derives live on the
-copper-syntax AST types. Spec: `2026-06-22-alloy-bytecode-design.md`.
+`crates/alloy-vm/src/bytecode.rs`: a `.loy` is `magic b"ALLOYBC\0"` +
+`fmt_ver: u16 LE` + bincode(`alloy_ver`) + bincode(payload). **v1** payload =
+`Vec<Item>` (AST only; still loadable). **v2** payload = `Vec<Item>` +
+`Vec<WasmModule { names, bytes }>` — the AST stays interpreted and the embedded
+wasm carries imported Rust (`.rs`) compiled to `wasm32`, so the artifact is
+**self-contained and needs no rustc to run** (verified: clear the cache + delete
+the `.rs`, the `.loy` still runs the Rust). Platform-independent data; same file
+runs on any `alloy`. serde derives live on the copper-syntax AST types. Specs:
+`2026-06-22-alloy-bytecode-design.md`, `2026-06-22-alloy-wasm-interop-design.md`.
 
 ### Imports in Alloy (`crates/alloy-vm/src/loader.rs`)
 - `import { x } from fs|time|url|net|ws|json|crypto|http` → resolved
@@ -107,8 +111,19 @@ copper-syntax AST types. Spec: `2026-06-22-alloy-bytecode-design.md`.
   (`CSTD_NATIVE` in `loader.rs`) — stay native in `stdlib.rs`.
 - `import { f } from math` with a sibling `math.crs` → parsed and its items
   **merged** (recursive, cycle-guarded); `alloy build` **bundles** them into the `.loy`.
-- `import { f } from foo` with a sibling `foo.rs` → the interpreter can't run
-  Rust, so it **auto-delegates to `cforge run`** (`LoadOutcome::NeedsCforge`).
+- `import { f } from foo` with a sibling `foo.rs` → Alloy runs the Rust via
+  **embedded WebAssembly** (`crates/alloy-vm/src/wasm.rs`): `rustc --target
+  wasm32-unknown-unknown` compiles `foo.rs` to a wasm module **once** (cached by
+  content hash under `~/.alloy/cache`, `ALLOY_CACHE_DIR` to override), then
+  `wasmi` instantiates it and the interpreter calls its exports at the import
+  site. The Copper stays interpreted (instant); only the Rust leaves cross into
+  wasm. `loader::resolve_runnable_wasm` collects the `.rs` imports
+  (`RsImport`); `Interpreter::register_wasm` wires them in. **Prototype scope:**
+  scalar `i64`/`bool`, and the `.rs` must export `#[no_mangle] pub extern "C"` —
+  plain `pub fn` (not a wasm export) **falls back to `cforge run`**
+  (`LoadOutcome::NeedsCforge`). Richer types (strings/structs via WASI + alloc
+  ABI) + `.loy` wasm-embedding are next; see
+  `docs/superpowers/specs/2026-06-22-alloy-wasm-interop-design.md`.
 
 ### Return-type checking
 The interpreter verifies a function's returned value matches its declared return
@@ -732,9 +747,11 @@ cforge after editing.
 - **Network/server examples** (`http`, `net`, `ws`) execute the real calls but
   their success depends on the environment; `ws` needs a live server at
   `ws://127.0.0.1:9999` and degrades gracefully (returns `""`/`false`) without one.
-- **`.loy` artifacts are single-program** — a `.crs` that imports sibling `.crs`
-  is bundled, but multi-file projects with `.rs` imports aren't embeddable
-  (`.rs` needs cforge). All 19 `examples/copper/*.crs` run under `alloy run`.
+- **`.loy` artifacts** bundle sibling `.crs` (merged AST) **and** imported `.rs`
+  (compiled to embedded wasm, v2 format) — so a mixed Copper+Rust program builds
+  to a single self-contained `.loy` that runs without rustc. (Prototype wasm ABI
+  is `i64`/`bool` + `extern "C"` exports; richer types are next.) All 19
+  `examples/copper/*.crs` run under `alloy run`.
 
 ## Communication conventions
 

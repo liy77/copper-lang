@@ -29,6 +29,68 @@ pub enum LoadOutcome {
     NeedsCforge { module: String, rs_path: PathBuf },
 }
 
+/// An `import { a, b } from foo` resolved to a sibling `foo.rs` — to be run via
+/// embedded wasm (see [`crate::wasm`]) instead of delegating to cforge.
+pub struct RsImport {
+    pub names: Vec<String>,
+    pub rs_path: PathBuf,
+}
+
+/// The fully-resolved input to run: the (Copper) program, plus the Rust to run
+/// via wasm — either as `.rs` files still to compile ([`RsImport`]) or as
+/// already-compiled modules embedded in a `.loy` ([`bytecode::WasmModule`]).
+pub struct Resolved {
+    pub program: Program,
+    pub rs_imports: Vec<RsImport>,
+    pub wasm_modules: Vec<bytecode::WasmModule>,
+}
+
+/// Like [`resolve_source`], but instead of bailing to `NeedsCforge` at the first
+/// `.rs` import, it **collects** the Rust imports so the caller can run them via
+/// embedded wasm. For a `.loy`, surfaces the embedded wasm modules directly.
+pub fn resolve_runnable_wasm(path: &Path) -> Result<Resolved, String> {
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    if bytecode::is_bytecode(&bytes) {
+        let (program, wasm_modules) = bytecode::load(&bytes)?;
+        return Ok(Resolved {
+            program,
+            rs_imports: Vec::new(),
+            wasm_modules,
+        });
+    }
+    let src = String::from_utf8(bytes).map_err(|_| "file is not UTF-8 or .loy".to_string())?;
+    let prog = parse_program(&src);
+    if !prog.errors.is_empty() {
+        let msg = prog
+            .errors
+            .iter()
+            .map(|e| format!("sintaxe @ {}..{}: {}", e.span.start, e.span.end, e.message))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(msg);
+    }
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut merged: Vec<Item> = Vec::new();
+    let mut visited = HashSet::new();
+    let mut rs_imports: Vec<RsImport> = Vec::new();
+    collect(
+        prog.items,
+        base,
+        &mut merged,
+        &mut visited,
+        Some(&mut rs_imports),
+    )?;
+    Ok(Resolved {
+        program: Program {
+            items: merged,
+            errors: Vec::new(),
+        },
+        rs_imports,
+        wasm_modules: Vec::new(),
+    })
+}
+
 /// Is a module part of the native stdlib (resolved at runtime)?
 fn is_stdlib(module: &str) -> bool {
     crate::stdlib::handles(module) || crate::stdlib_ext::handles(module)
@@ -40,7 +102,8 @@ pub fn load_runnable(path: &Path) -> Result<LoadOutcome, String> {
     let bytes =
         std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
     if bytecode::is_bytecode(&bytes) {
-        return Ok(LoadOutcome::Program(bytecode::load(&bytes)?));
+        let (prog, _wasm) = bytecode::load(&bytes)?;
+        return Ok(LoadOutcome::Program(prog));
     }
     let src = String::from_utf8(bytes).map_err(|_| "file is not UTF-8 or .loy".to_string())?;
     resolve_source(&src, path)
@@ -62,7 +125,7 @@ pub fn resolve_source(src: &str, path: &Path) -> Result<LoadOutcome, String> {
     let base = path.parent().unwrap_or_else(|| Path::new("."));
     let mut merged: Vec<Item> = Vec::new();
     let mut visited = HashSet::new();
-    if let Some(rs) = collect(prog.items, base, &mut merged, &mut visited)? {
+    if let Some(rs) = collect(prog.items, base, &mut merged, &mut visited, None)? {
         return Ok(rs);
     }
     Ok(LoadOutcome::Program(Program {
@@ -78,9 +141,13 @@ fn collect(
     base: &Path,
     out: &mut Vec<Item>,
     visited: &mut HashSet<PathBuf>,
+    mut rs_imports: Option<&mut Vec<RsImport>>,
 ) -> Result<Option<LoadOutcome>, String> {
     for item in items {
-        if let Item::Import { path: module, .. } = &item {
+        if let Item::Import {
+            path: module, kind, ..
+        } = &item
+        {
             // item imports with a simple module (not path/url, not "./x.rs")
             let module = module.trim_matches('"');
             if is_stdlib(module) {
@@ -100,10 +167,24 @@ fn collect(
             let rs_candidate = sibling(base, module, "rs");
             if let Some(rs) = &rs_candidate {
                 if rs.is_file() {
-                    return Ok(Some(LoadOutcome::NeedsCforge {
-                        module: module.to_string(),
-                        rs_path: rs.clone(),
-                    }));
+                    // In wasm mode, collect the Rust import (the caller compiles
+                    // it to wasm and runs it embedded). Otherwise signal cforge.
+                    match (rs_imports.as_deref_mut(), kind) {
+                        (Some(acc), ImportKind::Items(names)) => {
+                            acc.push(RsImport {
+                                names: names.clone(),
+                                rs_path: rs.clone(),
+                            });
+                            out.push(item);
+                            continue;
+                        }
+                        _ => {
+                            return Ok(Some(LoadOutcome::NeedsCforge {
+                                module: module.to_string(),
+                                rs_path: rs.clone(),
+                            }));
+                        }
+                    }
                 }
             }
             let crs_candidate = sibling(base, module, "crs");
@@ -122,7 +203,13 @@ fn collect(
                             ));
                         }
                         let sub_base = crs.parent().unwrap_or(base).to_path_buf();
-                        if let Some(rs) = collect(sub.items, &sub_base, out, visited)? {
+                        if let Some(rs) = collect(
+                            sub.items,
+                            &sub_base,
+                            out,
+                            visited,
+                            rs_imports.as_deref_mut(),
+                        )? {
                             return Ok(Some(rs));
                         }
                     }

@@ -1,0 +1,26 @@
+// Copper drives the logic; the heavy/number bits are real Rust run via wasm.
+import { gcd, is_prime, pow_mod } from numbers
+
+func main() {
+    println("-- gcd (Rust via wasm) --")
+    mut g = gcd(48, 36)
+    println("gcd(48, 36) = ${g}")
+
+    println("-- primes up to 30 (Copper loop + Rust is_prime) --")
+    mut n = 2
+    mut primes = 0
+    while n <= 30 {
+        mut p = is_prime(n)
+        if p == 1 {
+            print("${n} ")
+            primes++
+        }
+        n++
+    }
+    println("")
+    println("count = ${primes}")
+
+    println("-- modular exponentiation (Rust via wasm) --")
+    mut r = pow_mod(7, 256, 13)
+    println("7^256 mod 13 = ${r}")
+}

@@ -47,6 +47,9 @@ pub struct Interpreter {
     imports: HashMap<String, String>,
     /// classes that have a constructor (`Class::new` creates the instance and runs the body).
     constructors: std::collections::HashSet<String>,
+    /// imported `.rs` symbol -> embedded wasm runtime (shared if several names
+    /// come from the same module). See [`crate::wasm`].
+    wasm: HashMap<String, Rc<RefCell<crate::wasm::WasmRuntime>>>,
     globals: Option<Rc<RefCell<Env>>>,
     out: Sink,
 }
@@ -257,17 +260,77 @@ impl Interpreter {
         Ok(last)
     }
 
+    /// Registers an embedded wasm runtime under each imported `.rs` symbol so
+    /// calls to those names cross into wasm (see [`call_wasm`]).
+    pub fn register_wasm(
+        &mut self,
+        names: &[String],
+        runtime: Rc<RefCell<crate::wasm::WasmRuntime>>,
+    ) {
+        for n in names {
+            self.wasm.insert(n.clone(), Rc::clone(&runtime));
+        }
+    }
+
+    /// Instantiates an in-memory wasm module (e.g. one embedded in a `.loy`) and
+    /// registers its exports under `names`.
+    pub fn register_wasm_bytes(&mut self, names: &[String], wasm: &[u8]) -> Result<(), String> {
+        let rt = crate::wasm::WasmRuntime::from_wasm(wasm)?;
+        self.register_wasm(names, Rc::new(RefCell::new(rt)));
+        Ok(())
+    }
+
+    /// Marshals args into the wasm ABI, calls the export, and lifts the result
+    /// back to a [`Value`]. Prototype: `i64`/`bool` scalars only.
+    fn call_wasm(
+        &mut self,
+        rt: &Rc<RefCell<crate::wasm::WasmRuntime>>,
+        name: &str,
+        args: Vec<Value>,
+        span: copper_syntax::ast::Span,
+    ) -> Result<Value, RuntimeError> {
+        let mut ints = Vec::with_capacity(args.len());
+        for a in &args {
+            match a {
+                Value::Int(n) => ints.push(*n),
+                Value::Bool(b) => ints.push(*b as i64),
+                other => {
+                    return Err(RuntimeError::new(
+                        format!(
+                        "wasm call `{name}`: only i64/bool args supported in the prototype, got {}",
+                        other.type_name()
+                    ),
+                        span,
+                    ))
+                }
+            }
+        }
+        let r = rt
+            .borrow_mut()
+            .call_i64(name, &ints)
+            .map_err(|e| RuntimeError::new(e, span))?;
+        Ok(Value::Int(r))
+    }
+
     fn call_user(
         &mut self,
         name: &str,
         args: Vec<Value>,
         span: copper_syntax::ast::Span,
     ) -> Result<Value, RuntimeError> {
-        let def = self
-            .funcs
-            .get(name)
-            .cloned()
-            .ok_or_else(|| RuntimeError::new(format!("function `{name}` not defined"), span))?;
+        let def = match self.funcs.get(name).cloned() {
+            Some(d) => d,
+            None => {
+                // Imported Rust (`.rs`) runs via embedded wasm.
+                if let Some(rt) = self.wasm.get(name).cloned() {
+                    return self.call_wasm(&rt, name, args, span);
+                }
+                return Err(RuntimeError::new(
+                    format!("function `{name}` not defined"),
+                    span,
+                ));
+            }
+        };
         if def.params.len() != args.len() {
             return Err(RuntimeError::new(
                 format!(

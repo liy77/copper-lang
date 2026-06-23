@@ -1,0 +1,8 @@
+import { add, fib } from mathwasm
+
+func main() {
+    mut s = add(20, 22)
+    println("add(20, 22) = ${s}")
+    mut f = fib(10)
+    println("fib(10) = ${f}")
+}

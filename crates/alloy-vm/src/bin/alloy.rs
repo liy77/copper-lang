@@ -2,16 +2,19 @@
 //!
 //! * `alloy run <file>` — runs instantly (node/python style): interprets a
 //!   `.crs` directly (no compilation step), merges local `.crs` imports,
-//!   or executes a `.loy`. If the program imports Rust (`.rs`), delegates to
-//!   `cforge` (transpile + native compile).
+//!   or executes a `.loy`. Imported Rust (`.rs`) runs via embedded wasm
+//!   (compiled once + cached); non-exported `.rs` falls back to `cforge`.
 //! * `alloy build <file.crs>` — compiles to a portable `.loy` artifact
-//!   (serialized AST, with local `.crs` files already merged).
+//!   (serialized AST + any imported `.rs` compiled to embedded wasm, so the
+//!   artifact runs on any `alloy` without rustc).
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::rc::Rc;
 
 use alloy_vm::interp::Interpreter;
-use alloy_vm::loader::{self, LoadOutcome};
+use alloy_vm::loader;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -71,64 +74,111 @@ fn check(file: &Path, no_miri: bool) -> ExitCode {
 }
 
 fn run(file: &Path) -> ExitCode {
-    match loader::load_runnable(file) {
-        Ok(LoadOutcome::Program(prog)) => match Interpreter::new().run_program(&prog) {
-            Ok(_) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!(
-                    "alloy: runtime error @ {}..{}: {}",
-                    e.span.start, e.span.end, e.message
-                );
-                ExitCode::FAILURE
-            }
-        },
-        // Imported Rust: the interpreter does not run `.rs` → delegate to cforge.
-        Ok(LoadOutcome::NeedsCforge { module, .. }) => {
-            eprintln!("alloy: `{module}` is Rust (.rs); delegating to cforge…");
-            delegate_to_cforge(file)
-        }
+    // Resolve the Copper program + Rust to run via wasm (`.rs` to compile, or
+    // modules already embedded in a `.loy`).
+    let resolved = match loader::resolve_runnable_wasm(file) {
+        Ok(x) => x,
         Err(e) => {
             eprintln!("alloy: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut interp = Interpreter::new();
+
+    // Wasm already embedded in a `.loy` — no rustc needed.
+    for m in &resolved.wasm_modules {
+        if let Err(e) = interp.register_wasm_bytes(&m.names, &m.bytes) {
+            eprintln!("alloy: embedded wasm failed to load: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // `.rs` imports — compile to wasm (cached) and instantiate.
+    for imp in &resolved.rs_imports {
+        let rt = match alloy_vm::wasm::WasmRuntime::from_rs(&imp.rs_path) {
+            Ok(rt) => rt,
+            Err(e) => {
+                // Couldn't compile/run the Rust as wasm → fall back to cforge.
+                eprintln!(
+                    "alloy: could not run {} via wasm ({e}); delegating to cforge…",
+                    imp.rs_path.display()
+                );
+                return delegate_to_cforge(file);
+            }
+        };
+        // Every imported name must be a wasm export. Plain `pub fn` (no
+        // `#[no_mangle] pub extern \"C\"`) isn't exported — those `.rs` files
+        // need the richer ABI that isn't in the prototype yet, so delegate.
+        if let Some(missing) = imp.names.iter().find(|n| !rt.exports(n)) {
+            eprintln!(
+                "alloy: `{missing}` from {} isn't a wasm export (needs `#[no_mangle] pub extern \"C\"`); delegating to cforge…",
+                imp.rs_path.display()
+            );
+            return delegate_to_cforge(file);
+        }
+        interp.register_wasm(&imp.names, Rc::new(RefCell::new(rt)));
+    }
+
+    match interp.run_program(&resolved.program) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!(
+                "alloy: runtime error @ {}..{}: {}",
+                e.span.start, e.span.end, e.message
+            );
             ExitCode::FAILURE
         }
     }
 }
 
 fn build(file: &Path, output: Option<&Path>) -> ExitCode {
-    let src = match std::fs::read_to_string(file) {
-        Ok(s) => s,
+    let resolved = match loader::resolve_runnable_wasm(file) {
+        Ok(x) => x,
         Err(e) => {
-            eprintln!("alloy: could not read {}: {e}", file.display());
+            eprintln!("alloy: {e}");
             return ExitCode::FAILURE;
         }
     };
-    match loader::resolve_source(&src, file) {
-        Ok(LoadOutcome::Program(prog)) => {
-            let out = output
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| file.with_extension("loy"));
-            let bytes = alloy_vm::bytecode::compile(&prog.items);
-            match std::fs::write(&out, bytes) {
-                Ok(()) => {
-                    println!("compiled: {}", out.display());
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("alloy: could not write {}: {e}", out.display());
-                    ExitCode::FAILURE
-                }
+
+    // Compile each imported `.rs` to wasm and embed it in the `.loy` so the
+    // artifact is self-contained (runs on any `alloy` without rustc).
+    let mut modules = resolved.wasm_modules.clone();
+    for imp in &resolved.rs_imports {
+        match alloy_vm::wasm::compile_rs_to_wasm(&imp.rs_path) {
+            Ok(bytes) => modules.push(alloy_vm::bytecode::WasmModule {
+                names: imp.names.clone(),
+                bytes,
+            }),
+            Err(e) => {
+                eprintln!(
+                    "alloy build: could not compile {} to wasm: {e}",
+                    imp.rs_path.display()
+                );
+                return ExitCode::FAILURE;
             }
         }
-        Ok(LoadOutcome::NeedsCforge { module, .. }) => {
-            eprintln!(
-                "alloy build: `{module}` is Rust (.rs) — `.loy` does not embed Rust.\n\
-                 Compile natively with: cforge build {}",
-                file.display()
-            );
-            ExitCode::FAILURE
+    }
+
+    let out = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| file.with_extension("loy"));
+    let bytes = alloy_vm::bytecode::compile(&resolved.program.items, &modules);
+    match std::fs::write(&out, bytes) {
+        Ok(()) => {
+            if modules.is_empty() {
+                println!("compiled: {}", out.display());
+            } else {
+                println!(
+                    "compiled: {} ({} embedded wasm module(s))",
+                    out.display(),
+                    modules.len()
+                );
+            }
+            ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("alloy: {e}");
+            eprintln!("alloy: could not write {}: {e}", out.display());
             ExitCode::FAILURE
         }
     }
