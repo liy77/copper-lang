@@ -84,6 +84,61 @@ impl Interpreter {
         }
     }
 
+    /// Like [`emit`], but for `eprintln!`/`eprint!`. Goes to real stderr when
+    /// running on a tty; folds into the capture buffer otherwise (so a GUI /
+    /// test still sees the message).
+    fn emit_err(&mut self, text: &str, newline: bool) {
+        match &self.out {
+            Sink::Stdout => {
+                if newline {
+                    eprintln!("{text}");
+                } else {
+                    eprint!("{text}");
+                }
+            }
+            Sink::Buffer(buf) => {
+                let mut b = buf.borrow_mut();
+                b.push_str(text);
+                if newline {
+                    b.push('\n');
+                }
+            }
+        }
+    }
+
+    /// `std::io::stdin().read_line(&mut buf)` — reads a line into the `&mut`
+    /// target binding (the interpreter has no real references, so we mutate the
+    /// named variable directly) and returns `Ok(bytes_read)`. Appends, matching
+    /// Rust's `read_line` semantics.
+    fn intrinsic_read_line(
+        &mut self,
+        args: &[Expr],
+        env: &Rc<RefCell<Env>>,
+    ) -> Result<Value, RuntimeError> {
+        // Peel `&mut`/`&`/`*` off the first arg to find the target identifier.
+        let target = args.first().and_then(|a| {
+            let mut k = &a.kind;
+            while let ExprKind::Unary { expr: inner, .. } = k {
+                k = &inner.kind;
+            }
+            if let ExprKind::Ident(n) = k {
+                Some(n.clone())
+            } else {
+                None
+            }
+        });
+        let mut line = String::new();
+        let n = std::io::stdin().read_line(&mut line).unwrap_or(0);
+        if let Some(name) = target {
+            let cur = match env.borrow().get(&name) {
+                Some(Value::Str(s)) => s,
+                _ => String::new(),
+            };
+            env.borrow_mut().set(&name, Value::Str(cur + &line));
+        }
+        Ok(Value::ok(Value::Int(n as i64)))
+    }
+
     pub fn load_program(&mut self, prog: &Program) {
         use copper_syntax::program::ClassMember;
         for item in &prog.items {
@@ -476,6 +531,19 @@ impl Interpreter {
                         self.emit(&line, newline);
                         Ok(Value::Unit)
                     }
+                    ExprKind::Ident(name) if name == "eprintln" || name == "eprint" => {
+                        let line = render_print(&arg_vals);
+                        self.emit_err(&line, name == "eprintln");
+                        Ok(Value::Unit)
+                    }
+                    ExprKind::Ident(name) if name == "panic" || name == "unreachable" => {
+                        let msg = if arg_vals.is_empty() {
+                            format!("{name}!")
+                        } else {
+                            render_print(&arg_vals)
+                        };
+                        Err(RuntimeError::new(msg, expr.span))
+                    }
                     // Option/Result constructors.
                     ExprKind::Ident(name) if name == "Some" => Ok(Value::some(
                         arg_vals.into_iter().next().unwrap_or(Value::Unit),
@@ -509,6 +577,12 @@ impl Interpreter {
                         field,
                         optional,
                     } => {
+                        // `stdin().read_line(&mut buf)` needs the raw arg expr to
+                        // find the binding to mutate — handle before the receiver
+                        // (a stdin handle we don't otherwise need) is evaluated.
+                        if field == "read_line" {
+                            return self.intrinsic_read_line(args, env);
+                        }
                         let recv = self.eval_expr(base, env)?;
                         // `recv?.method()` on None → None.
                         if *optional {
@@ -524,6 +598,15 @@ impl Interpreter {
                     ExprKind::Path { segments } => self.call_path(segments, arg_vals, expr.span),
                     _ => Err(RuntimeError::new("unsupported call target", callee.span)),
                 }
+            }
+            // Bare path used as a value (not called), e.g. `std::time::UNIX_EPOCH`.
+            ExprKind::Path { segments } => {
+                crate::intrinsics::path_value(segments).ok_or_else(|| {
+                    RuntimeError::new(
+                        format!("path `{}` not supported as a value", segments.join("::")),
+                        expr.span,
+                    )
+                })
             }
             _ => Err(RuntimeError::new(
                 "construct not yet supported by the VM",
@@ -848,6 +931,48 @@ impl Interpreter {
                 }
             }
         }
+        // Closure adapters on Result/Option (need the interpreter).
+        if let Value::Enum {
+            ty,
+            variant,
+            payload,
+        } = &recv
+        {
+            if let Some(Value::Closure(cl)) = args.first() {
+                let cl = Rc::clone(cl);
+                let is_ok = matches!(variant.as_str(), "Ok" | "Some");
+                let inner = payload.first().cloned().unwrap_or(Value::Unit);
+                match name {
+                    "map" => {
+                        return if is_ok {
+                            let v = self.call_closure(&cl, vec![inner], span)?;
+                            Ok(Value::Enum {
+                                ty: ty.clone(),
+                                variant: variant.clone(),
+                                payload: vec![v],
+                            })
+                        } else {
+                            Ok(recv.clone())
+                        };
+                    }
+                    "and_then" => {
+                        return if is_ok {
+                            self.call_closure(&cl, vec![inner], span)
+                        } else {
+                            Ok(recv.clone())
+                        };
+                    }
+                    "unwrap_or_else" => {
+                        return if is_ok {
+                            Ok(inner)
+                        } else {
+                            self.call_closure(&cl, vec![inner], span)
+                        };
+                    }
+                    _ => {}
+                }
+            }
+        }
         // `Response` methods from the http module.
         if let Value::Struct { name: ty, fields } = &recv {
             if ty == "Response" {
@@ -869,6 +994,10 @@ impl Interpreter {
         if let Some(res) = builtin_method(&recv, name, &args, span) {
             return res;
         }
+        // Native std handle methods (`__Path.exists()`, `__Duration.as_millis()`…).
+        if let Some(res) = crate::intrinsics::call_method(&recv, name, &args, span) {
+            return res;
+        }
         if let Value::Struct { name: ty, .. } = &recv {
             if let Some(def) = self.methods.get(ty).and_then(|m| m.get(name)).cloned() {
                 return self.invoke(&def, Some(recv), args, span);
@@ -887,6 +1016,10 @@ impl Interpreter {
         args: Vec<Value>,
         span: copper_syntax::ast::Span,
     ) -> Result<Value, RuntimeError> {
+        // Native `std::...` / `String::new` / `Vec::new` intrinsics first.
+        if let Some(res) = crate::intrinsics::call_path(segments, &args, span) {
+            return res;
+        }
         if segments.len() == 2 {
             let (ty, name) = (&segments[0], &segments[1]);
             // Class constructor: creates the instance, runs the body (which does
@@ -1279,6 +1412,39 @@ fn builtin_method(
             "to_uppercase" => Some(Ok(Value::Str(s.to_uppercase()))),
             "to_lowercase" => Some(Ok(Value::Str(s.to_lowercase()))),
             "trim" => Some(Ok(Value::Str(s.trim().to_string()))),
+            "trim_end" => Some(Ok(Value::Str(s.trim_end().to_string()))),
+            "trim_start" => Some(Ok(Value::Str(s.trim_start().to_string()))),
+            "split" => {
+                let sep = match args.first() {
+                    Some(Value::Str(p)) => p.clone(),
+                    _ => String::new(),
+                };
+                let parts: Vec<Value> = if sep.is_empty() {
+                    s.chars().map(|c| Value::Str(c.to_string())).collect()
+                } else {
+                    s.split(sep.as_str())
+                        .map(|p| Value::Str(p.to_string()))
+                        .collect()
+                };
+                Some(Ok(Value::Vec(Rc::new(RefCell::new(parts)))))
+            }
+            "lines" => Some(Ok(Value::Vec(Rc::new(RefCell::new(
+                s.lines().map(|l| Value::Str(l.to_string())).collect(),
+            ))))),
+            "starts_with" => Some(Ok(Value::Bool(match args.first() {
+                Some(Value::Str(p)) => s.starts_with(p.as_str()),
+                _ => false,
+            }))),
+            "ends_with" => Some(Ok(Value::Bool(match args.first() {
+                Some(Value::Str(p)) => s.ends_with(p.as_str()),
+                _ => false,
+            }))),
+            "replace" => Some(Ok(Value::Str(match (args.first(), args.get(1)) {
+                (Some(Value::Str(from)), Some(Value::Str(to))) => {
+                    s.replace(from.as_str(), to.as_str())
+                }
+                _ => s.clone(),
+            }))),
             "chars" => Some(Ok(Value::Vec(Rc::new(RefCell::new(
                 s.chars().map(|c| Value::Str(c.to_string())).collect(),
             ))))),
@@ -1346,6 +1512,35 @@ fn builtin_method(
                 }
                 Some(Ok(Value::Unit))
             }
+            "skip" => {
+                let n = match args.first() {
+                    Some(Value::Int(n)) => (*n).max(0) as usize,
+                    _ => 0,
+                };
+                let rest: Vec<Value> = items.borrow().iter().skip(n).cloned().collect();
+                Some(Ok(Value::Vec(Rc::new(RefCell::new(rest)))))
+            }
+            "take" => {
+                let n = match args.first() {
+                    Some(Value::Int(n)) => (*n).max(0) as usize,
+                    _ => 0,
+                };
+                let head: Vec<Value> = items.borrow().iter().take(n).cloned().collect();
+                Some(Ok(Value::Vec(Rc::new(RefCell::new(head)))))
+            }
+            "join" => {
+                let sep = match args.first() {
+                    Some(Value::Str(p)) => p.clone(),
+                    _ => String::new(),
+                };
+                let joined = items
+                    .borrow()
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(&sep);
+                Some(Ok(Value::Str(joined)))
+            }
             "first" => Some(Ok(items
                 .borrow()
                 .first()
@@ -1398,6 +1593,27 @@ fn builtin_method(
                     Some(Ok(payload.first().cloned().unwrap_or(Value::Unit)))
                 } else {
                     Some(Ok(args.first().cloned().unwrap_or(Value::Unit)))
+                }
+            }
+            // `Result::ok()` → Option; `Option::ok_or(...)` is not modelled.
+            "ok" => {
+                if variant == "Ok" {
+                    Some(Ok(Value::some(
+                        payload.first().cloned().unwrap_or(Value::Unit),
+                    )))
+                } else if variant == "Err" {
+                    Some(Ok(Value::none()))
+                } else {
+                    // already an Option — pass through
+                    Some(Ok(recv.clone()))
+                }
+            }
+            "unwrap_or_default" => {
+                if matches!(variant.as_str(), "Some" | "Ok") {
+                    Some(Ok(payload.first().cloned().unwrap_or(Value::Unit)))
+                } else {
+                    // Default for the common String/numeric cases.
+                    Some(Ok(Value::Str(String::new())))
                 }
             }
             _ => None,

@@ -9,9 +9,18 @@
 //!   `cforge` (transpile + native compile).
 
 use crate::bytecode;
-use copper_syntax::program::{parse_program, Item, Program};
+use copper_syntax::program::{parse_program, ImportKind, Item, Program};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// The `cstd` module source — the single source of truth, shared with cforge.
+/// Bundled so Alloy interprets the *same* code instead of duplicating it.
+const CSTD_SRC: &str = include_str!("../../../std/cstd.crs");
+
+/// `cstd` functions whose bodies use Rust-std builder/iterator chains (or `<<`
+/// shifts) the interpreter can't walk — these stay implemented natively in
+/// [`crate::stdlib`] and are NOT merged from the source.
+const CSTD_NATIVE: &[&str] = &["run", "list_dir", "append_file", "rand_int"];
 
 pub enum LoadOutcome {
     /// Program ready to interpret (local imports merged; native stdlib).
@@ -75,6 +84,15 @@ fn collect(
             // item imports with a simple module (not path/url, not "./x.rs")
             let module = module.trim_matches('"');
             if is_stdlib(module) {
+                // `cstd` is interpreted from its Copper source (single source of
+                // truth) — merge the imported functions so the interpreter runs
+                // them. The few native-only ones (CSTD_NATIVE) resolve through
+                // the stdlib dispatch instead and are skipped here.
+                if module == "cstd" {
+                    if let Item::Import { kind, .. } = &item {
+                        merge_cstd(kind, out);
+                    }
+                }
                 out.push(item);
                 continue;
             }
@@ -120,6 +138,41 @@ fn collect(
         }
     }
     Ok(None)
+}
+
+/// Merges the requested `cstd` functions (from the bundled [`CSTD_SRC`]) into
+/// `out`. Honours the import list (`import { a, b } from cstd` brings only `a`,
+/// `b`; `import * from cstd` brings all), skips the natively-handled functions
+/// ([`CSTD_NATIVE`]), and never adds a name already present (so user definitions
+/// and repeat imports don't duplicate). The source's own parse errors (the
+/// native-only functions use constructs the AST parser can't lower) are ignored
+/// — those items simply aren't merged.
+fn merge_cstd(kind: &ImportKind, out: &mut Vec<Item>) {
+    let wanted: Option<&[String]> = match kind {
+        ImportKind::Items(names) => Some(names),
+        ImportKind::Glob | ImportKind::Alias(_) => None, // None = take all eligible
+    };
+    let prog = parse_program(CSTD_SRC);
+    for it in prog.items {
+        let Item::Function { name, .. } = &it else {
+            continue;
+        };
+        if CSTD_NATIVE.contains(&name.as_str()) {
+            continue;
+        }
+        if let Some(names) = wanted {
+            if !names.iter().any(|n| n == name) {
+                continue;
+            }
+        }
+        let already = out
+            .iter()
+            .any(|o| matches!(o, Item::Function { name: n, .. } if n == name));
+        if already {
+            continue;
+        }
+        out.push(it);
+    }
 }
 
 /// Resolves `<base>/<module>.<ext>`. Accepts `module` as a simple name or a

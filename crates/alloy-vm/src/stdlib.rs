@@ -2,9 +2,15 @@
 //! `std/*.crs` modules expose. When a program does `import { f } from mod`,
 //! the interpreter registers `f` and resolves calls here.
 //!
-//! Covered here (pure Rust, no external deps): `cstd`, `fs`, `time`, `url`,
-//! `net`. The `json`/`crypto`/`http` modules (which need crates) are in
+//! Covered here (pure Rust, no external deps): `fs`, `time`, `url`, `net`, `ws`.
+//! The `json`/`crypto`/`http` modules (which need crates) are in
 //! [`crate::stdlib_ext`].
+//!
+//! `cstd` is **not** reimplemented here — it's interpreted from `std/cstd.crs`
+//! (the single source of truth, shared with cforge; see `loader::merge_cstd`).
+//! Only the four functions whose bodies the interpreter can't walk (`run`,
+//! `list_dir`, `append_file`, `rand_int`) keep a native implementation in
+//! [`cstd`].
 
 use crate::error::RuntimeError;
 use crate::value::Value;
@@ -19,8 +25,16 @@ pub fn dispatch(
     args: &[Value],
     span: Span,
 ) -> Option<Result<Value, RuntimeError>> {
+    // `cstd` is special: its logic lives in `std/cstd.crs` (the single source,
+    // shared with cforge) and is merged + interpreted by the loader. Only the
+    // handful of functions whose bodies use Rust-std builder/iterator chains the
+    // interpreter cannot execute (`run`, `list_dir`, `append_file`, `rand_int`)
+    // are implemented natively here; everything else returns `None` so the
+    // dispatcher falls through to the interpreted Copper definition.
+    if module == "cstd" {
+        return cstd(name, args, span);
+    }
     let r = match module {
-        "cstd" => cstd(name, args, span),
         "fs" => fs(name, args, span),
         "time" => time(name, args, span),
         "url" => url(name, args, span),
@@ -66,54 +80,84 @@ fn vec_of_strings(items: Vec<String>) -> Value {
 // cstd
 // ===========================================================================
 
-fn cstd(name: &str, args: &[Value], span: Span) -> Result<Value, RuntimeError> {
-    match name {
-        "input" | "readln" => {
-            // Print the prompt (if any) and read a line from stdin. No tty /
-            // EOF → empty string (does not block).
-            if let Some(p) = args.first() {
-                print!("{p} ");
-                let _ = std::io::stdout().flush();
+fn cstd(name: &str, args: &[Value], span: Span) -> Option<Result<Value, RuntimeError>> {
+    // Only the functions whose `std/cstd.crs` bodies use Rust-std builder /
+    // iterator chains the interpreter can't walk live here. Everything else is
+    // `None` → resolved from the merged Copper source (single source of truth).
+    let r = match name {
+        // `std::process::Command::new("sh").args(["-c", cmd]).output()`
+        "run" => {
+            let cmd = match arg_str(args, 0, span) {
+                Ok(c) => c,
+                Err(e) => return Some(Err(e)),
+            };
+            match std::process::Command::new("sh").args(["-c", &cmd]).output() {
+                Ok(o) => Value::Str(String::from_utf8_lossy(&o.stdout).into_owned()),
+                Err(_) => Value::Str(String::new()),
             }
-            let mut line = String::new();
-            match std::io::stdin().read_line(&mut line) {
-                Ok(_) => Ok(Value::Str(line.trim_end_matches(['\n', '\r']).to_string())),
-                Err(_) => Ok(Value::Str(String::new())),
+        }
+        // `std::fs::read_dir(path).filter_map(...).map(...).collect()`
+        "list_dir" => {
+            let p = match arg_str(args, 0, span) {
+                Ok(c) => c,
+                Err(e) => return Some(Err(e)),
+            };
+            match std::fs::read_dir(&p) {
+                Ok(it) => vec_of_strings(
+                    it.filter_map(|e| e.ok())
+                        .map(|e| e.path().display().to_string())
+                        .collect(),
+                ),
+                Err(_) => vec_of_strings(Vec::new()),
             }
         }
-        "exit" => {
-            let code = arg_int(args, 0, span).unwrap_or(0);
-            std::process::exit(code as i32);
+        // `std::fs::OpenOptions::new().create(true).append(true).open(path)...`
+        "append_file" => {
+            let p = match arg_str(args, 0, span) {
+                Ok(c) => c,
+                Err(e) => return Some(Err(e)),
+            };
+            let c = match arg_str(args, 1, span) {
+                Ok(c) => c,
+                Err(e) => return Some(Err(e)),
+            };
+            let res = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&p)
+                .and_then(|mut f| f.write_all(c.as_bytes()));
+            if let Err(e) = res {
+                return Some(Err(RuntimeError::new(
+                    format!("append_file({p}): {e}"),
+                    span,
+                )));
+            }
+            Value::Unit
         }
-        "sleep_ms" => {
-            let ms = arg_int(args, 0, span)?;
-            std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
-            Ok(Value::Unit)
+        // xorshift PRNG — the body uses `<<` / `>>` shifts the AST parser
+        // doesn't lower yet, so it stays native.
+        "rand_int" => {
+            let min = match arg_int(args, 0, span) {
+                Ok(n) => n,
+                Err(e) => return Some(Err(e)),
+            };
+            let max = match arg_int(args, 1, span) {
+                Ok(n) => n,
+                Err(e) => return Some(Err(e)),
+            };
+            let mut x: u64 = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0xCAFEBABE);
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let span_u: u64 = (max - min).max(1) as u64;
+            Value::Int(min + (x % span_u) as i64)
         }
-        "now_ms" => Ok(Value::Int(unix_millis())),
-        "args" => Ok(vec_of_strings(std::env::args().skip(1).collect())),
-        "env" => {
-            let key = arg_str(args, 0, span)?;
-            Ok(Value::Str(std::env::var(key).unwrap_or_default()))
-        }
-        "exists" => {
-            let p = arg_str(args, 0, span)?;
-            Ok(Value::Bool(std::path::Path::new(&p).exists()))
-        }
-        "read_file" => {
-            let p = arg_str(args, 0, span)?;
-            Ok(Value::Str(std::fs::read_to_string(p).unwrap_or_default()))
-        }
-        "write_file" => {
-            let p = arg_str(args, 0, span)?;
-            let c = arg_str(args, 1, span)?;
-            Ok(Value::Bool(std::fs::write(p, c).is_ok()))
-        }
-        _ => Err(RuntimeError::new(
-            format!("cstd::{name} not implemented"),
-            span,
-        )),
-    }
+        _ => return None,
+    };
+    Some(Ok(r))
 }
 
 // ===========================================================================

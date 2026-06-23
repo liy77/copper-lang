@@ -92,9 +92,19 @@ internal magic kept the old `ALLOYBC` bytes). serde derives live on the
 copper-syntax AST types. Spec: `2026-06-22-alloy-bytecode-design.md`.
 
 ### Imports in Alloy (`crates/alloy-vm/src/loader.rs`)
-- `import { x } from cstd|fs|time|url|net|ws|json|crypto|http` → resolved
+- `import { x } from fs|time|url|net|ws|json|crypto|http` → resolved
   **natively at runtime** (stdlib registered in `stdlib.rs` / `stdlib_ext.rs`;
   the latter pulls `serde_json`/`sha2`/`hmac`/`ureq`).
+- `import { x } from cstd` → **interpreted from `std/cstd.crs`**, the single
+  source of truth shared with cforge (no Rust reimplementation). The loader
+  bundles `cstd.crs` (`include_str!`) and **merges** the imported functions so
+  Alloy runs the same Copper code. To make those bodies executable the
+  interpreter gained native `std::` intrinsics (`crates/alloy-vm/src/intrinsics.rs`:
+  stdin/stdout, `std::fs`, `std::env`, `std::path`, `std::time`, `String::new`,
+  plus `eprintln!`/`panic!` and `read_line`'s `&mut` mutation). Only four
+  functions whose bodies use Rust-std builder/iterator chains (or `<<` shifts)
+  the AST parser can't lower — `run`, `list_dir`, `append_file`, `rand_int`
+  (`CSTD_NATIVE` in `loader.rs`) — stay native in `stdlib.rs`.
 - `import { f } from math` with a sibling `math.crs` → parsed and its items
   **merged** (recursive, cycle-guarded); `alloy build` **bundles** them into the `.loy`.
 - `import { f } from foo` with a sibling `foo.rs` → the interpreter can't run

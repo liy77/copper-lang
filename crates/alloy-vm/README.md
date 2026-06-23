@@ -73,8 +73,11 @@ All 19 `examples/copper/*.crs` run under `alloy run`.
   indexing, `?` try, `as` cast, `unsafe` blocks.
 - ~30 built-in methods (`.len()`, `.iter().sum()`, `.unwrap()`, `.chars()`,
   `.to_uppercase()`, `.parse()`, …).
-- **Stdlib** via `import`: `cstd`, `fs`, `time`, `url`, `net`, `ws` (pure Rust)
-  and `json`, `crypto`, `http` (serde_json / sha2 / hmac / ureq).
+- **Stdlib** via `import`: `cstd` is **interpreted from `std/cstd.crs`** (the
+  single source shared with cforge — merged in by the loader, run via native
+  `std::` intrinsics; only `run`/`list_dir`/`append_file`/`rand_int` stay
+  native). `fs`, `time`, `url`, `net`, `ws` are pure Rust; `json`, `crypto`,
+  `http` use serde_json / sha2 / hmac / ureq.
 - Local `.crs` imports merged (and bundled into `.loy`); `.rs` imports
   auto-delegate to `cforge`.
 - `alloy build` → portable **`.loy`** artifact; `alloy check` → Miri/rustc verify.
