@@ -16,6 +16,17 @@ println!("Your name is $name")
     <img src="./assets/cforge.png" width=300 height=300 />
 </p>
 
+## Two execution paths
+
+| Path | Tool | How it works | When to use |
+| --- | --- | --- | --- |
+| **Transpile → Rust** | `cforge` | `.crs` → Rust source → `cargo build` | Production, full Rust semantics |
+| **Interpreter** | `alloy` | tree-walks the AST directly, no compile step | Fast iteration, scripting, CI |
+
+`alloy run file.crs` is instant — like `python` or `node`. `cforge run file.crs`
+gives you native speed after the first compile. Both share the same
+`copper-syntax` AST so behaviour is identical.
+
 ## Install
 
 There's also a [native installer](./installer-gui) — built with MUI
@@ -35,11 +46,18 @@ On Windows you can also double-click `scripts\install.bat`; on Unix run
 `bash scripts/install.sh`. Both just forward to `install.py`. The installer
 auto-detects admin / root and picks a global or per-user install accordingly.
 
-## Compile a project
+Pass `--workspace` to also build and install `alloy`, `lson`, and the LSP
+servers in one shot.
+
+## Compile and run (cforge)
 
 ```sh
-cforge -c -i ./src
+cforge run ./main.crs          # transpile + cargo run
+cforge -c -i ./src             # compile only, directory input
+cforge run examples/copper/loops.crs
 ```
+
+`cforge run` (no arg) defaults to `./main.crs` in the current directory.
 
 ### Flags
 
@@ -53,13 +71,53 @@ cforge -c -i ./src
 | `-V` | `--verbose` | Verbose output | `cforge -V run main.crs` |
 | `-v` | `--version` | Print version (with build date for pre-releases) | `cforge -v` |
 
-## Run a file
+## Alloy — the Copper interpreter
+
+`alloy` interprets `.crs` files directly with no compile step and can also
+produce a portable `.loy` artifact that runs anywhere without a Rust toolchain.
 
 ```sh
-cforge run ./main.crs
+alloy run file.crs             # instant — no compile
+alloy build file.crs           # compile to a portable .loy artifact
+alloy run app.loy              # run the artifact (no rustc needed)
+alloy check file.crs           # verify with real Rust + Miri
 ```
 
-`cforge run` (no arg) defaults to `./main.crs` in the current directory.
+### Portable `.loy` artifacts
+
+A `.loy` is a self-contained binary (magic header + bincoded AST). If the
+program imports sibling `.rs` files Alloy compiles them to WebAssembly once
+(cached by content hash in `~/.alloy/cache`) and embeds the wasm into the
+artifact — so the final `.loy` runs on any platform with no rustc and no
+`.rs` files on disk.
+
+```sh
+alloy build myapp.crs -o myapp.loy   # bundles sibling .rs as wasm
+alloy run myapp.loy                  # works anywhere, no rustc
+```
+
+### Importing Rust from Copper
+
+Alloy can call into sibling `.rs` files via WebAssembly — the Copper stays
+interpreted (instant); only the Rust crosses into wasm:
+
+```crs
+// math.rs  (sibling file)
+// #[no_mangle] pub extern "C" fn fib(n: i64) -> i64 { ... }
+
+import { fib } from math
+
+println!("{}", fib(10))   // → 55, runs via embedded wasm
+```
+
+Current prototype ABI: `i64`/`bool` scalars with `#[no_mangle] pub extern "C"`.
+Richer types (strings, `Vec`, structs) are the next phase.
+
+### Alloy GUI playground
+
+`alloy-gui/` is a dual-mode `alloy` binary that adds a MUI playground — open
+a `.crs` file, edit it, and see output live. Hot-reload re-evaluates on save;
+resize splits output to the right on wide screens.
 
 ## Language features
 
@@ -137,33 +195,42 @@ Available functions: `input`, `readln`, `read_int`, `read_float`, `to_int`,
 `now_ms`, `env`, `args`, `read_file`, `write_file`, `append_file`, `exists`,
 `is_file`, `is_dir`, `list_dir`, `run`, `rand_int`.
 
-The library lives in [`std/cstd.crs`](./std/cstd.crs) (Copper) plus
-[`std/cstd_native.rs`](./std/cstd_native.rs) for the few helpers Copper's
-transpiler can't yet express cleanly (multi-line method chains, `&[T]`
-slice types, `cfg!(target_os=...)`). Editing either file and rebuilding
-`cforge` ships the change.
+The library lives in [`std/cstd.crs`](./std/cstd.crs) — written in Copper,
+shared between the transpiler and Alloy (single source of truth).
 
 ## Project layout
 
 ```
 copper-lang/
-├── src/                # Compiler source (Rust)
-├── examples/           # Runnable samples (copper/ → .crs, mui/ → .mui/.crm)
-├── scripts/            # Python tooling: install / build / cleanup / diagnose / uninstall / hooks
-├── docs/               # INSTALL.md and other guides
-├── std/                # Copper standard library (.crs)
+├── src/                # cforge compiler entrypoint + legacy re-exports
+├── crates/
+│   ├── copper-syntax/  # Tokenizer + AST (shared by cforge, alloy, LSPs)
+│   ├── copper-parser/  # Streaming transpiler parser
+│   ├── alloy-vm/       # Alloy interpreter + `alloy` CLI
+│   ├── copper-lsp/     # Copper language server (hover, completion, goto-def)
+│   ├── mui-syntax/     # MUI (.mui/.crm) parser
+│   ├── mui-codegen/    # MUI → Rust codegen (M5 native path)
+│   └── mui-lsp/        # MUI language server
+├── alloy-gui/          # Alloy GUI playground (MUI host, standalone workspace)
+├── installer-gui/      # Native MUI installer (Windows-first)
+├── examples/
+│   ├── copper/         # .crs demos (loops, interpolation, matching, cstd, ...)
+│   └── mui/            # .mui/.crm demos (hello, counter, keyboard, app, ...)
+├── scripts/            # Python tooling: install / build / cleanup / diagnose / hooks
+├── docs/               # INSTALL.md, TODO.md, design specs
+├── std/                # Copper standard library (cstd.crs)
 ├── lson/               # LSON parser binaries (per-OS)
 ├── assets/             # Logos
-├── main.crs            # Default file used by `cforge run` with no argument
+├── main.crs            # Default file for `cforge run` with no argument
 ├── properties.kson     # Project metadata + dependencies
-├── Cargo.toml          # Rust crate definition (cforge)
-├── build.rs            # Stamps the build date into pre-release versions
-└── README.md
+├── Cargo.toml          # Workspace root
+└── build.rs            # Stamps the build date into pre-release versions
 ```
 
 ## Examples
 
 ```sh
+# cforge (transpile → Rust)
 cforge run examples/copper/loops.crs           # loop / while / for / break / continue
 cforge run examples/copper/interpolation.crs   # "Hello $name", "${expr}"
 cforge run examples/copper/collections.crs     # vec literals, closures, ?
@@ -173,16 +240,22 @@ cforge run examples/copper/ternary.crs         # `cond ? a : b`
 cforge run examples/copper/cstd.crs            # built-in stdlib (input, sleep, env, ...)
 cforge run examples/copper/unsafe.crs          # `unsafe func` and `unsafe { ... }` blocks
 
+# Alloy (interpreter — instant)
+alloy run examples/copper/loops.crs
+alloy run examples/copper/cstd.crs
+alloy build examples/copper/collections.crs -o collections.loy
+alloy run collections.loy
+
 # MUI examples (need mui-dev on PATH):
 cforge run examples/mui/hello/hello.mui
 cforge run examples/mui/counter/counter.mui
-cforge run examples/mui/keyboard/keyboard.mui   # onKeyInput — keyboard events + println debug
+cforge run examples/mui/keyboard/keyboard.mui
 cforge run examples/mui/app/app.mui
 ```
 
 ## Roadmap / TODO
 
-Status of the toolchain. Checked = working today.
+Full backlog with details: [`docs/TODO.md`](./docs/TODO.md).
 
 **Language (cforge)**
 - [x] Core transpile pipeline (`.crs` → Rust), `cforge run` / `-c`
@@ -190,28 +263,37 @@ Status of the toolchain. Checked = working today.
 - [x] Loops, `match` (guards/`_`/`|`), `if let` / `while let`
 - [x] Optional chaining `?.`, ternary `?:`, string interpolation `"${expr}"`
 - [x] `unsafe` blocks + functions, raw pointers, generic return types
-- [x] Optional return-type sugar (`func Type? name(...)` → `-> Option<Type>`) +
-      generic return / param types on `impl` methods (`func Option<T> find(self, xs: Vec<T>)`)
-- [x] `cstd` standard library, `.rs` interop
-- [x] CalVer versioning + git commit hash in `--version`
-- [ ] Generics in **parameters** of free functions (`func<T> name(arg: T)`, `struct S<T>`)
-- [ ] Fix `println(var)` / `println("${x}")` → valid Rust (needs a string-literal first arg)
-- [ ] `?:` ternary **inside** `${…}` interpolation (captured opaque before the rewrite)
-- [ ] `&[T]` slice params in `cstd` (tokenized as a vec literal)
+- [x] Optional return-type sugar + generic params on `impl` methods
+- [x] `cstd` standard library, `.rs` interop (sibling Rust files)
+- [x] CalVer versioning + build date in `--version`
+- [ ] Generics in free-function parameters (`func<T> name(arg: T)`)
+- [ ] `?:` ternary inside `${…}` interpolation
+- [ ] Type aliases (`type Foo = Bar<T>`) inside `static`/`as` casts
+
+**Alloy interpreter**
+- [x] Tree-walking interpreter for the full `copper-syntax` AST
+- [x] `cstd` interpreted from `std/cstd.crs` (single source, no Rust reimplementation)
+- [x] Portable `.loy` artifacts (`alloy build` / `alloy run`)
+- [x] Imported `.rs` files run via embedded WebAssembly (wasm cache, embedded in `.loy`)
+- [x] `alloy check` — auto-provisioned Miri/rustc verification
+- [x] Return-type checking at runtime
+- [x] Alloy GUI playground (MUI, hot-reload, native file dialog)
+- [ ] Wasm ABI: strings, `Vec`, structs (currently `i64`/`bool` scalars only)
+- [ ] Auto-generate export wrappers so plain `pub fn` works without `extern "C"`
+- [ ] Short-circuit `&&` / `||` (both sides are currently pre-evaluated)
 
 **MUI front-end (`.mui` / `.crm`)**
 - [x] `cforge run x.mui` dev render (via `mui-dev`)
 - [x] `cforge -c [-r] x.mui` codegen + native build (via `mui-codegen`)
-- [x] Component import/reuse, same-file components, `app { }` config + bundles
-- [x] `onKeyInput` keyboard handlers (`event.key`, `=`/`+=`/`-=`/`++`, `println!` debug)
-- [x] Common `x:` / `y:` props on **every** widget (per-axis override of the auto-flow cursor)
-- [x] `Dialog` overlay (backdrop + centered card) and non-visual `Audio` (one-shot WAV) components
-- [ ] Codegen **feature parity** with the runtime (string signals, conditional text/color, reactive `if`/`for`, native Stack styling)
-- [ ] Folder-input autocomplete without losing focus on rebuild
+- [x] Component import/reuse, `app { }` config + bundles
+- [x] `onKeyInput` keyboard handlers, `Dialog` overlay, `Audio` component
+- [x] Common `x:`/`y:` props on every widget
+- [ ] Reactive `if`/`for`/`match` in node position (structural codegen — design ready)
+- [ ] Codegen feature parity with the interpreter (string signals, conditional color)
 
 **Installer**
-- [x] MUI-based native installer (no Tauri/web), real `cforge` install (PATH, scope, dedupe)
-- [x] `lson` as a git submodule, auto-built on first run
+- [x] MUI-based native installer (no Tauri/web)
+- [x] `--workspace` flag builds and installs alloy + LSPs in one shot
 - [ ] Signed installer artifact + CI release packaging
 
 ## Contributing
