@@ -162,8 +162,12 @@ def clean_path_unix(scope):
 
         fish_profile = Path("/etc/fish/conf.d/copper.fish")
         if fish_profile.exists():
-            fish_profile.unlink()
-            ok(f"Removed {fish_profile}")
+            text = fish_profile.read_text(encoding="utf-8")
+            if FISH_BLOCK_BEGIN in text and FISH_BLOCK_END in text:
+                fish_profile.unlink()
+                ok(f"Removed {fish_profile}")
+            else:
+                warn(f"{fish_profile} exists but doesn't look managed by Copper; leaving it in place.")
         else:
             info(f"{fish_profile} not found.")
         return
