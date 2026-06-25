@@ -12,7 +12,7 @@ the install scope the same way the installer chose it:
 It then removes the install tree, drops COPPER_PATH/bin from PATH, and clears
 the COPPER_PATH variable. On Windows the PATH edit is done through the registry
 (filtering the literal %COPPER_PATH%\\bin marker); on Unix it strips the managed
-block from /etc/profile.d/copper.sh or your shell rc files.
+block from /etc/profile.d/copper.sh, fish conf.d, or your shell rc files.
 
 Usage:
     python uninstall.py
@@ -30,6 +30,8 @@ SYS = platform.system()
 
 BLOCK_BEGIN = "# >>> COPPER PATH (copper-lang) >>>"
 BLOCK_END = "# <<< COPPER PATH <<<"
+FISH_BLOCK_BEGIN = "# >>> COPPER PATH (copper-lang, fish) >>>"
+FISH_BLOCK_END = "# <<< COPPER PATH (copper-lang, fish) <<<"
 
 # --- minimal styling (standalone copy of _pretty's essentials) ----------
 for _stream in (sys.stdout, sys.stderr):
@@ -157,6 +159,13 @@ def clean_path_unix(scope):
             ok(f"Removed {profile}")
         else:
             info(f"{profile} not found.")
+
+        fish_profile = Path("/etc/fish/conf.d/copper.fish")
+        if fish_profile.exists():
+            fish_profile.unlink()
+            ok(f"Removed {fish_profile}")
+        else:
+            info(f"{fish_profile} not found.")
         return
 
     for name in (".zshrc", ".bashrc", ".profile"):
@@ -177,6 +186,13 @@ def clean_path_unix(scope):
         if len(out) != len(lines):
             f.write_text("".join(out), encoding="utf-8")
             ok(f"Cleaned {f}")
+
+    fish_profile = Path.home() / ".config" / "fish" / "conf.d" / "copper.fish"
+    if fish_profile.exists():
+        text = fish_profile.read_text(encoding="utf-8")
+        if FISH_BLOCK_BEGIN in text and FISH_BLOCK_END in text:
+            fish_profile.unlink()
+            ok(f"Removed {fish_profile}")
 
 
 # --- main ---------------------------------------------------------------

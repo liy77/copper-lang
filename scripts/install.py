@@ -14,8 +14,8 @@ What it does:
   6. Copy cforge + alloy + copper-lsp + mui-lsp + Cargo.toml + std/ + built lson
      binary into the install dir (binaries land in bin/, so on PATH).
   7. Register COPPER_PATH and add %COPPER_PATH%/bin to PATH:
-        Windows -> HKCU/HKLM registry (REG_EXPAND_SZ) + a settings broadcast
-        Unix    -> /etc/profile.d/copper.sh  or  a managed block in your rc files
+      Windows -> HKCU/HKLM registry (REG_EXPAND_SZ) + a settings broadcast
+      Unix    -> /etc/profile.d/copper.sh, fish conf.d, or a managed block in your rc files
   8. Drop uninstall.py (+ a uninstall.bat shim on Windows) next to the install.
 
 Usage:
@@ -42,6 +42,8 @@ ROOT = Path(__file__).resolve().parent.parent
 # install done by the shell script can still be cleanly removed, and vice versa.
 BLOCK_BEGIN = "# >>> COPPER PATH (copper-lang) >>>"
 BLOCK_END = "# <<< COPPER PATH <<<"
+FISH_BLOCK_BEGIN = "# >>> COPPER PATH (copper-lang, fish) >>>"
+FISH_BLOCK_END = "# <<< COPPER PATH (copper-lang, fish) <<<"
 
 
 # --- privilege detection ------------------------------------------------
@@ -283,6 +285,14 @@ def register_unix(install_dir, scope):
         "esac",
         BLOCK_END,
     ])
+    fish_block = "\n".join([
+        FISH_BLOCK_BEGIN,
+        f'set -gx COPPER_PATH "{install_dir}"',
+        'if not contains -- "$COPPER_PATH/bin" $PATH',
+        '    set -gx PATH $PATH "$COPPER_PATH/bin"',
+        'end',
+        FISH_BLOCK_END,
+    ])
 
     if scope == "global":
         profile = Path("/etc/profile.d/copper.sh")
@@ -290,6 +300,12 @@ def register_unix(install_dir, scope):
         profile.write_text(block + "\n", encoding="utf-8")
         os.chmod(profile, 0o644)
         ok(f"COPPER_PATH set via {profile}")
+
+        fish_profile = Path("/etc/fish/conf.d/copper.fish")
+        fish_profile.parent.mkdir(parents=True, exist_ok=True)
+        fish_profile.write_text(fish_block + "\n", encoding="utf-8")
+        os.chmod(fish_profile, 0o644)
+        ok(f"COPPER_PATH set via {fish_profile}")
     else:
         for name in (".zshrc", ".bashrc", ".profile"):
             f = Path.home() / name
@@ -300,6 +316,14 @@ def register_unix(install_dir, scope):
                 with f.open("a", encoding="utf-8") as fh:
                     fh.write(("\n" if existing and not existing.endswith("\n") else "") + block + "\n")
                 ok(f"Updated: {f}")
+
+        fish_profile = Path.home() / ".config" / "fish" / "conf.d" / "copper.fish"
+        fish_profile.parent.mkdir(parents=True, exist_ok=True)
+        if fish_profile.exists() and FISH_BLOCK_BEGIN in fish_profile.read_text(encoding="utf-8"):
+            info(f"Already configured: {fish_profile}")
+        else:
+            fish_profile.write_text(fish_block + "\n", encoding="utf-8")
+            ok(f"Updated: {fish_profile}")
 
 
 # --- main ---------------------------------------------------------------
