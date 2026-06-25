@@ -303,7 +303,13 @@ def register_unix(install_dir, scope):
 
         fish_profile = Path("/etc/fish/conf.d/copper.fish")
         fish_profile.parent.mkdir(parents=True, exist_ok=True)
-        fish_profile.write_text(fish_block + "\n", encoding="utf-8")
+        existing = fish_profile.read_text(encoding="utf-8") if fish_profile.exists() else ""
+        if existing and not (FISH_BLOCK_BEGIN in existing and FISH_BLOCK_END in existing):
+            # Preserve unrelated content; append our managed block.
+             with fish_profile.open("a", encoding="utf-8") as fh:
+                 fh.write(("\n" if not existing.endswith("\n") else "") + fish_block + "\n")
+        else:
+            fish_profile.write_text(fish_block + "\n", encoding="utf-8")
         os.chmod(fish_profile, 0o644)
         ok(f"COPPER_PATH set via {fish_profile}")
     else:
@@ -319,11 +325,20 @@ def register_unix(install_dir, scope):
 
         fish_profile = Path.home() / ".config" / "fish" / "conf.d" / "copper.fish"
         fish_profile.parent.mkdir(parents=True, exist_ok=True)
-        if fish_profile.exists() and FISH_BLOCK_BEGIN in fish_profile.read_text(encoding="utf-8"):
+        existing = fish_profile.read_text(encoding="utf-8") if fish_profile.exists() else ""
+        has_begin = FISH_BLOCK_BEGIN in existing
+        has_end = FISH_BLOCK_END in existing
+        if has_begin and has_end:
             info(f"Already configured: {fish_profile}")
-        else:
+        elif has_begin and not has_end:
+            # File looks like a partially-managed block; rewrite to a known-good state.
             fish_profile.write_text(fish_block + "\n", encoding="utf-8")
             ok(f"Updated: {fish_profile}")
+        else:
+            # Preserve any existing content by appending our managed block.
+             with fish_profile.open("a", encoding="utf-8") as fh:
+                 fh.write(("\n" if existing and not existing.endswith("\n") else "") + fish_block + "\n")
+                 ok(f"Updated: {fish_profile}")
 
 
 # --- main ---------------------------------------------------------------
