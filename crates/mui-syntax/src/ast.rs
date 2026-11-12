@@ -232,6 +232,9 @@ pub struct Element {
     pub name: String,
     /// The optional first positional argument (a label / source / etc.).
     pub positional: Option<Expr>,
+    /// Positional arguments after the first (`Row("a", "b", #fff)`).
+    /// The runtime binds these to later component params by index.
+    pub positionals_rest: Vec<PropValue>,
     pub props: Vec<Prop>,
     pub children: Vec<Node>,
     /// `key:` lifted out of `props` for reconciliation.

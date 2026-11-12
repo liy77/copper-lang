@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{Element, MuiValue, Node, Prop, PropValue};
-use copper_syntax::expr::{BinOp, Expr, ExprKind, Literal, StrPart};
+use copper_syntax::expr::{BinOp, Expr, ExprKind, Literal, StrPart, UnOp};
 
 /// An RGBA color in 0-255 channels (alpha 0-255). The single representation
 /// both `#rrggbb[aa]` and `rgba(...)` resolve to.
@@ -343,6 +343,8 @@ fn literal_f32(e: &Expr) -> Option<f32> {
     match &e.kind {
         ExprKind::Literal(Literal::Int(i)) => Some(*i as f32),
         ExprKind::Literal(Literal::Float(f)) => Some(*f as f32),
+        // `marginTop: -36` parses as a negation, not a negative literal.
+        ExprKind::Unary { op: UnOp::Neg, expr } => literal_f32(expr).map(|v| -v),
         _ => None,
     }
 }

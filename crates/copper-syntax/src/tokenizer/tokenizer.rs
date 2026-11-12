@@ -102,7 +102,11 @@ use crate::lexicon::{
     SYMBOL_OPERATORS as OPERATORS,
 };
 
-const TRAILING_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+$").unwrap());
+// `static`, not `const`: a `const Lazy` is a fresh, uncompiled Lazy at every
+// use site, which recompiled the regex for every tokenizer instance.
+static TRAILING_SPACES: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+$").unwrap());
+static CARRIAGE_RETURN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\r").unwrap());
+static REGEX_LITERAL: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(/)([^/]+)(/)?").unwrap());
 const COMMA_SEPARATORS: [&str; 2] = [",", ";"];
 const BOM: u32 = 65279;
 const RUST_KEYWORDS: &[&str] = &[
@@ -1212,9 +1216,7 @@ impl Tokenizer {
             return Consumed::consume(0);
         }
 
-        let r = Regex::new(r"^(/)([^/]+)(/)?").unwrap(); // Added ^ for string start
-
-        if let Some(cap) = r.captures(&remaining_chunk) {
+        if let Some(cap) = REGEX_LITERAL.captures(&remaining_chunk) {
             let start = cap.get(1).unwrap().start();
             let end_cap = cap.get(3);
 
@@ -1407,6 +1409,13 @@ impl Tokenizer {
     }
 
     pub fn get_location_data_compensation(&self, start: usize, mut end: usize) -> usize {
+        // Every read below is `get(current)` with `current >= start`; past the
+        // table's end they're all `None`, so the sum is 0. Without this the
+        // `start == end` case spun the full 1000-iteration cap on every token
+        // (the table is empty unless the source had `\r` / a BOM).
+        if start >= self.location_data_compensations.len() {
+            return 0;
+        }
         let mut total_compensation = 0;
         let initial_end = end;
         let mut current = start;
@@ -1442,7 +1451,7 @@ impl Tokenizer {
     pub fn get_line_and_column(&self, offset: usize) -> (isize, usize, usize) {
         let compensation =
             self.get_location_data_compensation(self.chunk_offset, self.chunk_offset + offset);
-        let mut s = String::new();
+        let s: &str;
         let mut line_count: usize = 0;
         let mut column = 0;
         let mut previous_lines_compensation = 0;
@@ -1457,7 +1466,7 @@ impl Tokenizer {
         }
 
         if offset >= self.chunk.len() {
-            s = self.chunk.clone();
+            s = &self.chunk;
         } else {
             let end = match offset {
                 o if o > 0 => o,
@@ -1471,15 +1480,14 @@ impl Tokenizer {
                 .rev()
                 .find(|&k| self.chunk.is_char_boundary(k))
                 .unwrap_or(0);
-            s = self.chunk[0..safe_end].to_owned();
+            s = &self.chunk[0..safe_end];
         }
 
-        line_count = self.count_occurrences(&s, "\n");
+        line_count = self.count_occurrences(s, "\n");
         column = self.chunk_column;
 
         if line_count > 0 {
-            let r = s.split("\n").collect::<Vec<&str>>();
-            column = r.last().unwrap().len();
+            column = s.rsplit('\n').next().unwrap_or("").len();
             previous_lines_compensation = self.get_location_data_compensation(
                 self.chunk_offset,
                 self.chunk_offset + offset - column,
@@ -1521,7 +1529,7 @@ impl Tokenizer {
     // }
 
     pub fn clean_source(&mut self) {
-        let re = Regex::new(r"\r").unwrap();
+        let re = &*CARRIAGE_RETURN;
         let mut thus_far = 0;
         let mut source = &self.source;
 
@@ -1566,12 +1574,8 @@ impl Tokenizer {
             // first char while `next_char()` clamped at `chunk.len()`).
             return '\0';
         }
-        if let Some((_, ch)) = self
-            .chunk
-            .char_indices()
-            .find(|(pos, _)| *pos == self.chunk_column)
-        {
-            ch
+        if self.chunk.is_char_boundary(self.chunk_column) {
+            self.chunk[self.chunk_column..].chars().next().unwrap_or('\0')
         } else {
             // Misaligned UTF-8 position (shouldn't normally happen).
             '\0'

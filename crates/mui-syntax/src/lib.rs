@@ -51,6 +51,7 @@ pub fn parse(source: &str) -> Document {
     let mut views = Vec::new();
     let mut app = None;
     let mut imports = Vec::new();
+    let mut skipped_depth = 0i32;
     while p.pos < p.toks.len() {
         match p.peek_val() {
             Some("view") => {
@@ -72,8 +73,20 @@ pub fn parse(source: &str) -> Document {
                     app = Some(cfg);
                 }
             }
-            _ => {
+            // A `}` at file level that closes no skipped Copper block: an extra
+            // brace inside a view body ended it early, silently dropping
+            // everything after it.
+            Some("}") if skipped_depth == 0 => {
+                p.err("unmatched `}` (a view body was closed early)");
+                p.pos += 1;
+            }
+            other => {
                 // Skip anything else (Copper items in .crm, bare statements).
+                match other {
+                    Some("{") => skipped_depth += 1,
+                    Some("}") => skipped_depth -= 1,
+                    _ => {}
+                }
                 p.pos += 1;
             }
         }
@@ -531,10 +544,11 @@ impl Parser {
         let name = self.expect_ident("element name");
         // Arguments `( positional?, name: value, ... )`.
         let mut positional = None;
+        let mut positionals_rest = Vec::new();
         let mut props = Vec::new();
         let mut key = None;
         if self.peek_val() == Some("(") {
-            self.parse_args(&mut positional, &mut props, &mut key);
+            self.parse_args(&mut positional, &mut positionals_rest, &mut props, &mut key);
         }
         // Children `{ ... }`.
         let children = if self.peek_val() == Some("{") {
@@ -550,6 +564,7 @@ impl Parser {
         Some(Element {
             name,
             positional,
+            positionals_rest,
             props,
             children,
             key,
@@ -564,6 +579,7 @@ impl Parser {
     fn parse_args(
         &mut self,
         positional: &mut Option<Expr>,
+        positionals_rest: &mut Vec<PropValue>,
         props: &mut Vec<Prop>,
         key: &mut Option<Expr>,
     ) {
@@ -599,13 +615,16 @@ impl Parser {
                 }
                 props.push(Prop { name, value, span });
             } else {
-                // Positional argument (only the first one counts).
+                // Positional argument. The first one is the label/source; later
+                // ones bind to later component params by index.
                 let value = self.parse_arg_value();
                 if !seen_positional {
-                    if let PropValue::Expr(e) = value {
-                        *positional = Some(e);
+                    if let PropValue::Expr(e) = &value {
+                        *positional = Some(e.clone());
                     }
                     seen_positional = true;
+                } else {
+                    positionals_rest.push(value);
                 }
             }
         }

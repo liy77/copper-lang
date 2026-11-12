@@ -111,6 +111,9 @@ pub fn load_with(
             continue;
         }
         let doc = crate::parse(&src);
+        for e in &doc.errors {
+            warnings.push(format!("{}: {}", imp.path, e.message));
+        }
         // Register the requested names that this file actually defines.
         for name in &imp.names {
             match doc.views.iter().find(|v| &v.name == name) {
