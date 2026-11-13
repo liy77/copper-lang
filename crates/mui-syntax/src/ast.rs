@@ -289,6 +289,32 @@ impl Handler {
     pub fn action(&self) -> Option<HandlerAction> {
         parse_handler_action(&self.raw)
     }
+
+    /// Every recognised effect of a `;`-separated body, in order
+    /// (`{ kind = t ; open = "0" ; n += 1 }`).
+    pub fn actions(&self) -> Vec<HandlerAction> {
+        split_statements(&self.raw).filter_map(parse_handler_action).collect()
+    }
+}
+
+/// Splits a handler body on `;` / newlines outside string literals.
+fn split_statements(raw: &str) -> impl Iterator<Item = &str> {
+    let mut parts = Vec::new();
+    let (mut start, mut in_str, mut escaped) = (0, false, false);
+    for (i, c) in raw.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if in_str => escaped = true,
+            '"' => in_str = !in_str,
+            ';' | '\n' if !in_str => {
+                parts.push(&raw[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&raw[start..]);
+    parts.into_iter().map(str::trim).filter(|s| !s.is_empty())
 }
 
 /// A recognised, executable handler effect on a state signal. Covers the
