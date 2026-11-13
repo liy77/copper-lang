@@ -1,6 +1,6 @@
 //! Transpile-level regression tests for `impl` method lowering.
 //!
-//! These guard the bugs fixed when real Copper code (OndaEngine's `vec2.crs` /
+//! These guard the bugs fixed when real Copper code (Mocidad's `vec2.crs` /
 //! `aabb.crs`) transpiled to broken Rust: impl-method bodies were rebuilt by a
 //! naive token-join that dropped statement boundaries, mis-fired `let` on
 //! struct-literal fields, kept `self` by value, and inserted spurious `;` inside

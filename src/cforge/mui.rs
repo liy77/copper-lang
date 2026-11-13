@@ -620,9 +620,11 @@ fn run_native_host(file: &str, host: &str) -> Option<i32> {
     if !dir.join("Cargo.toml").is_file() {
         return None;
     }
-    // Pre-built binary first (no toolchain needed).
+    // Pre-built binary first (no toolchain needed), named by the crate's
+    // [[bin]] (e.g. MocidadEngine), else the host dir.
+    let bin = crate_bin_name(&dir.join("Cargo.toml")).unwrap_or_else(|| host.to_string());
     for profile in ["release", "debug"] {
-        let exe = dir.join("target").join(profile).join(format!("{host}.exe"));
+        let exe = dir.join("target").join(profile).join(format!("{bin}.exe"));
         if exe.is_file() {
             println!("🎨 Running {} (native host with backend)...", host.bold());
             return Some(spawn_host(&exe.to_string_lossy(), file));

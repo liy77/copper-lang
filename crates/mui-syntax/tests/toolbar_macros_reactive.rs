@@ -1,7 +1,7 @@
 // Smoke test for the macOS-aware toolbar styling (paddingTop /
 // paddingLeft on Mac vs not). We use an inline mirror of the
 // toolbar's root Stack so this test is self-contained (doesn't
-// depend on OndaEngine being on the cargo path at test time).
+// depend on Mocidad being on the cargo path at test time).
 
 use mui_syntax::style;
 use mui_syntax::style::{box_spacing_reactive, ReactiveEnv};
@@ -19,7 +19,7 @@ const TOOLBAR_STACK: &str = r#"view EditorToolbar() {
     paddingRight: 14,
     width: Window.width
   ) {
-    Image("mocida://onda-logo.png", width: 22, height: 22, fillMode: fit, marginRight: 10)
+    Image("mocida://mocidad-logo.png", width: 22, height: 22, fillMode: fit, marginRight: 10)
     if is_macos == "0" {
       Button("File", width: 46, height: 26, onClick: { file_menu_open = "1" })
       Button("Edit", width: 46, height: 26, onClick: { edit_menu_open = "1" })

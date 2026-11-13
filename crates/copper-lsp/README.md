@@ -30,5 +30,5 @@ src/
 ## Running
 
 The binary is `copper-lsp`. The installer ships it into `$COPPER_PATH/bin`, where
-editor integrations (e.g. OndaEngine) resolve it. Point your LSP client at the
+editor integrations (e.g. Mocidad) resolve it. Point your LSP client at the
 `copper-lsp` executable for `.crs` files.

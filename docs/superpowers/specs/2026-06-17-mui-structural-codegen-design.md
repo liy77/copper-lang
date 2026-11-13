@@ -31,7 +31,7 @@ list.
 Make `if`/`for`/`match` in node position **reactive**: when a signal read by the
 control-flow expression changes, the affected widgets are rebuilt to match the
 new state. Mirror the model already proven in `mocida-rs/mui-runtime` (the
-interpreter that drives OndaEngine), ported into the codegen as emitted Rust.
+interpreter that drives Mocidad), ported into the codegen as emitted Rust.
 
 ## Non-goals (tracked as follow-ups)
 

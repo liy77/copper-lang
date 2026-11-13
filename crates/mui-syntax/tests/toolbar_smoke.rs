@@ -14,14 +14,18 @@ use mui_syntax::style::{box_spacing_reactive, ReactiveEnv};
 use std::path::PathBuf;
 
 fn toolbar_path() -> PathBuf {
-    // The .mui lives in the OndaEngine repo, sibling to the worktree.
-    // Walk up from CARGO_MANIFEST_DIR (copper-lang/crates/mui-syntax) to
-    // copper-lang, then to the OndaEngine worktree.
+    // The .mui lives in the Mocidad engine repo, sibling to copper-lang
+    // (cloned as `mocidad-engine`; older checkouts are named `OndaEngine`).
+    // Walk up from CARGO_MANIFEST_DIR (copper-lang/crates/mui-syntax).
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop(); // .../mui-syntax
     p.pop(); // .../crates
     p.pop(); // .../copper-lang
-    p.push("OndaEngine");
+    let repo = ["mocidad-engine", "MocidadEngine", "OndaEngine"]
+        .into_iter()
+        .find(|name| p.join(name).is_dir())
+        .unwrap_or("mocidad-engine");
+    p.push(repo);
     p.push(".claude");
     p.push("worktrees");
     p.push("macos-topbar-traffic-lights-design");

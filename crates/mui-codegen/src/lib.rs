@@ -2120,7 +2120,7 @@ fn emit_image(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink
     }
     // `antialiasing:` enables bilinear texture filtering on the
     // rendered sprite (the SDL renderer defaults to NEAREST, which
-    // leaves hard pixel edges on scaled PNGs like the OndaEngine
+    // leaves hard pixel edges on scaled PNGs like the Mocidad
     // logo at 22×22). On a 2x Retina display the serrated edges
     // are very visible; turning this on for a 1-line cost gives the
     // logo a clean, smooth outline matching the rest of the chrome

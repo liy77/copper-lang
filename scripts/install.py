@@ -180,8 +180,8 @@ def copy_payload(exe, install_dir, lson_bin=None):
         warn(f"alloy not found at {src_alloy} — skipping (rebuild the workspace).")
 
     # Language servers (copper-lsp / mui-lsp) live in bin/ next to cforge, so
-    # they land on PATH via %COPPER_PATH%\bin. OndaEngine resolves them through
-    # $COPPER_PATH/bin (see onda-launcher/src/lsp.rs server_cmd). They are built
+    # they land on PATH via %COPPER_PATH%\bin. Mocidad resolves them through
+    # $COPPER_PATH/bin (see mocidad-launcher/src/lsp.rs server_cmd). They are built
     # for free by the workspace `cargo build --release` (no default-members).
     suffix = ".exe" if SYS == "Windows" else ""
     for lsp in ("copper-lsp", "mui-lsp"):
