@@ -376,6 +376,17 @@ impl Tokenizer {
                 .unwrap_or_default()
                 .starts_with(sign)
             {
+                // Inside an import path, `::` extends the ModulePath token
+                // (`crate` → `crate::` → later `crate::math`).
+                if *sign == "::"
+                    && self.seen_import
+                    && self.last_significant_kind() == Some(TokenKind::ModulePath)
+                {
+                    consumed += sign.len();
+                    self.chunk_column += sign.len();
+                    self.add_to_value(sign);
+                    return Consumed::Consumed(consumed as isize);
+                }
                 value.push_str(sign);
                 consumed += sign.len();
                 self.chunk_column += sign.len();
@@ -783,6 +794,12 @@ impl Tokenizer {
                 placeholder: interp.placeholder,
                 args: interp.args,
             };
+        } else if self.seen_import && self.last_significant_is_from() {
+            // `import { X } from "./math/vec2.crs"` — treat the string as the
+            // module path (quotes stripped). Parser/cforge normalize to
+            // `crate::math::vec2`.
+            let raw = value.trim_matches('"').to_string();
+            self.token(TokenKind::ModulePath, raw);
         } else {
             self.token(kind, value);
         }
@@ -953,6 +970,13 @@ impl Tokenizer {
                     value.push('?');
                 }
                 kind = TokenKind::ReturnType;
+            } else if self.seen_import
+                && self.last_significant_is_from()
+                && matches!(value.as_str(), "crate" | "super" | "self")
+            {
+                // `from crate::…` / `from super::…` / `from self::…` — path
+                // roots, not statement keywords (wins over RUST_KEYWORDS).
+                kind = TokenKind::ModulePath;
             } else if RUST_KEYWORDS.contains(&value.as_str()) {
                 // Specialise loop-related keywords so the parser can route
                 // them through the keyword-spacing path without re-checking
@@ -979,8 +1003,13 @@ impl Tokenizer {
             } else if self.import_specifier_list {
                 kind = TokenKind::ModuleVar;
             } else if self.seen_import {
-                if self.value(true) == Some("from".to_string()) {
+                // Build a single ModulePath across `from foo`, `from foo::bar`,
+                // and `from crate::math::vec2` (skipping whitespace between).
+                if self.last_significant_is_from() {
                     kind = TokenKind::ModulePath;
+                } else if self.last_significant_kind() == Some(TokenKind::ModulePath) {
+                    self.add_to_value(&value);
+                    return Consumed::Consumed(consumed);
                 } else if self.value(true) != Some(" ".to_string()) {
                     self.add_to_value(&value);
                     return Consumed::Consumed(consumed);
@@ -1285,6 +1314,30 @@ impl Tokenizer {
         self.tokens
             .iter()
             .rfind(|t| t.kind != TokenKind::Whitespace)
+    }
+
+    /// Last token that isn't whitespace / newline / comment — used so
+    /// `from   crate::…` still sees `from` across spaces.
+    fn last_significant(&self) -> Option<&Token> {
+        self.tokens.iter().rev().find(|t| {
+            !matches!(
+                t.kind,
+                TokenKind::Whitespace
+                    | TokenKind::Newline
+                    | TokenKind::Comment
+                    | TokenKind::DocComment
+            )
+        })
+    }
+
+    fn last_significant_kind(&self) -> Option<TokenKind> {
+        self.last_significant().map(|t| t.kind)
+    }
+
+    fn last_significant_is_from(&self) -> bool {
+        self.last_significant()
+            .map(|t| t.kind == TokenKind::From || t.value == "from")
+            .unwrap_or(false)
     }
 
     /// Value of the second-to-last non-whitespace token, if any. Used to

@@ -113,6 +113,12 @@ pub struct Parser {
     /// it to `__copper_main` (see `parse_any`), so it doesn't collide with the
     /// auto-generated entry point.
     expect_function_name: bool,
+    /// Absolute path of the `.crs` being compiled — used to resolve
+    /// `from "./foo.crs"` / `from "../bar.crs"` into `crate::…` / `super::…`.
+    source_path: Option<std::path::PathBuf>,
+    /// Project root (input dir / crate root). Relative imports become
+    /// `crate::<path::from::root>` when this is set.
+    project_root: Option<std::path::PathBuf>,
 }
 
 /// Drop the `;` from a statement-terminating newline when the next
@@ -196,7 +202,21 @@ impl Parser {
             fn_locals: HashSet::new(),
             pending_async_fn: false,
             expect_function_name: false,
+            source_path: None,
+            project_root: None,
         }
+    }
+
+    /// Attach filesystem context so relative `from "./x.crs"` imports can be
+    /// rewritten to `crate::…` / `super::…` like Rust module paths.
+    pub fn with_paths(
+        mut self,
+        source_path: Option<std::path::PathBuf>,
+        project_root: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.source_path = source_path;
+        self.project_root = project_root;
+        self
     }
 
     pub fn current(&self) -> Option<&Token> {
@@ -1365,30 +1385,37 @@ impl Parser {
         }
         if self.kind() == TokenKind::ModulePath {
             if self.seen_import {
-                let module = self.value();
-                if module == "cstd" {
+                let module = Self::normalize_import_path(
+                    &self.value(),
+                    self.source_path.as_deref(),
+                    self.project_root.as_deref(),
+                );
+                let root = module.split("::").next().unwrap_or(module.as_str());
+                if root == "cstd" || module == "cstd" {
                     for var in &self.current_import_vars {
                         self.result.mark_cstd_used(var);
                     }
-                } else if Self::is_native_std_module(&module) {
-                    self.result.mark_std_module(&module);
+                } else if Self::is_native_std_module(root) {
+                    self.result.mark_std_module(root);
                     // `http`'s `Response::json()` returns a serde_json::Value;
                     // mark json usage so the main project gets the native
                     // `json`/`JsonValue` alias + serde_json dep and can use the
                     // returned value as Copper's native json type.
-                    if module == "http" || module == "json" {
+                    if root == "http" || root == "json" {
                         self.result.mark_json_usage();
                     }
                 } else if !matches!(
-                    module.as_str(),
+                    root,
                     "std" | "core" | "alloc" | "crate" | "self" | "super"
-                ) {
-                    // A `from <crate>` that isn't std/cstd is a candidate
+                ) && !module.contains("::")
+                {
+                    // A bare `from <crate>` that isn't std/cstd is a candidate
                     // external dependency. cforge drops it later if it turns out
-                    // to be a sibling module (a copied `.rs`/`.crs`).
-                    self.result.mark_external_crate(&module);
+                    // to be a sibling module (a copied `.rs`/`.crs`). Paths with
+                    // `::` are local modules (`math::vec2`, `crate::ecs::world`).
+                    self.result.mark_external_crate(root);
                 }
-                self.append(&self.value(), AppendMode::ForceAppend);
+                self.append(&module, AppendMode::ForceAppend);
                 if !self.current_import_vars.is_empty() {
                     if self.is_import_list {
                         self.append("::", AppendMode::ForceAppend);
@@ -1419,6 +1446,106 @@ impl Parser {
             }
         }
         Consumed::consume(consumed)
+    }
+
+    /// Turn Copper import targets into Rust `use` paths.
+    ///
+    /// Supported forms:
+    /// - `crate::math::vec2` / `super::foo` / `self::bar` (kept)
+    /// - `math::vec2` (kept — crate-root module path)
+    /// - `vec2` (bare sibling / external crate name)
+    /// - `./math/vec2.crs` / `../ecs/world.crs` → `crate::…` or `super::…`
+    fn normalize_import_path(
+        raw: &str,
+        source_path: Option<&std::path::Path>,
+        project_root: Option<&std::path::Path>,
+    ) -> String {
+        let mut p = raw.trim().trim_matches('"').trim_matches('\'').to_string();
+        if p.is_empty() {
+            return p;
+        }
+        for ext in [".crs", ".crm", ".rs", ".mui"] {
+            if let Some(stripped) = p.strip_suffix(ext) {
+                p = stripped.to_string();
+                break;
+            }
+        }
+        // Already a Rust-style path.
+        if p.contains("::")
+            || matches!(p.as_str(), "crate" | "super" | "self" | "std" | "core" | "alloc" | "cstd")
+            || (!p.contains('/') && !p.contains('\\') && !p.starts_with('.'))
+        {
+            return p.replace('\\', "/");
+        }
+
+        let norm = p.replace('\\', "/");
+
+        // Resolve `./` / `../` file paths.
+        if norm.starts_with("./") || norm.starts_with("../") {
+            if let Some(src) = source_path {
+                let base = src.parent().unwrap_or(src);
+                if let Some(root) = project_root {
+                    let joined = base.join(&norm);
+                    // Prefer real filesystem resolution when paths exist.
+                    if let (Ok(root_c), Ok(joined_c)) =
+                        (root.canonicalize(), joined.canonicalize())
+                    {
+                        if let Ok(rel) = joined_c.strip_prefix(&root_c) {
+                            let segs: Vec<String> = rel
+                                .iter()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .filter(|s| s != "." && s != ".." && !s.is_empty())
+                                .collect();
+                            if segs.is_empty() {
+                                return "crate".to_string();
+                            }
+                            return format!("crate::{}", segs.join("::"));
+                        }
+                    }
+                    // Logical resolve: walk from the source dir under root.
+                    let mut stack: Vec<String> = base
+                        .strip_prefix(root)
+                        .unwrap_or(base)
+                        .iter()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    for seg in norm.split('/') {
+                        match seg {
+                            "" | "." => {}
+                            ".." => {
+                                stack.pop();
+                            }
+                            other => stack.push(other.to_string()),
+                        }
+                    }
+                    if stack.is_empty() {
+                        return "crate".to_string();
+                    }
+                    return format!("crate::{}", stack.join("::"));
+                }
+            }
+            // No source/root context — map `../` → `super::`, drop `./`.
+            let mut parts: Vec<String> = Vec::new();
+            for seg in norm.split('/') {
+                match seg {
+                    "" | "." => {}
+                    ".." => parts.push("super".to_string()),
+                    other => parts.push(other.to_string()),
+                }
+            }
+            return parts.join("::");
+        }
+
+        // Project-absolute file path (`math/vec2`) → `crate::…`.
+        let segs: Vec<&str> = norm
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .collect();
+        if segs.is_empty() {
+            return "crate".to_string();
+        }
+        format!("crate::{}", segs.join("::"))
     }
 
     pub fn parse_regex(&mut self) -> Consumed {
@@ -3683,6 +3810,17 @@ impl Parser {
 
 pub fn parse(tokens: Vec<Token>) -> String {
     let mut parser = Parser::new(tokens);
+    parser.parse()
+}
+
+/// Like [`parse`], but resolves relative `from "./x.crs"` imports using the
+/// source file path and project root (emits `crate::…` / `super::…`).
+pub fn parse_with_paths(
+    tokens: Vec<Token>,
+    source_path: Option<std::path::PathBuf>,
+    project_root: Option<std::path::PathBuf>,
+) -> String {
+    let mut parser = Parser::new(tokens).with_paths(source_path, project_root);
     parser.parse()
 }
 

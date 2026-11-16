@@ -82,10 +82,16 @@ fn parse_line(line: &str, line_off: usize) -> Option<ImportRef> {
     let rest = &line[after..];
     let lead = rest.len() - rest.trim_start().len();
     let mod_start = after + lead;
-    let module: String = line[mod_start..]
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect();
+    let raw = &line[mod_start..];
+    // `from "…"` string path, or `from crate::math::vec2` / bare name.
+    let module: String = if raw.starts_with('"') {
+        let end = raw[1..].find('"').map(|i| i + 1)?;
+        raw[..=end].to_string()
+    } else {
+        raw.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':' || *c == '/' || *c == '.' || *c == '\\')
+            .collect()
+    };
     if module.is_empty() {
         return None;
     }
@@ -142,22 +148,84 @@ fn ltrim_after_keyword<'a>(line: &'a str, kw: &str) -> &'a str {
 /// Resolve an import module against the standard library, sibling files in
 /// `doc_dir`, and the nearest `properties.kson` dependency list.
 pub fn resolve(module: &str, doc_dir: Option<&Path>) -> Resolution {
-    match module {
-        "std" | "core" | "alloc" | "crate" | "self" | "super" => return Resolution::Stdlib,
+    let m = module.trim().trim_matches('"');
+    let root = m.split("::").next().unwrap_or(m);
+    match root {
+        "std" | "core" | "alloc" | "crate" | "self" | "super" => {
+            // `crate::math::vec2` is a local path, not the Rust stdlib keyword alone.
+            if m.contains("::") && matches!(root, "crate" | "self" | "super") {
+                if let Some(dir) = doc_dir {
+                    if let Some(local) = resolve_path_local(m, dir) {
+                        return Resolution::Local(local);
+                    }
+                }
+                return Resolution::Local(m.replace("::", "/") + ".crs");
+            }
+            return Resolution::Stdlib;
+        }
         "cstd" => return Resolution::Cstd,
         _ => {}
     }
     if let Some(dir) = doc_dir {
-        for ext in ["crs", "rs", "mui", "crm"] {
-            if dir.join(format!("{module}.{ext}")).exists() {
-                return Resolution::Local(format!("{module}.{ext}"));
+        if m.contains("::") || m.contains('/') || m.contains('.') {
+            if let Some(local) = resolve_path_local(m, dir) {
+                return Resolution::Local(local);
             }
         }
-        if let Some(ver) = find_dep_version(dir, module) {
+        for ext in ["crs", "rs", "mui", "crm"] {
+            if dir.join(format!("{root}.{ext}")).exists() {
+                return Resolution::Local(format!("{root}.{ext}"));
+            }
+        }
+        if let Some(ver) = find_dep_version(dir, root) {
             return Resolution::Crate(ver);
         }
     }
     Resolution::Unknown
+}
+
+/// Map `crate::math::vec2` / `./math/vec2.crs` / `math::vec2` to a file under `dir`.
+fn resolve_path_local(module: &str, dir: &Path) -> Option<String> {
+    let mut p = module.trim().trim_matches('"').to_string();
+    for ext in [".crs", ".crm", ".rs", ".mui"] {
+        if let Some(s) = p.strip_suffix(ext) {
+            p = s.to_string();
+            break;
+        }
+    }
+    if let Some(rest) = p.strip_prefix("crate::") {
+        p = rest.to_string();
+    } else if let Some(rest) = p.strip_prefix("self::") {
+        p = rest.to_string();
+    }
+    // `super::` walks up from doc_dir — approximate one level per super.
+    let mut base = dir.to_path_buf();
+    while let Some(rest) = p.strip_prefix("super::") {
+        base = base.parent().unwrap_or(&base).to_path_buf();
+        p = rest.to_string();
+    }
+    p = p.replace("::", "/").replace('\\', "/");
+    while p.starts_with("./") {
+        p = p[2..].to_string();
+    }
+    for ext in ["crs", "rs", "crm", "mui"] {
+        let cand = base.join(format!("{p}.{ext}"));
+        if cand.exists() {
+            return Some(cand.file_name()?.to_string_lossy().into_owned());
+        }
+        // Also try relative display path
+        if let Ok(rel) = cand.strip_prefix(dir) {
+            if cand.exists() {
+                return Some(rel.to_string_lossy().into_owned());
+            }
+        }
+    }
+    // Prefer returning the expected relative crs path even if missing — hover
+    // can still show it as local.
+    if !p.is_empty() {
+        return Some(format!("{p}.crs"));
+    }
+    None
 }
 
 /// Walk up from `dir` looking for a `properties.kson`; if found, return the
