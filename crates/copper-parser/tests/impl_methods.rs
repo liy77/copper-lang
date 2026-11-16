@@ -3,8 +3,8 @@
 //! These guard the bugs fixed when real Copper code (Mocidad's `vec2.crs` /
 //! `aabb.crs`) transpiled to broken Rust: impl-method bodies were rebuilt by a
 //! naive token-join that dropped statement boundaries, mis-fired `let` on
-//! struct-literal fields, kept `self` by value, and inserted spurious `;` inside
-//! multi-line struct literals and operator-continued expressions.
+//! struct-literal fields, and inserted spurious `;` inside multi-line struct
+//! literals and operator-continued expressions.
 
 use copper_syntax::tokenizer::tokenizer::Tokenizer;
 
@@ -42,14 +42,18 @@ fn multi_statement_method_body_lowers_each_statement() {
 }
 
 #[test]
-fn bare_self_receiver_borrows() {
+fn bare_self_receiver_stays_by_value() {
     let rust = transpile(
         "struct V { x: f64 }\n\
          impl V {\n    func f64 get(self) { return self.x }\n}\n",
     );
     assert!(
-        rust.contains("fn get(&self)"),
-        "bare self should borrow:\n{rust}"
+        rust.contains("fn get(self)"),
+        "bare self should stay by-value:\n{rust}"
+    );
+    assert!(
+        !rust.contains("fn get(&self)"),
+        "bare self must not be rewritten to &self:\n{rust}"
     );
 }
 

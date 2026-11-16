@@ -68,3 +68,44 @@ fn class_emitted_at_module_level() {
         "stray ; after impl: {rust}"
     );
 }
+
+#[test]
+fn static_method_has_no_self() {
+    let rust = transpile(
+        "class Vec2 {\n  x: f64\n  y: f64\n  Vec2(x: f64, y: f64) {\n    self.x = x\n    self.y = y\n  }\n  static Vec2 zero() {\n    return Vec2 { x: 0.0, y: 0.0 }\n  }\n}\n",
+    );
+    assert!(
+        rust.contains("pub fn zero() -> Vec2") || rust.contains("pub fn zero() -> Self"),
+        "static zero should have no &self: {rust}"
+    );
+    assert!(
+        !rust.contains("fn zero(&self)"),
+        "static zero must not take &self: {rust}"
+    );
+}
+
+#[test]
+fn mut_self_emits_mut_ref() {
+    let rust = transpile(
+        "class Bag {\n  n: i32\n  Bag(n: i32) {\n    self.n = n\n  }\n  void bump(mut self) {\n    self.n = self.n + 1\n  }\n}\n",
+    );
+    assert!(
+        rust.contains("pub fn bump(&mut self)"),
+        "mut self → &mut self: {rust}"
+    );
+}
+
+#[test]
+fn reassignment_inside_method_no_shadow() {
+    let rust = transpile(
+        "class C {\n  v: i32\n  C(v: i32) {\n    self.v = v\n  }\n  i32 step() {\n    mut x = 0\n    x = self.v\n    return x\n  }\n}\n",
+    );
+    assert!(
+        rust.contains("let mut x") && rust.contains("x = self.v"),
+        "reassignment must not inject a second let: {rust}"
+    );
+    assert!(
+        !rust.contains("let x = self.v"),
+        "shadowed let on reassignment: {rust}"
+    );
+}

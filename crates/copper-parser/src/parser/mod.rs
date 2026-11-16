@@ -4,6 +4,7 @@ use copper_syntax::tokenizer::{
     tokenizer::Tokenizer,
     tokens::{Data, Token},
 };
+use std::collections::HashSet;
 use std::vec;
 
 /// The Copper source for the embedded `cstd` standard library, baked into
@@ -103,6 +104,9 @@ pub struct Parser {
     /// item's emitter prepends `pub `, so the visibility lands on the item
     /// instead of leaking onto the next statement (`pub let x = ...`).
     pending_pub: bool,
+    /// Locals declared in the current function (`mut x = …` / first `x = …` /
+    /// params). A later `x = …` is an assignment, not a shadowed `let x = …`.
+    fn_locals: HashSet<String>,
     pending_async_fn: bool,
     /// True from the moment a Copper `func` keyword is consumed until its name
     /// identifier is emitted. Used to detect a user-defined `main` and rename
@@ -189,6 +193,7 @@ impl Parser {
             optional_chain_counter: 0,
             pending_unsafe_fn: false,
             pending_pub: false,
+            fn_locals: HashSet::new(),
             pending_async_fn: false,
             expect_function_name: false,
         }
@@ -262,7 +267,7 @@ impl Parser {
             }
         }
 
-        // `mut identifier = expr` → `let mut identifier = expr`
+        // `mut identifier [= expr]` → `let mut identifier [= expr]`
         if self.peek_kind() == Some(TokenKind::Identifier) {
             // `&mut name` / `&mut name as ...` is a borrow expression — skip.
             if self.current > 0 {
@@ -271,15 +276,18 @@ impl Parser {
                     return Consumed::consume(0);
                 }
             }
-            if let Some(next) = self.select(self.current + 3) {
-                if next.value != "=" {
-                    self.append(
-                        &format!("let mut {}", self.peek_value().unwrap_or_default()),
-                        AppendMode::AppendWithSpace,
-                    );
-                    return Consumed::consume(2);
-                }
+            let name = self.peek_value().unwrap_or_default();
+            if !name.is_empty() {
+                self.fn_locals.insert(name.clone());
             }
+            // `mut name = …` — emit `let mut name` and leave `=` for the
+            // normal operator path (so reassignment tracking sees the local).
+            // Also covers `mut name: Type` / bare `mut name`.
+            self.append(
+                &format!("let mut {name}"),
+                AppendMode::AppendWithSpace,
+            );
+            return Consumed::consume(2);
         }
 
         Consumed::consume(0)
@@ -428,8 +436,15 @@ impl Parser {
             // Likewise `&name` / `&mut name` followed by `=` is a borrow
             // used in an expression context. Don't inject `let`.
             if self.current > 0 {
-                let prev_value = &self.tokens[self.current - 1].value;
-                if prev_value == "*" || prev_value == "&" || prev_value == "&&" {
+                let prev = &self.tokens[self.current - 1];
+                // `*name =` / `&name` borrow, or `self.name =` field write —
+                // never a fresh `let` binding.
+                if prev.value == "*"
+                    || prev.value == "&"
+                    || prev.value == "&&"
+                    || prev.value == "."
+                    || prev.kind == TokenKind::Dot
+                {
                     return Consumed::consume(0);
                 }
             }
@@ -599,9 +614,19 @@ impl Parser {
                         }
                         self.append("\n", AppendMode::Append);
                     } else {
-                        // Normal variable
+                        // Normal variable / reassignment. First `name =` in the
+                        // function declares; a later one assigns (no `let`), so
+                        // `mut x = 0` + `x = 1` no longer shadows.
                         consumed += 2;
-                        self.append(&format!("let {} = ", var_name), AppendMode::AppendWithSpace);
+                        if self.fn_locals.contains(var_name.as_str()) {
+                            self.append(&format!("{} = ", var_name), AppendMode::AppendWithSpace);
+                        } else {
+                            self.fn_locals.insert(var_name.clone());
+                            self.append(
+                                &format!("let {} = ", var_name),
+                                AppendMode::AppendWithSpace,
+                            );
+                        }
                     }
                 }
             }
@@ -717,7 +742,16 @@ impl Parser {
                             &format!("{var_name}: {full_type}"),
                             AppendMode::AppendWithSpace,
                         );
+                    } else if self.result.is_function && !self.result.is_inside_function {
+                        // Function parameter `name: Type` — emit as-is and
+                        // record so later `name = …` is a reassignment.
+                        self.fn_locals.insert(var_name.to_string());
+                        self.append(
+                            &format!("{var_name}: {full_type}"),
+                            AppendMode::AppendWithSpace,
+                        );
                     } else {
+                        self.fn_locals.insert(var_name.to_string());
                         self.append(
                             &format!("let {var_name}: {full_type};"),
                             AppendMode::AppendWithSpace,
@@ -1187,6 +1221,7 @@ impl Parser {
     pub fn parse_function(&mut self) -> Consumed {
         if self.value() == "func" {
             self.function_start = true;
+            self.fn_locals.clear();
             // The next identifier is this function's name; arm the `main`
             // rename detector in parse_any.
             self.expect_function_name = true;
@@ -1212,6 +1247,7 @@ impl Parser {
             // For pure Rust syntax, just mark as function but don't add "fn"
             // because it's already present
             self.function_start = true;
+            self.fn_locals.clear();
             self.result.is_function = true;
             self.result.is_copper_function = false;
             self.append(&self.value(), AppendMode::AppendWithSpace);
@@ -1273,6 +1309,7 @@ impl Parser {
                 } else {
                     // The matching outer `}` of the function body.
                     self.function_brace_depth = 0;
+                    self.fn_locals.clear();
                     self.append("\n", AppendMode::AppendWithSpace);
                     self.result.is_inside_function = false;
                 }
@@ -1463,10 +1500,10 @@ impl Parser {
     }
 
     fn process_class_members(&mut self, class_tokens: &[Token], class_name: &str) -> String {
-        let tokens: Vec<&Token> = class_tokens
-            .iter()
-            .filter(|t| t.kind != TokenKind::Newline)
-            .collect();
+        // Keep newlines so method bodies still get statement boundaries when
+        // lowered through the sub-parser. Field/ctor/method-head scans skip
+        // them explicitly.
+        let tokens: Vec<&Token> = class_tokens.iter().collect();
         if tokens.len() < 2 {
             return String::new();
         }
@@ -1477,7 +1514,13 @@ impl Parser {
 
         // Collect the fields
         let mut i = 0;
-        while i + 2 < inner.len() {
+        while i < inner.len() {
+            while i < inner.len() && inner[i].kind == TokenKind::Newline {
+                i += 1;
+            }
+            if i + 2 >= inner.len() {
+                break;
+            }
             let a = &inner[i];
             let b = &inner[i + 1];
             let c = &inner[i + 2];
@@ -1495,9 +1538,24 @@ impl Parser {
             }
         }
 
-        // Build the struct
+        // Build the struct (Copper `class` lowers to a Rust struct + impl).
+        // Clone/Debug always; Copy only when every field is a clearly
+        // Copy-compatible scalar so `&self` methods can return field copies.
+        let rust_fields: Vec<(String, String)> = fields
+            .iter()
+            .map(|(n, t)| {
+                let (rtype, _) = utils::convert_type_with_marking(t);
+                (n.clone(), rtype)
+            })
+            .collect();
+        let all_copy = rust_fields.iter().all(|(_, t)| Self::type_is_copyish(t));
+        if all_copy {
+            output.push_str("#[derive(Clone, Copy, Debug)]\n");
+        } else {
+            output.push_str("#[derive(Clone, Debug)]\n");
+        }
         output.push_str(&format!("struct {} {{\n", class_name));
-        for (n, t) in &fields {
+        for (n, t) in &rust_fields {
             output.push_str(&format!("    {}: {},\n", n, t));
         }
         output.push_str("}\n\n");
@@ -1573,8 +1631,11 @@ impl Parser {
 
                         while xi < inner.len() {
                             let tt = &inner[xi];
-                            // Found statement end or block end
-                            if tt.value == ";" || tt.kind == TokenKind::BraceEnd {
+                            // Statement / block end (newline tokens often carry `;`)
+                            if tt.kind == TokenKind::Newline
+                                || tt.kind == TokenKind::BraceEnd
+                                || tt.value == ";"
+                            {
                                 break;
                             }
                             // Found new assignment
@@ -1633,16 +1694,25 @@ impl Parser {
             }
         }
 
-        // Methods: `RetType name(params) { body }`. Instance methods take an
-        // implicit `&self` (Copper bodies reference `self.field` without
-        // declaring `self`), so we emit `&self` and append any declared
-        // params (skipping an explicit `self`). The constructor
-        // (`ClassName(...)`) is handled above and skipped here.
+        // Methods: `RetType name(params) { body }` or `static RetType name(...)`.
+        // Instance methods take an implicit `&self` (Copper bodies reference
+        // `self.field` without declaring `self`). `static` methods are associated
+        // functions (no `&self`) — used for factories like `Vec2::zero()`.
+        // The constructor (`ClassName(...)`) is handled above and skipped here.
         let mut k = 0;
         while k + 2 < inner.len() {
-            let return_type = &inner[k];
-            let name_t = &inner[k + 1];
-            let pstart = &inner[k + 2];
+            let is_static = inner[k].value == "static"
+                && matches!(
+                    inner[k].kind,
+                    TokenKind::Keyword | TokenKind::Identifier | TokenKind::Unknown
+                );
+            let head = if is_static { k + 1 } else { k };
+            if head + 2 >= inner.len() {
+                break;
+            }
+            let return_type = &inner[head];
+            let name_t = &inner[head + 1];
+            let pstart = &inner[head + 2];
 
             let valid_return_type = return_type.kind == TokenKind::Identifier
                 || return_type.kind == TokenKind::ParamType
@@ -1659,16 +1729,49 @@ impl Parser {
             }
 
             // Collect declared params between `(` and the matching close.
-            // An explicit `self` / `&self` / `mut self` is dropped — we
-            // always emit `&self`.
+            // Receiver forms:
+            //   (none) / omitted → `&self` (instance) or nothing (static)
+            //   `self`           → by-value `self`
+            //   `mut self`       → `&mut self`
+            //   `&self`          → `&self`
             let mut params: Vec<String> = Vec::new();
-            let mut idx = k + 3;
+            let mut receiver: Option<&'static str> = None;
+            let mut pending_mut = false;
+            let mut pending_ref = false;
+            let mut idx = head + 3;
             while idx < inner.len() {
                 let t = &inner[idx];
                 if t.kind == TokenKind::ParametersEnd || t.kind == TokenKind::ParenthesesEnd {
                     break;
                 }
-                if t.value == "self" || t.value == "&" || t.value == "mut" || t.value == "," {
+                if t.value == "," {
+                    pending_mut = false;
+                    pending_ref = false;
+                    idx += 1;
+                    continue;
+                }
+                if t.value == "&" {
+                    pending_ref = true;
+                    idx += 1;
+                    continue;
+                }
+                if t.value == "mut" {
+                    pending_mut = true;
+                    idx += 1;
+                    continue;
+                }
+                if t.value == "self" {
+                    receiver = Some(if pending_mut && pending_ref {
+                        "&mut self"
+                    } else if pending_mut {
+                        "&mut self"
+                    } else if pending_ref {
+                        "&self"
+                    } else {
+                        "self"
+                    });
+                    pending_mut = false;
+                    pending_ref = false;
                     idx += 1;
                     continue;
                 }
@@ -1682,6 +1785,8 @@ impl Parser {
                     if ok_sep {
                         let (ptype, _) = utils::convert_type_with_marking(&typ.value);
                         params.push(format!("{}: {}", t.value, ptype));
+                        pending_mut = false;
+                        pending_ref = false;
                         idx += 3;
                         continue;
                     }
@@ -1698,8 +1803,9 @@ impl Parser {
                 continue;
             }
 
-            // Collect the balanced body.
-            let mut body = Vec::new();
+            // Collect the balanced body tokens (keep kinds for Copper→Rust
+            // lowering of `mut` / reassignment inside the method).
+            let mut body_toks: Vec<Token> = Vec::new();
             let mut depth = 1;
             idx += 1;
             while idx < inner.len() && depth > 0 {
@@ -1710,12 +1816,12 @@ impl Parser {
                     depth -= 1;
                 }
                 if depth > 0 {
-                    body.push(tt.value.clone());
+                    body_toks.push((*tt).clone());
                 }
                 idx += 1;
             }
 
-            let body_str = body.join(" ");
+            let body_str = Self::lower_method_body(body_toks);
             let (rust_type, data_type) = utils::convert_type_with_marking(&return_type.value);
             if let Some(dt) = data_type {
                 self.uses_data_types = true;
@@ -1727,20 +1833,25 @@ impl Parser {
                 }
             }
 
-            let self_and_params = if params.is_empty() {
-                "&self".to_string()
+            let receivers = if is_static {
+                params.join(", ")
             } else {
-                format!("&self, {}", params.join(", "))
+                let recv = receiver.unwrap_or("&self");
+                if params.is_empty() {
+                    recv.to_string()
+                } else {
+                    format!("{}, {}", recv, params.join(", "))
+                }
             };
             if rust_type == "()" {
                 output.push_str(&format!(
                     "    pub fn {}({}) {{\n",
-                    name_t.value, self_and_params
+                    name_t.value, receivers
                 ));
             } else {
                 output.push_str(&format!(
                     "    pub fn {}({}) -> {} {{\n",
-                    name_t.value, self_and_params, rust_type
+                    name_t.value, receivers, rust_type
                 ));
             }
             output.push_str(&format!("        {}\n", body_str));
@@ -1749,6 +1860,31 @@ impl Parser {
         }
         output.push_str("}\n");
         output
+    }
+
+    /// True when a Rust type name is safe to include in `#[derive(Copy)]`.
+    /// Only scalars — nested user types are left to their own derives so a
+    /// `class Engine { scene: Scene }` with heap fields never claims Copy.
+    fn type_is_copyish(ty: &str) -> bool {
+        matches!(
+            ty.trim(),
+            "i8" | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "f32"
+                | "f64"
+                | "bool"
+                | "char"
+                | "()"
+        )
     }
 
     // Parses native struct definition
@@ -2684,17 +2820,10 @@ impl Parser {
                                 i_param = k;
                             } else {
                                 // Receiver-only param: `self`, `&self`, `&mut self`.
-                                // A bare `self` borrows (`&self`) — matching the
-                                // `class` path and the convention across Copper
-                                // code (read-only accessors). Methods that need
-                                // to consume the receiver write `&mut self` /
-                                // an explicit owned form. `&self` / `&mut self`
+                                // Bare `self` stays by-value so methods can move
+                                // fields / rebuild `Self`. `&self` / `&mut self`
                                 // already carry their prefix and pass through.
-                                if param_name == "self" {
-                                    params.push("&self".to_string());
-                                } else {
-                                    params.push(param_name);
-                                }
+                                params.push(param_name);
                                 i_param += 1;
                             }
 
