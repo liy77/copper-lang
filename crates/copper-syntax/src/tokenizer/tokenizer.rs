@@ -1192,15 +1192,23 @@ impl Tokenizer {
             )
         });
         if let Some(prev) = last_significant {
-            if matches!(
+            // `Param` covers field names after `.` (`self.size.x / 2`); bare
+            // `self` / bool keywords are operands too. Do NOT treat `return`
+            // or other statement keywords as operands — `/foo/` after them
+            // is a regex literal.
+            let prev_is_operand = matches!(
                 prev.kind,
                 TokenKind::Identifier
+                    | TokenKind::Param
                     | TokenKind::Number
                     | TokenKind::String
                     | TokenKind::InterpolatedString
                     | TokenKind::ParenthesesEnd
+                    | TokenKind::ParametersEnd
                     | TokenKind::BracketEnd
-            ) {
+            ) || (prev.kind == TokenKind::Keyword
+                && matches!(prev.value.as_str(), "self" | "true" | "false"));
+            if prev_is_operand {
                 // Division — let operator_token handle the `/`.
                 return Consumed::consume(0);
             }
