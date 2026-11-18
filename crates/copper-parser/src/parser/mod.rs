@@ -13,7 +13,7 @@ use std::vec;
 const CSTD_SOURCE: &str = include_str!("../../../../std/cstd.crs");
 
 // Native-Rust helpers for things Copper cannot yet express cleanly
-// (multi-line method chains, `&[T]`, `cfg!(target_os=...)`).
+// (a raw `&[T]` parameter). `cfg!(...)` lowers as a macro invocation.
 
 // Additional native std modules, bundled on demand when imported
 // (`import { ... } from net` / `from http`). Each has a Copper-written
@@ -783,6 +783,15 @@ impl Parser {
             }
         }
         if self.kind() == TokenKind::Identifier && self.peek_value() == Some("=".to_string()) {
+            // `cfg!(...)` is a macro invocation, not an assignment. Injecting
+            // `let` turns `cfg!(target_os = "macos")` into invalid Rust.
+            if self.value() == "cfg" {
+                if let Some(bang) = self.select(self.current + 1) {
+                    if bang.value == "!" {
+                        return Consumed::consume(0);
+                    }
+                }
+            }
             // `*name = expr` is a deref-assignment, not a let-declaration.
             // Likewise `&name` / `&mut name` followed by `=` is a borrow
             // used in an expression context. Don't inject `let`.

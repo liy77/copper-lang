@@ -3,9 +3,8 @@
 // The compiler wraps everything below in `pub mod cstd { ... }` and
 // rewrites every `fn` into `pub fn` so user `use cstd::{X};` resolves.
 //
-// Functions that Copper's transpiler cannot yet express cleanly (multi-line
-// method chains, raw `&[T]` slice types, `cfg!(target_os = ...)` macros)
-// live in `std/cstd_native.rs` and are bundled alongside this module.
+// `cfg!(...)` and single-line method chains lower through the transpiler.
+// A raw `&[T]` parameter still does not: use `Vec<T>`.
 
 func String input(prompt: &str) {
     print!("{}", prompt)
@@ -115,9 +114,13 @@ func Vec<String> list_dir(path: &str) {
     }
 }
 
-// NOTE: run() uses sh -c (Unix only); cfg!(target_os = "windows") cannot be
-// expressed in Copper, so the Windows/cmd branch from cstd_native.rs is omitted.
 func String run(cmd: &str) {
+    if cfg!(target_os = "windows") {
+        return match std::process::Command::new("cmd").args(["/C", cmd]).output() {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+            Err(_) => String::new()
+        }
+    }
     return match std::process::Command::new("sh").args(["-c", cmd]).output() {
         Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
         Err(_) => String::new()

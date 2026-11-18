@@ -863,7 +863,7 @@ impl Tokenizer {
             self.next_char();
             consumed += 1;
 
-            while self.current_char() != '"' || escape {
+            while (self.current_char() != '"' || escape) && self.current_char() != '\0' {
                 if self.current_char() == '\\' {
                     escape = !escape;
                 } else {
@@ -884,17 +884,29 @@ impl Tokenizer {
         // token's kind/value/data so downstream code can render either as a
         // `format!(...)` expression or as raw macro args, depending on
         // context.
-        if let Some(interp) = super::interpolation::parse(&value) {
-            let rendered = super::interpolation::render_format_call(&interp);
-            let token = self.token(TokenKind::InterpolatedString, rendered);
-            token.data = Data::Interpolation {
-                placeholder: interp.placeholder,
-                args: interp.args,
-            };
+        // A string that is already an argument of a Rust macro (`json!`,
+        // `format!`, `write!`, …) owns its `$` / `{}`. Interpolating it
+        // rewrites the macro body and can swallow the rest of the file when
+        // a `${…}` brace count doesn't match.
+        let in_macro_arg = self.last_significant().is_some_and(|t| t.value == "!");
+        if !in_macro_arg {
+            if let Some(interp) = super::interpolation::parse(&value) {
+                let rendered = super::interpolation::render_format_call(&interp);
+                let token = self.token(TokenKind::InterpolatedString, rendered);
+                token.data = Data::Interpolation {
+                    placeholder: interp.placeholder,
+                    args: interp.args,
+                };
+            } else if self.seen_import && self.last_significant_is_from() {
+                // `import { X } from "./math/vec2.crs"` — treat the string as the
+                // module path (quotes stripped). Parser/cforge normalize to
+                // `crate::math::vec2`.
+                let raw = value.trim_matches('"').to_string();
+                self.token(TokenKind::ModulePath, raw);
+            } else {
+                self.token(kind, value);
+            }
         } else if self.seen_import && self.last_significant_is_from() {
-            // `import { X } from "./math/vec2.crs"` — treat the string as the
-            // module path (quotes stripped). Parser/cforge normalize to
-            // `crate::math::vec2`.
             let raw = value.trim_matches('"').to_string();
             self.token(TokenKind::ModulePath, raw);
         } else {
@@ -1247,7 +1259,7 @@ impl Tokenizer {
             self.next_char();
             consumed += 1;
 
-            while self.current_char() == ' ' {
+            while self.current_char() == ' ' && self.chunk_column < self.chunk.len() {
                 value.push(self.current_char());
                 self.next_char();
                 consumed += 1;

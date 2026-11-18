@@ -28,14 +28,7 @@ pub(super) fn rewrite(tokens: Vec<Token>) -> Vec<Token> {
 }
 
 fn synth(kind: TokenKind, value: &str) -> Token {
-    Token::new(
-        kind,
-        value.to_string(),
-        0,
-        (0, 0),
-        Data::new(0, 0),
-        true,
-    )
+    Token::new(kind, value.to_string(), value.len(), Data::None, true)
 }
 
 fn is_trivia(t: &Token) -> bool {

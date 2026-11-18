@@ -18,14 +18,7 @@ pub(super) fn rewrite(tokens: Vec<Token>) -> Vec<Token> {
 }
 
 fn synth(kind: TokenKind, value: &str) -> Token {
-    Token::new(
-        kind,
-        value.to_string(),
-        0,
-        (0, 0),
-        Data::new(0, 0),
-        true,
-    )
+    Token::new(kind, value.to_string(), value.len(), Data::None, true)
 }
 
 fn is_trivia(t: &Token) -> bool {
@@ -235,6 +228,14 @@ fn collect_signatures(tokens: &[Token]) -> HashMap<String, FuncSig> {
                 continue;
             }
         }
+
+        // `class Type { ... }` and `impl Type { ... }` carry methods the free-function
+        // scan never sees (`Ret name(...)` has no `func`; `func` methods take `self`).
+        if let Some((close, brace, owner, kind)) = method_block_at(tokens, i) {
+            record_method_block_sigs(&tokens[brace + 1..close], &owner, kind, &mut map);
+            i = close + 1;
+            continue;
+        }
         i += 1;
     }
 
@@ -312,6 +313,108 @@ fn parse_func_sig(tokens: &[Token], func_idx: usize) -> Option<(String, FuncSig,
     }
 
     Some((fn_name, FuncSig { params }, close))
+}
+
+#[derive(Clone, Copy)]
+enum MethodBlock {
+    /// `class Type { ... }` — instance methods omit `self` and still take `&self`.
+    Class,
+    /// `impl Type { ... }` — only an explicit `self` param is a receiver.
+    Impl,
+}
+
+/// A `class` / `impl` header at `idx`: closing `}`, opening `{`, and the type name.
+fn method_block_at(tokens: &[Token], idx: usize) -> Option<(usize, usize, String, MethodBlock)> {
+    let kind = if tokens[idx].kind == TokenKind::Keyword && tokens[idx].value == "class" {
+        MethodBlock::Class
+    } else if tokens[idx].kind == TokenKind::Impl {
+        MethodBlock::Impl
+    } else {
+        return None;
+    };
+    let name_idx = next_sig(tokens, idx + 1)?;
+    if tokens[name_idx].kind != TokenKind::Identifier {
+        return None;
+    }
+    let owner = tokens[name_idx].value.clone();
+    let mut j = name_idx + 1;
+    while j < tokens.len() && tokens[j].value != "{" && tokens[j].kind != TokenKind::Semicolon {
+        j += 1;
+    }
+    if j < tokens.len() && tokens[j].value == "{" {
+        find_matching_brace(tokens, j).map(|close| (close, j, owner, kind))
+    } else {
+        None
+    }
+}
+
+/// Register methods inside a `class` / `impl` body.
+///
+/// Associated functions (`static` on a class, or an `impl` method with no
+/// `self`) are stored as `Type::name` so `Type::name(arg)` borrows. Instance
+/// methods are stored as `.name`: the receiver is already `&self`, and only
+/// the explicit arguments are rewritten. A bare name is recorded only when it
+/// does not collide with a free function.
+fn record_method_block_sigs(
+    body: &[Token],
+    owner: &str,
+    kind: MethodBlock,
+    map: &mut HashMap<String, FuncSig>,
+) {
+    let mut i = 0usize;
+    while i < body.len() {
+        if body[i].value == "{" {
+            if let Some(close) = find_matching_brace(body, i) {
+                i = close + 1;
+                continue;
+            }
+        }
+        // Only a real method head: `func … name(`, `static … name(`, or `Ret name(`.
+        // A field `name: Type` has no `(` before the next newline, so it is skipped.
+        let is_static = body[i].kind == TokenKind::Keyword && body[i].value == "static";
+        let is_func = body[i].kind == TokenKind::Keyword && body[i].value == "func";
+        let is_ret = body[i].kind == TokenKind::Identifier
+            && next_sig(body, i + 1).is_some_and(|n| {
+                body[n].kind == TokenKind::Identifier
+                    && next_sig(body, n + 1).is_some_and(|p| body[p].value == "(")
+            });
+        if !(is_static || is_func || is_ret) {
+            i += 1;
+            continue;
+        }
+        // `parse_func_sig` starts one past `head` and stops at the first `(`.
+        let head = if is_ret { i.saturating_sub(1) } else { i };
+        let Some((name, sig, end_paren)) = parse_func_sig(body, head) else {
+            i += 1;
+            continue;
+        };
+        let has_self = sig.params.first().is_some_and(|(n, _)| n == "self");
+        let associated = match kind {
+            MethodBlock::Class => is_static || (is_func && !has_self),
+            MethodBlock::Impl => !has_self,
+        };
+        let instance = match kind {
+            // Class instance methods omit `self`; an explicit one is also instance.
+            MethodBlock::Class => !is_static && (!is_func || has_self),
+            MethodBlock::Impl => has_self,
+        };
+        if associated {
+            map.insert(format!("{owner}::{name}"), strip_self(sig.clone()));
+            map.entry(name.clone()).or_insert_with(|| strip_self(sig.clone()));
+        }
+        if instance {
+            // `.name` so `obj.name(args)` rewrites args without touching the receiver.
+            map.insert(format!(".{name}"), strip_self(sig));
+        }
+        i = end_paren + 1;
+    }
+}
+
+fn strip_self(mut sig: FuncSig) -> FuncSig {
+    if sig.params.first().is_some_and(|(n, _)| n == "self") {
+        sig.params.remove(0);
+    }
+    sig
 }
 
 // ============================================================================
@@ -537,32 +640,23 @@ fn rewrite_block_tokens(
             }
         }
 
-        // Call site: `[mod::]callee(args)`
-        if let Some((callee_name, open_paren, close_paren)) = match_call_site(tokens, i) {
-            if let Some(sig) = sigs.get(&callee_name) {
-                let is_method = prev_sig(tokens, i)
-                    .map(|p| tokens[p].value == ".")
-                    .unwrap_or(false);
-                if !is_method {
-                    // Recursively rewrite nested calls inside arguments first? No, apply on
-                    // args directly and recurse inside each arg!
-                    let after_call = &tokens[close_paren + 1..];
-                    let rewritten_args = rewrite_call_args(
-                        &tokens[open_paren + 1..close_paren],
-                        sig,
-                        sigs,
-                        vars,
-                        after_call,
-                        loop_depth,
-                        &outer_vars,
-                    );
-                    out.extend_from_slice(&tokens[i..=open_paren]);
-                    out.extend(rewritten_args);
-                    out.push(tokens[close_paren].clone());
-                    i = close_paren + 1;
-                    continue;
-                }
-            }
+        // Call site: `callee(args)`, `Type::callee(args)`, or `obj.callee(args)`.
+        if let Some(call) = match_call_site(tokens, i, sigs) {
+            let after_call = &tokens[call.close_paren + 1..];
+            let rewritten_args = rewrite_call_args(
+                &tokens[call.open_paren + 1..call.close_paren],
+                call.sig,
+                sigs,
+                vars,
+                after_call,
+                loop_depth,
+                &outer_vars,
+            );
+            out.extend_from_slice(&tokens[i..=call.open_paren]);
+            out.extend(rewritten_args);
+            out.push(tokens[call.close_paren].clone());
+            i = call.close_paren + 1;
+            continue;
         }
 
         out.push(tokens[i].clone());
@@ -572,29 +666,60 @@ fn rewrite_block_tokens(
     out
 }
 
-fn match_call_site(tokens: &[Token], idx: usize) -> Option<(String, usize, usize)> {
+struct CallSite<'a> {
+    sig: &'a FuncSig,
+    open_paren: usize,
+    close_paren: usize,
+}
+
+fn match_call_site<'a>(
+    tokens: &[Token],
+    idx: usize,
+    sigs: &'a HashMap<String, FuncSig>,
+) -> Option<CallSite<'a>> {
     if tokens[idx].kind != TokenKind::Identifier {
         return None;
     }
-    // Check `ident (` or `mod :: ident (`
     let n1 = next_sig(tokens, idx + 1)?;
+
+    // `Type::method(args)` — prefer the qualified signature over the bare name.
     if tokens[n1].value == "::" {
         let n2 = next_sig(tokens, n1 + 1)?;
         if tokens[n2].kind == TokenKind::Identifier {
             let n3 = next_sig(tokens, n2 + 1)?;
             if tokens[n3].value == "(" {
-                // Ensure not `mod::ident!(`
                 if let Some(close) = find_matching_paren(tokens, n3) {
                     let qname = format!("{}::{}", tokens[idx].value, tokens[n2].value);
-                    return Some((qname, n3, close));
+                    if let Some(sig) = sigs.get(&qname).or_else(|| sigs.get(&tokens[n2].value)) {
+                        return Some(CallSite {
+                            sig,
+                            open_paren: n3,
+                            close_paren: close,
+                        });
+                    }
                 }
             }
         }
         return None;
     }
+
+    // `obj.method(args)` — instance signature keyed as `.method`. The receiver
+    // stays put; only the explicit arguments are rewritten.
     if tokens[n1].value == "(" {
+        let is_method = prev_sig(tokens, idx).is_some_and(|p| tokens[p].value == ".");
         if let Some(close) = find_matching_paren(tokens, n1) {
-            return Some((tokens[idx].value.clone(), n1, close));
+            let sig = if is_method {
+                sigs.get(&format!(".{}", tokens[idx].value))
+            } else {
+                sigs.get(&tokens[idx].value)
+            };
+            if let Some(sig) = sig {
+                return Some(CallSite {
+                    sig,
+                    open_paren: n1,
+                    close_paren: close,
+                });
+            }
         }
     }
     None

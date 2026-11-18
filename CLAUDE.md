@@ -154,7 +154,7 @@ Required env vars: `MOCIDA_INCLUDE_DIR`, `MOCIDA_LIB_DIR`, `MOCIDA_LIB_NAME=moci
 **Constraints for `std/cstd.crs`:**
 - No multi-line method chains — tokenizer terminates at newlines; use temp vars.
 - No `&[T]` slice params — tokenized as vec literal (`&vec![T]`). Use `Vec<T>` or native.
-- No `cfg!(target_os = "windows")` — `parse_var` injects `let` before `=`, breaking macro.
+- `cfg!(...)` is a macro invocation. `parse_var` must not inject `let` before the `=` inside it (paren-depth guard + the `cfg!` lookahead).
 
 ## Standard-library policy
 
