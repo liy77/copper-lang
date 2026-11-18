@@ -78,6 +78,7 @@ fn has_raw(e: &Expr) -> bool {
         ExprKind::Unary { expr, .. } => has_raw(expr),
         ExprKind::Binary { lhs, rhs, .. } => has_raw(lhs) || has_raw(rhs),
         ExprKind::Ternary { cond, then, els } => has_raw(cond) || has_raw(then) || has_raw(els),
+        ExprKind::NullCoalesce { lhs, rhs } => has_raw(lhs) || has_raw(rhs),
         ExprKind::Assign { target, value, .. } => has_raw(target) || has_raw(value),
         ExprKind::Range { start, end, .. } => has_raw(start) || has_raw(end),
         ExprKind::Array(xs) => xs.iter().any(has_raw),

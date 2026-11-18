@@ -528,12 +528,16 @@ impl Tokenizer {
                         kind = TokenKind::Colon;
                         break;
                     } else if *sign == "?" {
-                        // Optional chaining: `?.` is an atomic operator that
-                        // means "if the LHS is Some, run the chain on its
-                        // inner value; otherwise short-circuit to None". A
-                        // bare `?` (no following `.`) stays the Rust try
-                        // operator.
+                        // Null coalescing (`??`) and optional chaining (`?.`).
+                        // A bare `?` stays the Rust try operator / ternary.
                         let rest = self.chunk.get(self.chunk_column..).unwrap_or_default();
+                        if rest.starts_with("??") {
+                            value.push_str("??");
+                            consumed += 2;
+                            self.chunk_column += 2;
+                            kind = TokenKind::Operator;
+                            break;
+                        }
                         if rest.starts_with("?.") {
                             value.push_str("?.");
                             consumed += 2;
@@ -1153,9 +1157,10 @@ impl Tokenizer {
                 // path below) so `convert_type` lowers `Type?` → `Option<Type>`.
                 // Generic returns (`Result<T, E>`) keep the `?`-less base name;
                 // their `<...>` is still gobbled by the parser's ReturnType arm.
-                if self.current_char() == '?' {
+                if self.current_char() == '?' || self.current_char() == '!' {
+                    let ch = self.current_char();
                     self.next_char();
-                    value.push('?');
+                    value.push(ch);
                 }
                 kind = TokenKind::ReturnType;
             } else if self.seen_import
@@ -1209,9 +1214,10 @@ impl Tokenizer {
                     Some(token) if token.value == "func" => kind = TokenKind::ReturnType,
                     Some(_) if self.end_kind() == Some(TokenKind::ParametersEnd) => {
                         if self.value(true) == Some(":".to_string()) {
-                            if self.current_char() == '?' {
+                            if self.current_char() == '?' || self.current_char() == '!' {
+                                let ch = self.current_char();
                                 self.next_char();
-                                value.push('?');
+                                value.push(ch);
                             }
 
                             kind = TokenKind::ParamType

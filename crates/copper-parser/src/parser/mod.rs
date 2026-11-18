@@ -27,9 +27,11 @@ const TIME_SOURCE: &str = include_str!("../../../../std/time.crs");
 const FS_SOURCE: &str = include_str!("../../../../std/fs.crs");
 const WS_SOURCE: &str = include_str!("../../../../std/ws.crs");
 const REFLECT_SOURCE: &str = include_str!("../../../../std/reflect.crs");
+mod autoborrow;
 pub mod result;
 pub mod scope;
 pub mod scope_manager;
+mod sugar;
 mod ternary;
 pub mod utils;
 
@@ -119,6 +121,9 @@ pub struct Parser {
     /// Project root (input dir / crate root). Relative imports become
     /// `crate::<path::from::root>` when this is set.
     project_root: Option<std::path::PathBuf>,
+    /// True for top-level file compilation; false for inner method-body sub-parsers
+    /// so module-level preludes (e.g. `__CopperVecExt`) are never emitted inside methods.
+    emit_prelude: bool,
 }
 
 /// Drop the `;` from a statement-terminating newline when the next
@@ -392,9 +397,15 @@ impl Parser {
         // *ends* with `.`/operator; this catches the leading-dot form.
         let joined = join_chain_continuations(filtered);
         let stripped = strip_expr_block_tail_semicolons(joined);
+        // Lower high-level Copper sugar (`func -> Ret`, `=>` lambdas/bodies,
+        // default/named args, `try/catch`, `??` null-coalescing).
+        let sugared = sugar::rewrite(stripped);
         // Lower `cond ? then : else` ternaries into `if cond { then } else { else }`
         // before the main parser dispatch sees them.
-        let lowered = ternary::rewrite(stripped);
+        let ternaried = ternary::rewrite(sugared);
+        // Apply call-site auto-borrow / auto-clone, `for` preservation, and
+        // string `+` concatenation.
+        let lowered = autoborrow::rewrite(ternaried);
         Self {
             tokens: lowered,
             current: 0,
@@ -423,6 +434,7 @@ impl Parser {
             expect_function_name: false,
             source_path: None,
             project_root: None,
+            emit_prelude: true,
         }
     }
 
@@ -2209,12 +2221,12 @@ impl Parser {
         if !self.has_preceding_derive() {
             let all_copy = rust_fields.iter().all(|(_, t)| Self::type_is_copyish(t));
             if all_copy {
-                output.push_str("#[derive(Clone, Copy, Debug)]\n");
+                output.push_str("#[derive(Clone, Copy, Debug, PartialEq)]\n");
             } else if rust_fields
                 .iter()
                 .all(|(_, t)| Self::type_is_clone_debug_safe(t))
             {
-                output.push_str("#[derive(Clone, Debug)]\n");
+                output.push_str("#[derive(Clone, Debug, PartialEq)]\n");
             }
         }
         output.push_str(&format!("pub struct {} {{\n", class_name));
@@ -2815,10 +2827,8 @@ impl Parser {
                 }
             }
 
-            self.append(
-                &format!("{}struct {}{} {{\n", vis, struct_name, generics),
-                AppendMode::ForceAppendWithSpace,
-            );
+            let mut fields_out = String::new();
+            let mut field_types: Vec<String> = Vec::new();
 
             // Processes struct fields
             while let Some(tok) = self.select(self.current + consumed) {
@@ -2847,6 +2857,19 @@ impl Parser {
                 }
             };
 
+            let push_field = |f: &str,
+                              fields_out: &mut String,
+                              field_types: &mut Vec<String>,
+                              reflect_fields: &mut Vec<String>| {
+                if let Some(name) = Self::reflect_field_name(f) {
+                    reflect_fields.push(name);
+                }
+                if let Some((_, ty_part)) = f.split_once(':') {
+                    field_types.push(ty_part.trim().to_string());
+                }
+                fields_out.push_str(&fmt_field(f));
+            };
+
             while brace_count > 0 && consumed < self.tokens.len() - self.current {
                 if let Some(tok) = self.select(self.current + consumed) {
                     consumed += 1;
@@ -2857,12 +2880,11 @@ impl Parser {
                             brace_count -= 1;
                             if brace_count == 0 {
                                 if !current_field.trim().is_empty() {
-                                    if let Some(name) = Self::reflect_field_name(&current_field) {
-                                        reflect_fields.push(name);
-                                    }
-                                    self.append(
-                                        &fmt_field(&current_field),
-                                        AppendMode::ForceAppendWithSpace,
+                                    push_field(
+                                        &current_field,
+                                        &mut fields_out,
+                                        &mut field_types,
+                                        &mut reflect_fields,
                                     );
                                 }
                                 break;
@@ -2878,12 +2900,11 @@ impl Parser {
                                 && seen_type
                                 && !current_field.trim().is_empty()
                             {
-                                if let Some(name) = Self::reflect_field_name(&current_field) {
-                                    reflect_fields.push(name);
-                                }
-                                self.append(
-                                    &fmt_field(&current_field),
-                                    AppendMode::ForceAppendWithSpace,
+                                push_field(
+                                    &current_field,
+                                    &mut fields_out,
+                                    &mut field_types,
+                                    &mut reflect_fields,
                                 );
                                 current_field.clear();
                                 in_field_name = true;
@@ -2971,12 +2992,11 @@ impl Parser {
                             if type_depth > 0 {
                                 current_field.push_str(", ");
                             } else if !current_field.trim().is_empty() {
-                                if let Some(name) = Self::reflect_field_name(&current_field) {
-                                    reflect_fields.push(name);
-                                }
-                                self.append(
-                                    &fmt_field(&current_field),
-                                    AppendMode::ForceAppendWithSpace,
+                                push_field(
+                                    &current_field,
+                                    &mut fields_out,
+                                    &mut field_types,
+                                    &mut reflect_fields,
                                 );
                                 current_field.clear();
                                 in_field_name = true;
@@ -2986,12 +3006,11 @@ impl Parser {
                         TokenKind::Newline => {
                             if type_depth == 0 && !in_field_name && !current_field.trim().is_empty()
                             {
-                                if let Some(name) = Self::reflect_field_name(&current_field) {
-                                    reflect_fields.push(name);
-                                }
-                                self.append(
-                                    &fmt_field(&current_field),
-                                    AppendMode::ForceAppendWithSpace,
+                                push_field(
+                                    &current_field,
+                                    &mut fields_out,
+                                    &mut field_types,
+                                    &mut reflect_fields,
                                 );
                                 current_field.clear();
                                 in_field_name = true;
@@ -3015,6 +3034,30 @@ impl Parser {
                 }
             }
 
+            if !has_generics && !self.has_preceding_derive() {
+                let all_copy = !field_types.is_empty()
+                    && field_types.iter().all(|t| Self::type_is_copyish(t));
+                let all_safe = !field_types.is_empty()
+                    && field_types
+                        .iter()
+                        .all(|t| Self::type_is_clone_debug_safe(t));
+                if all_copy {
+                    self.append(
+                        "#[derive(Clone, Copy, Debug, PartialEq)]\n",
+                        AppendMode::ForceAppendWithSpace,
+                    );
+                } else if all_safe {
+                    self.append(
+                        "#[derive(Clone, Debug, PartialEq)]\n",
+                        AppendMode::ForceAppendWithSpace,
+                    );
+                }
+            }
+            self.append(
+                &format!("{}struct {}{} {{\n", vis, struct_name, generics),
+                AppendMode::ForceAppendWithSpace,
+            );
+            self.append(&fields_out, AppendMode::ForceAppend);
             self.append("}", AppendMode::ForceAppendWithSpace);
             self.append("\n", AppendMode::ForceAppend);
             self.is_inside_struct = false;
@@ -3330,6 +3373,7 @@ impl Parser {
             return String::new();
         }
         let mut sub = Parser::new(body_tokens);
+        sub.emit_prelude = false;
         for p in param_names {
             sub.fn_locals.insert(p.clone());
         }
@@ -4296,6 +4340,55 @@ impl Parser {
         self.result.append_reflect_impls();
     }
 
+    fn prepend_vec_ext_if_used(&mut self) {
+        if !self.emit_prelude {
+            return;
+        }
+        let haystack = format!("{}{}", self.result.value, self.result.main_function_code);
+        let needed = [
+            ".map(",
+            ".filter(",
+            ".find(",
+            ".any(",
+            ".all(",
+            ".for_each(",
+            ".reduce(",
+            ".sorted(",
+            ".reversed(",
+        ]
+        .iter()
+        .any(|pat| haystack.contains(pat));
+        if !needed || haystack.contains("trait __CopperVecExt") {
+            return;
+        }
+        let ext = concat!(
+            "#[allow(dead_code)]\n",
+            "trait __CopperVecExt<T: Clone> {\n",
+            "    fn map<U, F: FnMut(T) -> U>(&self, f: F) -> Vec<U>;\n",
+            "    fn filter<F: FnMut(T) -> bool>(&self, f: F) -> Vec<T>;\n",
+            "    fn find<F: FnMut(T) -> bool>(&self, f: F) -> Option<T>;\n",
+            "    fn any<F: FnMut(T) -> bool>(&self, f: F) -> bool;\n",
+            "    fn all<F: FnMut(T) -> bool>(&self, f: F) -> bool;\n",
+            "    fn for_each<F: FnMut(T)>(&self, f: F);\n",
+            "    fn reduce<U, F: FnMut(U, T) -> U>(&self, init: U, f: F) -> U;\n",
+            "    fn reversed(&self) -> Vec<T>;\n",
+            "    fn sorted(&self) -> Vec<T> where T: PartialOrd;\n",
+            "}\n",
+            "impl<T: Clone> __CopperVecExt<T> for [T] {\n",
+            "    fn map<U, F: FnMut(T) -> U>(&self, mut f: F) -> Vec<U> { self.iter().cloned().map(|x| f(x)).collect() }\n",
+            "    fn filter<F: FnMut(T) -> bool>(&self, mut f: F) -> Vec<T> { self.iter().cloned().filter(|x| f(x.clone())).collect() }\n",
+            "    fn find<F: FnMut(T) -> bool>(&self, mut f: F) -> Option<T> { self.iter().cloned().find(|x| f(x.clone())) }\n",
+            "    fn any<F: FnMut(T) -> bool>(&self, mut f: F) -> bool { self.iter().cloned().any(|x| f(x)) }\n",
+            "    fn all<F: FnMut(T) -> bool>(&self, mut f: F) -> bool { self.iter().cloned().all(|x| f(x)) }\n",
+            "    fn for_each<F: FnMut(T)>(&self, mut f: F) { for x in self.iter().cloned() { f(x); } }\n",
+            "    fn reduce<U, F: FnMut(U, T) -> U>(&self, mut init: U, mut f: F) -> U { for x in self.iter().cloned() { init = f(init, x); } init }\n",
+            "    fn reversed(&self) -> Vec<T> { let mut v = self.to_vec(); v.reverse(); v }\n",
+            "    fn sorted(&self) -> Vec<T> where T: PartialOrd { let mut v = self.to_vec(); v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); v }\n",
+            "}\n\n",
+        );
+        self.result.prepend_value(ext);
+    }
+
     pub fn parse(&mut self) -> String {
         loop {
             if self.eof {
@@ -4305,6 +4398,7 @@ impl Parser {
                 // the paths that set `uses_json` without the parser's
                 // `uses_data_types` flag.
                 self.result.add_data_type_aliases();
+                self.prepend_vec_ext_if_used();
                 self.prepend_used_std_modules();
                 self.result.write_main_function();
                 break self.result.get().expect("Format Error");
@@ -4453,6 +4547,15 @@ impl Parser {
                                     full.push_str(&t.value);
                                 }
                             }
+                        }
+
+                        if matches!(
+                            self.select(self.current + consumed).map(|t| t.value.as_str()),
+                            Some("?" | "!")
+                        ) {
+                            full.push_str(&self.select(self.current + consumed).unwrap().value);
+                            consumed += 1;
+                            full = convert_type(&full);
                         }
 
                         self.result.return_type(full);

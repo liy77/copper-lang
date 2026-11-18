@@ -206,6 +206,11 @@ pub enum ExprKind {
         then: Box<Expr>,
         els: Box<Expr>,
     },
+    /// `lhs ?? rhs` — returns inner value of `Some`/`Ok` or evaluates `rhs`.
+    NullCoalesce {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     /// `target op= value` (and plain `=`).
     Assign {
         target: Box<Expr>,
@@ -659,6 +664,25 @@ impl Parser {
                 continue;
             }
 
+            // Null-coalescing: `lhs ?? rhs`.
+            if op == "??" {
+                if bp_null_coalesce() < min_bp {
+                    break;
+                }
+                let start = lhs.span;
+                self.bump();
+                let rhs = self.parse_expr_bp(bp_null_coalesce() + 1)?;
+                let span = Span::merge(start, rhs.span);
+                lhs = Expr::new(
+                    ExprKind::NullCoalesce {
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                    span,
+                );
+                continue;
+            }
+
             // `++` / `--`: the tokenizer emits these as two `+`/`-` tokens.
             // Copper always treats them as inc/dec (never `x + (+y)`), so stop
             // here and let the statement layer build the `IncDec` node.
@@ -800,6 +824,26 @@ impl Parser {
                     "if" => self.parse_if_expr(),
                     "match" => self.parse_match_expr(),
                     _ => {
+                        // Single-param arrow lambda: `x => body`
+                        let is_arrow = self.toks.get(self.pos + 1).map(|x| x.value.as_str())
+                            == Some("=")
+                            && self.toks.get(self.pos + 2).map(|x| x.value.as_str()) == Some(">");
+                        if is_arrow {
+                            self.bump(); // ident
+                            self.bump(); // =
+                            self.bump(); // >
+                            let body = self.parse_expr_bp(0).unwrap_or_else(|| {
+                                Expr::new(ExprKind::Raw(String::new()), self.cur_span())
+                            });
+                            let sp = Span::merge(span, body.span);
+                            return Some(Expr::new(
+                                ExprKind::Closure {
+                                    params: vec![t.value.clone()],
+                                    body: Box::new(body),
+                                },
+                                sp,
+                            ));
+                        }
                         self.bump();
                         let name = t.value.clone();
                         // Struct literal: `Name { field: val, ... }` — only when
@@ -814,6 +858,9 @@ impl Parser {
             }
             _ => match t.value.as_str() {
                 "(" => {
+                    if let Some(lambda) = self.try_parse_arrow_lambda(span) {
+                        return Some(lambda);
+                    }
                     self.bump();
                     if self.peek_val() == Some(")") {
                         self.bump();
@@ -1159,6 +1206,80 @@ impl Parser {
             },
             span,
         )
+    }
+
+    /// Try to parse `() => expr` or `(a, b) => expr` (optional `: Type` skipped).
+    /// Leaves `self.pos` unchanged if the tokens don't match an arrow lambda.
+    fn try_parse_arrow_lambda(&mut self, open: Span) -> Option<Expr> {
+        let mut p = self.pos + 1; // skip `(`
+        let mut params = Vec::new();
+        if self.toks.get(p).map(|t| t.value.as_str()) == Some(")") {
+            p += 1;
+        } else {
+            loop {
+                let tok = self.toks.get(p)?;
+                let is_name = matches!(
+                    tok.kind,
+                    TokenKind::Identifier
+                        | TokenKind::Param
+                        | TokenKind::ParamType
+                        | TokenKind::Keyword
+                        | TokenKind::Type
+                );
+                if !is_name {
+                    return None;
+                }
+                params.push(tok.value.clone());
+                p += 1;
+                // Optional `: Type`
+                if self.toks.get(p).map(|t| t.value.as_str()) == Some(":") {
+                    p += 1;
+                    let mut depth = 0usize;
+                    while let Some(t) = self.toks.get(p) {
+                        match t.value.as_str() {
+                            "<" | "(" | "[" => depth += 1,
+                            ">" | "]" => depth = depth.saturating_sub(1),
+                            ")" if depth == 0 => break,
+                            ")" => depth -= 1,
+                            "," if depth == 0 => break,
+                            _ => {}
+                        }
+                        p += 1;
+                    }
+                }
+                match self.toks.get(p).map(|t| t.value.as_str()) {
+                    Some(",") => {
+                        p += 1;
+                        if self.toks.get(p).map(|t| t.value.as_str()) == Some(")") {
+                            p += 1;
+                            break;
+                        }
+                    }
+                    Some(")") => {
+                        p += 1;
+                        break;
+                    }
+                    _ => return None,
+                }
+            }
+        }
+        if self.toks.get(p).map(|t| t.value.as_str()) != Some("=")
+            || self.toks.get(p + 1).map(|t| t.value.as_str()) != Some(">")
+        {
+            return None;
+        }
+        self.pos = p + 2; // consume `)` and `=>`
+        let body = self
+            .parse_expr_bp(0)
+            .unwrap_or_else(|| Expr::new(ExprKind::Raw(String::new()), self.cur_span()));
+        let span = Span::merge(open, body.span);
+        Some(Expr::new(
+            ExprKind::Closure {
+                params,
+                body: Box::new(body),
+            },
+            span,
+        ))
     }
 
     fn parse_struct_lit(&mut self, name: String, start: Span) -> Expr {
@@ -1734,6 +1855,9 @@ fn bp_assign() -> u8 {
 }
 fn bp_ternary() -> u8 {
     4
+}
+fn bp_null_coalesce() -> u8 {
+    5
 }
 fn bp_range() -> u8 {
     6

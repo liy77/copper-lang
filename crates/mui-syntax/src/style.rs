@@ -217,6 +217,8 @@ fn eval_dim_reactive_inner(e: &Expr, env: &ReactiveEnv, deps: &mut Vec<String>) 
             let pick = if c == 0.0 { els } else { then };
             eval_dim_reactive_inner(pick, env, deps)
         }
+        ExprKind::NullCoalesce { lhs, rhs } => eval_dim_reactive_inner(lhs, env, deps)
+            .or_else(|| eval_dim_reactive_inner(rhs, env, deps)),
         ExprKind::Binary { op, lhs, rhs } => {
             // Allow either operand to come from a pure-literal expr so a
             // signal on one side of `==` and a literal string on the other

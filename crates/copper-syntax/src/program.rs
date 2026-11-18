@@ -342,7 +342,55 @@ impl ItemParser {
         }
         let name = self.expect_ident("function name");
         let params = self.parse_params();
-        let body = self.parse_braced_block();
+        if return_type.is_none()
+            && self.peek_val() == Some("-")
+            && self.at(self.pos + 1).map(|t| t.value.as_str()) == Some(">")
+        {
+            self.bump(); // -
+            self.bump(); // >
+            return_type = Some(self.parse_type_until(&["{", "="]));
+        }
+        let body = if self.peek_val() == Some("=")
+            && self.at(self.pos + 1).map(|t| t.value.as_str()) == Some(">")
+        {
+            let arrow_span = self.cur_span();
+            self.bump(); // =
+            self.bump(); // >
+            let end = self.find_expr_stmt_end();
+            let slice = &self.toks[self.pos..end];
+            let (mut stmts, tail, errs) = {
+                let (b, e) = expr::parse_stmts_tokens(slice);
+                (b.stmts, b.tail.map(|t| *t), e)
+            };
+            for e in errs {
+                self.errors.push(ProgramError {
+                    span: e.span,
+                    message: e.message,
+                });
+            }
+            self.pos = end;
+            let ret_expr = tail.or_else(|| {
+                if let Some(expr::Stmt::Expr(e)) = stmts.pop() {
+                    Some(e)
+                } else {
+                    None
+                }
+            });
+            Block {
+                stmts: if let Some(e) = ret_expr {
+                    vec![expr::Stmt::Return {
+                        value: Some(e),
+                        span: arrow_span,
+                    }]
+                } else {
+                    stmts
+                },
+                tail: None,
+                span: Span::merge(arrow_span, self.prev_end_span()),
+            }
+        } else {
+            self.parse_braced_block()
+        };
         let span = Span::merge(start, self.prev_end_span());
         Some(Item::Function {
             name,
@@ -377,10 +425,26 @@ impl ItemParser {
             let p_start = self.cur_span();
             let name = self.bump().unwrap().value;
             let ty = if self.eat(":") {
-                Some(self.parse_type_until(&[",", ")"]))
+                Some(self.parse_type_until(&[",", ")", "="]))
             } else {
                 None
             };
+            // Skip optional `= default_expr` in param list.
+            if self.eat("=") {
+                let mut depth = 0i32;
+                while let Some(t) = self.toks.get(self.pos) {
+                    let v = t.value.as_str();
+                    if depth == 0 && (v == "," || v == ")") {
+                        break;
+                    }
+                    match v {
+                        "(" | "[" | "{" => depth += 1,
+                        ")" | "]" | "}" => depth -= 1,
+                        _ => {}
+                    }
+                    self.pos += 1;
+                }
+            }
             params.push(Param {
                 name,
                 ty,
@@ -658,6 +722,29 @@ impl ItemParser {
             }
             if depth == 0 && self.toks[i].kind == TokenKind::Newline {
                 return i + 1; // include the separator
+            }
+            i += 1;
+        }
+        self.toks.len()
+    }
+
+    fn find_expr_stmt_end(&self) -> usize {
+        let mut depth = 0i32;
+        let mut i = self.pos;
+        while i < self.toks.len() {
+            let t = &self.toks[i];
+            if depth == 0 && (t.kind == TokenKind::Newline || t.value == ";") {
+                return i;
+            }
+            match t.value.as_str() {
+                "(" | "[" | "{" => depth += 1,
+                ")" | "]" | "}" => {
+                    if depth == 0 {
+                        return i;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
             }
             i += 1;
         }

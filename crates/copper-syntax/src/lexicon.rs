@@ -45,13 +45,17 @@ pub const COPPER_TYPES: &[(&str, &str)] = &[
 ];
 
 /// Resolve a Copper type spelling to its Rust spelling, honouring the trailing
-/// `?` optional suffix (`int?` -> `Option<i64>`). Handles tuple types
-/// recursively: `(int, str)` → `(i64, String)`. Pure and allocation-light;
+/// `?` optional suffix (`int?` -> `Option<i64>`) and trailing `!` fallible
+/// suffix (`int!` -> `Result<i64, Box<dyn std::error::Error>>`). Handles tuple
+/// types recursively: `(int, str)` → `(i64, String)`. Pure and allocation-light;
 /// shared by the transpiler and the typed AST so they never disagree.
 pub fn convert_type(value: &str) -> String {
-    let (base, optional) = match value.strip_suffix('?') {
-        Some(b) => (b, true),
-        None => (value, false),
+    let (base, optional, fallible) = if let Some(b) = value.strip_suffix('?') {
+        (b, true, false)
+    } else if let Some(b) = value.strip_suffix('!') {
+        (b, false, true)
+    } else {
+        (value, false, false)
     };
 
     let kind = if base.starts_with('(') && base.ends_with(')') {
@@ -98,6 +102,8 @@ pub fn convert_type(value: &str) -> String {
 
     if optional {
         format!("Option<{kind}>")
+    } else if fallible {
+        format!("Result<{kind}, Box<dyn std::error::Error>>")
     } else {
         kind
     }

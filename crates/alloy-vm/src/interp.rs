@@ -396,6 +396,21 @@ impl Interpreter {
                     )),
                 }
             }
+            ExprKind::NullCoalesce { lhs, rhs } => {
+                let l = self.eval_expr(lhs, env)?;
+                match &l {
+                    Value::Enum {
+                        variant, payload, ..
+                    } if matches!(variant.as_str(), "Some" | "Ok") => {
+                        Ok(payload.first().cloned().unwrap_or(Value::Unit))
+                    }
+                    Value::Enum { variant, .. } if matches!(variant.as_str(), "None" | "Err") => {
+                        self.eval_expr(rhs, env)
+                    }
+                    Value::Unit => self.eval_expr(rhs, env),
+                    _ => Ok(l),
+                }
+            }
             ExprKind::Assign { target, op, value } => {
                 let rhs = self.eval_expr(value, env)?;
                 // Unwrap `*x`/`&x` (pointers are identity here).
@@ -990,7 +1005,28 @@ impl Interpreter {
                         }
                         return Ok(Value::Bool(true));
                     }
+                    "find" => {
+                        for v in src {
+                            if self.call_closure(&cl, vec![v.clone()], span)?.as_bool()
+                                == Some(true)
+                            {
+                                return Ok(Value::some(v));
+                            }
+                        }
+                        return Ok(Value::none());
+                    }
                     _ => {}
+                }
+            }
+            if name == "reduce" && args.len() >= 2 {
+                if let Value::Closure(cl) = &args[1] {
+                    let cl = Rc::clone(cl);
+                    let mut acc = args[0].clone();
+                    let src = items.borrow().clone();
+                    for v in src {
+                        acc = self.call_closure(&cl, vec![acc, v], span)?;
+                    }
+                    return Ok(acc);
                 }
             }
         }
@@ -1544,9 +1580,21 @@ fn builtin_method(
                     Some(Ok(Value::some(b.remove(0))))
                 }
             }
-            "rev" => {
+            "rev" | "reversed" => {
                 let mut v = items.borrow().clone();
                 v.reverse();
+                Some(Ok(Value::Vec(Rc::new(RefCell::new(v)))))
+            }
+            "sorted" => {
+                let mut v = items.borrow().clone();
+                v.sort_by(|a, b| match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => x.cmp(y),
+                    (Value::Float(x), Value::Float(y)) => {
+                        x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                    (Value::Str(x), Value::Str(y)) => x.cmp(y),
+                    _ => a.to_string().cmp(&b.to_string()),
+                });
                 Some(Ok(Value::Vec(Rc::new(RefCell::new(v)))))
             }
             "sum" => {
