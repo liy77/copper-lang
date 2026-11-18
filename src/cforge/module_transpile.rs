@@ -188,6 +188,9 @@ pub fn transpile_crs_project(project_dir: &Path) -> Result<PathBuf, String> {
     cache.save(&dist_dir_str);
 
     // 6. Generate `<project_dir>/dist/rust/Cargo.toml` from `<project_dir>/properties.kson`
+    if has_main_crs {
+        embed_windows_exe_icon(&project_dir, &rust_dir);
+    }
     let prop_path = project_dir.join("properties.kson");
     if prop_path.is_file() {
         let (_, json) = crate::cforge::kson::read_properties(prop_path.to_str().unwrap());
@@ -218,6 +221,91 @@ pub fn transpile_crs_project(project_dir: &Path) -> Result<PathBuf, String> {
 fn clean_win_path(p: &Path) -> String {
     let s = p.to_string_lossy().replace('\\', "/");
     s.strip_prefix("//?/").unwrap_or(&s).to_string()
+}
+
+/// If the project (or its parent workspace) ships an icon PNG (`assets/mocidad-icon.png`
+/// or `assets/icon.png`), emit a Win32 compiled resource file (`dist/rust/icon.res`)
+/// containing `RT_ICON` (ID 1) and `RT_GROUP_ICON` (ID 1) plus a minimal `build.rs`
+/// so the compiled Windows `.exe` displays the application icon in Explorer and the Taskbar.
+fn embed_windows_exe_icon(project_dir: &Path, rust_dir: &Path) {
+    let mut candidates = vec![
+        project_dir.join("assets").join("mocidad-icon.png"),
+        project_dir.join("assets").join("icon.png"),
+    ];
+    if let Some(parent) = project_dir.parent() {
+        candidates.push(parent.join("assets").join("mocidad-icon.png"));
+        candidates.push(parent.join("assets").join("icon.png"));
+    }
+    let Some(icon_path) = candidates.into_iter().find(|p| p.is_file()) else {
+        return;
+    };
+    let Ok(png) = std::fs::read(&icon_path) else {
+        return;
+    };
+    if png.len() < 24 || &png[0..8] != b"\x89PNG\r\n\x1a\n" {
+        return;
+    }
+
+    let mut res = Vec::with_capacity(32 + 32 + png.len() + 4 + 32 + 20);
+    // 1. Empty 32-byte .res file prelude header
+    res.extend_from_slice(&0u32.to_le_bytes()); // DataSize = 0
+    res.extend_from_slice(&32u32.to_le_bytes()); // HeaderSize = 32
+    res.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    res.extend_from_slice(&0u16.to_le_bytes()); // Type = 0
+    res.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    res.extend_from_slice(&0u16.to_le_bytes()); // Name = 0
+    res.extend_from_slice(&[0u8; 16]);
+
+    // 2. RT_ICON (Type = 3, Name = 1) holding raw PNG bytes
+    let png_len = png.len() as u32;
+    res.extend_from_slice(&png_len.to_le_bytes()); // DataSize
+    res.extend_from_slice(&32u32.to_le_bytes()); // HeaderSize = 32
+    res.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    res.extend_from_slice(&3u16.to_le_bytes()); // RT_ICON = 3
+    res.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    res.extend_from_slice(&1u16.to_le_bytes()); // ID = 1
+    res.extend_from_slice(&0u32.to_le_bytes()); // DataVersion
+    res.extend_from_slice(&0x1010u16.to_le_bytes()); // MemoryFlags
+    res.extend_from_slice(&0x0409u16.to_le_bytes()); // LanguageId (en-US)
+    res.extend_from_slice(&0u32.to_le_bytes()); // Version
+    res.extend_from_slice(&0u32.to_le_bytes()); // Characteristics
+    res.extend_from_slice(&png);
+    while res.len() % 4 != 0 {
+        res.push(0);
+    }
+
+    // 3. RT_GROUP_ICON (Type = 14, Name = 1) pointing to RT_ICON #1
+    res.extend_from_slice(&20u32.to_le_bytes()); // DataSize = 20
+    res.extend_from_slice(&32u32.to_le_bytes()); // HeaderSize = 32
+    res.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    res.extend_from_slice(&14u16.to_le_bytes()); // RT_GROUP_ICON = 14
+    res.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    res.extend_from_slice(&1u16.to_le_bytes()); // ID = 1
+    res.extend_from_slice(&0u32.to_le_bytes()); // DataVersion
+    res.extend_from_slice(&0x1030u16.to_le_bytes()); // MemoryFlags
+    res.extend_from_slice(&0x0409u16.to_le_bytes()); // LanguageId
+    res.extend_from_slice(&0u32.to_le_bytes()); // Version
+    res.extend_from_slice(&0u32.to_le_bytes()); // Characteristics
+                                                // GRPICONDIR (6 bytes) + GRPICONDIRENTRY (14 bytes) = 20 bytes
+    res.extend_from_slice(&0u16.to_le_bytes()); // idReserved = 0
+    res.extend_from_slice(&1u16.to_le_bytes()); // idType = 1 (ICON)
+    res.extend_from_slice(&1u16.to_le_bytes()); // idCount = 1
+    res.push(0); // bWidth = 0 (256)
+    res.push(0); // bHeight = 0 (256)
+    res.push(0); // bColorCount = 0
+    res.push(0); // bReserved = 0
+    res.extend_from_slice(&1u16.to_le_bytes()); // wPlanes = 1
+    res.extend_from_slice(&32u16.to_le_bytes()); // wBitCount = 32
+    res.extend_from_slice(&png_len.to_le_bytes()); // dwBytesInRes
+    res.extend_from_slice(&1u16.to_le_bytes()); // nID = 1
+
+    let res_path = rust_dir.join("icon.res");
+    let _ = std::fs::write(&res_path, &res);
+    let res_str = clean_win_path(&res_path);
+    let build_rs = format!(
+        "fn main() {{\n    println!(\"cargo:rerun-if-changed={res_str}\");\n    #[cfg(target_os = \"windows\")]\n    println!(\"cargo:rustc-link-arg-bins={res_str}\");\n}}\n"
+    );
+    let _ = write_if_changed(rust_dir.join("build.rs"), &build_rs);
 }
 
 fn rewrite_manifest_and_out_dir(rust: &str, project_dir: &str, src_dir: &str) -> String {
