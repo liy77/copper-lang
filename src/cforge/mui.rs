@@ -855,13 +855,28 @@ fn codegen_build_and_run(file: &str, workspace: &Path) -> i32 {
 /// Read the package `name = "…"` from a generated crate's Cargo.toml.
 fn crate_bin_name(cargo_toml: &Path) -> Option<String> {
     let s = std::fs::read_to_string(cargo_toml).ok()?;
+    let mut section = "";
+    let mut pkg_name = None;
     for line in s.lines() {
         let t = line.trim();
-        if let Some(rest) = t.strip_prefix("name =") {
-            return Some(rest.trim().trim_matches('"').to_string());
+        if t.starts_with('[') {
+            section = t;
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("name") {
+            let rest = rest.trim_start();
+            if let Some(val) = rest.strip_prefix('=') {
+                let name = val.trim().trim_matches('"').to_string();
+                if section == "[[bin]]" {
+                    return Some(name);
+                }
+                if (section == "[package]" || section.is_empty()) && pkg_name.is_none() {
+                    pkg_name = Some(name);
+                }
+            }
         }
     }
-    None
+    pkg_name
 }
 
 /// The mocida shared-lib directory to put on the OS loader path at run-time.

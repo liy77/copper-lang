@@ -751,8 +751,31 @@ impl Tokenizer {
                         self.last_token().map(|t| (t.kind, t.value.clone())),
                         Some((TokenKind::Identifier, _)) | Some((TokenKind::ReturnType, _))
                     ) || prev_gt_closes_generic;
-                    let opens_struct =
-                        prev_is_type_name && !opens_match_body && !self.expect_block_brace;
+                    let non_ws: Vec<&str> = self
+                        .tokens
+                        .iter()
+                        .rev()
+                        .filter(|t| {
+                            !matches!(
+                                t.kind,
+                                TokenKind::Whitespace
+                                    | TokenKind::Newline
+                                    | TokenKind::Comment
+                                    | TokenKind::DocComment
+                            )
+                        })
+                        .take(3)
+                        .map(|t| t.value.as_str())
+                        .collect();
+                    let in_json_macro = matches!(non_ws.as_slice(), ["(", "!", "json", ..]);
+                    let nested_in_struct = matches!(self.brace_is_struct.last(), Some(&true))
+                        && matches!(
+                            self.last_token().map(|t| t.value.as_str()),
+                            Some(":" | "[" | ",")
+                        );
+                    let opens_struct = (prev_is_type_name || in_json_macro || nested_in_struct)
+                        && !opens_match_body
+                        && !self.expect_block_brace;
                     self.brace_is_struct.push(opens_struct);
                     is_struct_brace = opens_struct;
                     self.expect_block_brace = false;
@@ -1044,11 +1067,12 @@ impl Tokenizer {
                 // or a path segment / macro (`serde_json::json!(...)`,
                 // `x::json`) they must be plain identifiers — fall through
                 // like `from`.
-                && !(matches!(value.as_str(), "json" | "xml" | "toml")
+                && !(matches!(value.as_str(), "json" | "xml" | "toml" | "import")
                     && (matches!(self.last_token().map(|t| t.kind), Some(TokenKind::Dot))
                         || self.last_token().map(|t| t.value == "::").unwrap_or(false)
                         || self.current_char() == '('
-                        || self.current_char() == '!'))
+                        || self.current_char() == '!'
+                        || self.current_char() == ':'))
             {
                 match value.as_str() {
                     "import" => {
@@ -1254,7 +1278,15 @@ impl Tokenizer {
                 _ => false,
             };
             match self.kind() {
-                _ if ends_with_continuation => {
+                _ if ends_with_continuation
+                    || (self.expect_match_brace && self.match_paren_depth == 0)
+                    || matches!(
+                        self.end_kind(),
+                        Some(TokenKind::ParametersEnd)
+                            | Some(TokenKind::ParenthesesEnd)
+                            | Some(TokenKind::BracketEnd)
+                    ) =>
+                {
                     value.push(self.current_char());
                 }
                 // A `}` that closed a struct literal in value position

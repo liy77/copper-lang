@@ -160,6 +160,224 @@ fn join_chain_continuations(tokens: Vec<Token>) -> Vec<Token> {
     out
 }
 
+/// Strip tokenizer-synthesized `;` from the final expression of value-producing
+/// blocks (`if { ... } else { ... }`, closures `|...| { ... }`, `match` arms)
+/// right before `}`, so Rust evaluates the block as its tail expression.
+fn strip_expr_block_tail_semicolons(mut tokens: Vec<Token>) -> Vec<Token> {
+    let mut block_is_expr: Vec<bool> = Vec::new();
+    let mut last_closed_if_was_expr = false;
+
+    let prev_sig = |toks: &[Token], mut idx: usize| -> Option<usize> {
+        while idx > 0 {
+            idx -= 1;
+            if !matches!(
+                toks[idx].kind,
+                TokenKind::Whitespace
+                    | TokenKind::Newline
+                    | TokenKind::Comment
+                    | TokenKind::DocComment
+            ) {
+                return Some(idx);
+            }
+        }
+        None
+    };
+
+    let next_sig = |toks: &[Token], mut idx: usize| -> Option<usize> {
+        while idx < toks.len() {
+            if !matches!(
+                toks[idx].kind,
+                TokenKind::Whitespace
+                    | TokenKind::Newline
+                    | TokenKind::Comment
+                    | TokenKind::DocComment
+            ) {
+                return Some(idx);
+            }
+            idx += 1;
+        }
+        None
+    };
+
+    let is_expr_opener_tok = |t: &Token| -> bool {
+        matches!(
+            t.value.as_str(),
+            "=" | "return" | "(" | "[" | "," | ":" | "=>"
+        )
+    };
+
+    let mut i = 0;
+    while i < tokens.len() {
+        let kind = tokens[i].kind;
+        let val = tokens[i].value.clone();
+
+        if kind == TokenKind::BraceStart {
+            let mut is_expr = false;
+            if let Some(p) = prev_sig(&tokens, i) {
+                let pv = tokens[p].value.as_str();
+                if matches!(pv, "=" | "(" | "[" | "," | ":" | "=>") {
+                    is_expr = true;
+                } else if pv == "|" {
+                    // Closure `|args| { ... }`
+                    is_expr = true;
+                } else if pv == "else" {
+                    is_expr = last_closed_if_was_expr;
+                } else {
+                    // Scan backwards to see if this `{` closes an `if ... {`, `match ... {`, or closure `|...| {`
+                    let mut pdepth = 0i32;
+                    let mut bdepth = 0i32;
+                    let mut j = i;
+                    let mut found_kw: Option<usize> = None;
+                    while j > 0 {
+                        j -= 1;
+                        match tokens[j].value.as_str() {
+                            ")" => pdepth += 1,
+                            "(" => {
+                                if pdepth == 0 {
+                                    break;
+                                }
+                                pdepth -= 1;
+                            }
+                            "]" => bdepth += 1,
+                            "[" => {
+                                if bdepth == 0 {
+                                    break;
+                                }
+                                bdepth -= 1;
+                            }
+                            "}" | "{" | ";" if pdepth == 0 && bdepth == 0 => break,
+                            "if" | "match" if pdepth == 0 && bdepth == 0 => {
+                                found_kw = Some(j);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(kw_idx) = found_kw {
+                        if let Some(before_kw) = prev_sig(&tokens, kw_idx) {
+                            let bkw = tokens[before_kw].value.as_str();
+                            if is_expr_opener_tok(&tokens[before_kw]) {
+                                is_expr = true;
+                            } else if bkw == "else" {
+                                is_expr = last_closed_if_was_expr;
+                            } else if bkw == "{" && block_is_expr.last() == Some(&true) {
+                                // Last branch of an enclosing expr block (e.g. `else { if ... { ... } else { ... } }`)
+                                is_expr = true;
+                            }
+                        }
+                    } else if pv == ">" {
+                        // Possible `|a| -> T { ... }` closure return type
+                        let mut k = p;
+                        while k > 0 {
+                            k -= 1;
+                            if tokens[k].value == "|" {
+                                is_expr = true;
+                                break;
+                            }
+                            if matches!(tokens[k].value.as_str(), "{" | "}" | ";") {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            block_is_expr.push(is_expr);
+            last_closed_if_was_expr = false;
+        } else if kind == TokenKind::BraceEnd {
+            let popped = block_is_expr.pop().unwrap_or(false);
+            last_closed_if_was_expr = popped;
+        } else if kind == TokenKind::Newline && tokens[i].value.contains(';') {
+            if block_is_expr.last() == Some(&true) {
+                if let Some(ns) = next_sig(&tokens, i + 1) {
+                    if tokens[ns].kind == TokenKind::BraceEnd {
+                        // Find start of this statement inside the current block.
+                        let mut s_start = i;
+                        let mut pd = 0i32;
+                        let mut bd = 0i32;
+                        let mut brd = 0i32;
+                        while s_start > 0 {
+                            let prev_i = s_start - 1;
+                            let tv = tokens[prev_i].value.as_str();
+                            let tk = tokens[prev_i].kind;
+                            if tk == TokenKind::Newline && pd == 0 && bd == 0 && brd == 0 {
+                                break;
+                            }
+                            match tv {
+                                ")" => pd += 1,
+                                "(" => {
+                                    if pd == 0 {
+                                        break;
+                                    }
+                                    pd -= 1;
+                                }
+                                "]" => bd += 1,
+                                "[" => {
+                                    if bd == 0 {
+                                        break;
+                                    }
+                                    bd -= 1;
+                                }
+                                "}" => brd += 1,
+                                "{" => {
+                                    if brd == 0 {
+                                        break;
+                                    }
+                                    brd -= 1;
+                                }
+                                ";" | "=>" if pd == 0 && bd == 0 && brd == 0 => break,
+                                _ => {}
+                            }
+                            s_start = prev_i;
+                        }
+                        if let Some(first_tok) = next_sig(&tokens, s_start) {
+                            let fv = tokens[first_tok].value.as_str();
+                            let is_stmt_kw = matches!(
+                                fv,
+                                "let"
+                                    | "mut"
+                                    | "const"
+                                    | "static"
+                                    | "type"
+                                    | "use"
+                                    | "import"
+                                    | "for"
+                                    | "while"
+                                    | "loop"
+                                    | "return"
+                                    | "break"
+                                    | "continue"
+                                    | "_"
+                            );
+                            // Also skip bare assignment `x = expr` at top of statement
+                            let is_bare_assign = tokens[first_tok].kind == TokenKind::Identifier
+                                && tokens
+                                    .get(first_tok + 1)
+                                    .map(|t| t.value == "=")
+                                    .unwrap_or(false)
+                                && tokens
+                                    .get(first_tok + 2)
+                                    .map(|t| t.value != "=" && t.value != ">")
+                                    .unwrap_or(false);
+                            if !is_stmt_kw && !is_bare_assign {
+                                tokens[i].value = tokens[i].value.replace(';', "");
+                            }
+                        }
+                    }
+                }
+            }
+        } else if !matches!(
+            kind,
+            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment
+        ) {
+            if val != "else" {
+                last_closed_if_was_expr = false;
+            }
+        }
+        i += 1;
+    }
+    tokens
+}
+
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
         let filtered: Vec<Token> = tokens
@@ -173,9 +391,10 @@ impl Parser {
         // statements. The tokenizer only suppresses the `;` when a line
         // *ends* with `.`/operator; this catches the leading-dot form.
         let joined = join_chain_continuations(filtered);
+        let stripped = strip_expr_block_tail_semicolons(joined);
         // Lower `cond ? then : else` ternaries into `if cond { then } else { else }`
         // before the main parser dispatch sees them.
-        let lowered = ternary::rewrite(joined);
+        let lowered = ternary::rewrite(stripped);
         Self {
             tokens: lowered,
             current: 0,
@@ -516,6 +735,41 @@ impl Parser {
                 return Consumed::consume(0);
             }
         }
+        // Don't inject `let` inside `(...)` or `[...]` (e.g. `cfg!(target_os = "macos")`,
+        // `#[cfg(...)]`, named/macro arguments). Only inject `let` at block/file level.
+        {
+            let mut paren_depth: i32 = 0;
+            let mut bracket_depth: i32 = 0;
+            let mut brace_depth: i32 = 0;
+            let mut idx = self.current;
+            while idx > 0 {
+                idx -= 1;
+                match self.tokens[idx].kind {
+                    TokenKind::ParametersEnd | TokenKind::ParenthesesEnd => paren_depth += 1,
+                    TokenKind::ParametersStart | TokenKind::ParenthesesStart => {
+                        if paren_depth == 0 {
+                            return Consumed::consume(0);
+                        }
+                        paren_depth -= 1;
+                    }
+                    TokenKind::BracketEnd => bracket_depth += 1,
+                    TokenKind::BracketStart => {
+                        if bracket_depth == 0 {
+                            return Consumed::consume(0);
+                        }
+                        bracket_depth -= 1;
+                    }
+                    TokenKind::BraceEnd => brace_depth += 1,
+                    TokenKind::BraceStart => {
+                        if brace_depth == 0 {
+                            break;
+                        }
+                        brace_depth -= 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
         if self.kind() == TokenKind::Identifier && self.peek_value() == Some("=".to_string()) {
             // `*name = expr` is a deref-assignment, not a let-declaration.
             // Likewise `&name` / `&mut name` followed by `=` is a borrow
@@ -702,8 +956,47 @@ impl Parser {
                         // `mut x = 0` + `x = 1` reassigns without `let`, while
                         // immutable `x = ...` in separate `if`/`else` branches
                         // each get their own `let x = `.
+                        // Also scan backwards in the current function for a visible
+                        // `mut <var_name>` declaration in case `fn_locals` was
+                        // cleared by an inner block / match arm.
+                        let mut has_visible_mut = self.fn_locals.contains(var_name.as_str());
+                        if !has_visible_mut {
+                            let mut rel_depth: i32 = 0;
+                            let mut idx = self.current;
+                            while idx > 0 {
+                                idx -= 1;
+                                match self.tokens[idx].kind {
+                                    TokenKind::BraceEnd => rel_depth += 1,
+                                    TokenKind::BraceStart => {
+                                        if rel_depth > 0 {
+                                            rel_depth -= 1;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                if rel_depth == 0 {
+                                    let tv = self.tokens[idx].value.as_str();
+                                    if (tv == "func" || tv == "fn")
+                                        && idx + 1 < self.tokens.len()
+                                        && self.tokens[idx + 1].kind != TokenKind::Dot
+                                    {
+                                        break;
+                                    }
+                                    if tv == "mut"
+                                        && self
+                                            .tokens
+                                            .get(idx + 1)
+                                            .map(|t| t.value == var_name)
+                                            .unwrap_or(false)
+                                    {
+                                        has_visible_mut = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         consumed += 2;
-                        if self.fn_locals.contains(var_name.as_str()) {
+                        if has_visible_mut {
                             self.append(&format!("{} = ", var_name), AppendMode::AppendWithSpace);
                         } else {
                             self.append(
@@ -822,6 +1115,7 @@ impl Parser {
                     }
 
                     if prev_is_decl {
+                        self.fn_locals.insert(var_name.to_string());
                         self.append(
                             &format!("{var_name}: {full_type}"),
                             AppendMode::AppendWithSpace,
@@ -1145,6 +1439,42 @@ impl Parser {
     /// bracket, or `self`/keyword that produces a value means we're indexing
     /// something. Anything else (operators, commas, statement starts, opening
     /// delimiters) is a literal.
+    fn is_inside_json_macro(&self) -> bool {
+        let mut pdepth = 0i32;
+        let mut idx = self.current;
+        while idx > 0 {
+            idx -= 1;
+            let t = &self.tokens[idx];
+            match t.value.as_str() {
+                ")" => pdepth += 1,
+                "(" => {
+                    if pdepth == 0 {
+                        // Check for `json ! (`
+                        let mut k = idx;
+                        while k > 0
+                            && matches!(
+                                self.tokens[k - 1].kind,
+                                TokenKind::Whitespace | TokenKind::Newline
+                            )
+                        {
+                            k -= 1;
+                        }
+                        if k >= 2
+                            && self.tokens[k - 1].value == "!"
+                            && self.tokens[k - 2].value == "json"
+                        {
+                            return true;
+                        }
+                        return false;
+                    }
+                    pdepth -= 1;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub fn parse_bracket(&mut self) -> Consumed {
         if self.kind() != TokenKind::BracketStart {
             return Consumed::consume(0);
@@ -1174,7 +1504,7 @@ impl Parser {
             Some(t) if t.kind == TokenKind::Operator && t.value == "&"
         );
 
-        if is_indexing || is_macro_body || is_slice_type {
+        if is_indexing || is_macro_body || is_slice_type || self.is_inside_json_macro() {
             self.append("[", AppendMode::Append);
         } else {
             self.append("vec![", AppendMode::Append);
@@ -1735,6 +2065,44 @@ impl Parser {
         Consumed::consume(0)
     }
 
+    fn join_type_tokens(toks: &[&Token]) -> String {
+        let mut s = String::new();
+        for (idx, t) in toks.iter().enumerate() {
+            let v = t.value.as_str();
+            if idx > 0 {
+                let prev = toks[idx - 1].value.as_str();
+                let need_space = matches!(prev, "mut" | "const" | "dyn" | "impl" | "pub" | ",")
+                    || prev.starts_with('\'')
+                    || (prev == "&" && v == "mut");
+                if need_space && !s.ends_with(' ') {
+                    s.push(' ');
+                }
+            }
+            s.push_str(v);
+        }
+        s
+    }
+
+    fn has_preceding_derive(&self) -> bool {
+        let mut idx = self.current;
+        while idx > 0 {
+            idx -= 1;
+            match self.tokens[idx].kind {
+                TokenKind::Newline
+                | TokenKind::Whitespace
+                | TokenKind::Comment
+                | TokenKind::DocComment => continue,
+                TokenKind::Attribute => {
+                    if self.tokens[idx].value.contains("derive") {
+                        return true;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
     fn process_class_members(&mut self, class_tokens: &[Token], class_name: &str) -> String {
         // Keep newlines so method bodies still get statement boundaries when
         // lowered through the sub-parser. Field/ctor/method-head scans skip
@@ -1746,37 +2114,91 @@ impl Parser {
         let inner = &tokens[1..tokens.len() - 1];
 
         let mut output = String::new();
-        let mut fields = Vec::new();
+        let mut fields: Vec<(String, String)> = Vec::new();
 
-        // Collect the fields
+        // Collect the fields (supporting generic types like `Option<StaticStr>`,
+        // `Vec<PropDef>`, `&'static str`, tuples, etc.) until the first method/ctor.
         let mut i = 0;
         while i < inner.len() {
-            while i < inner.len() && inner[i].kind == TokenKind::Newline {
+            while i < inner.len()
+                && matches!(
+                    inner[i].kind,
+                    TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment
+                )
+            {
                 i += 1;
             }
-            if i + 2 >= inner.len() {
+            if i >= inner.len() {
                 break;
             }
-            let a = &inner[i];
-            let b = &inner[i + 1];
-            let c = &inner[i + 2];
+            if matches!(inner[i].value.as_str(), "func" | "static" | "unsafe") {
+                break;
+            }
+            if inner[i].value == "pub"
+                && i + 1 < inner.len()
+                && matches!(inner[i + 1].value.as_str(), "func" | "static" | "unsafe")
+            {
+                break;
+            }
+            let field_start = if inner[i].value == "pub" { i + 1 } else { i };
+            if field_start + 2 >= inner.len() {
+                break;
+            }
+            let a = &inner[field_start];
+            let b = &inner[field_start + 1];
             let is_colon =
                 (b.kind == TokenKind::Operator || b.kind == TokenKind::Colon) && b.value == ":";
-            let is_type = c.kind == TokenKind::Identifier
-                || c.kind == TokenKind::ParamType
-                || c.kind == TokenKind::Keyword;
-
-            if a.kind == TokenKind::Identifier && is_colon && is_type {
-                fields.push((a.value.clone(), c.value.clone()));
-                i += 3;
+            if a.kind == TokenKind::Identifier && is_colon {
+                let mut j = field_start + 2;
+                let mut angle_depth = 0usize;
+                let mut paren_depth = 0usize;
+                let mut bracket_depth = 0usize;
+                let mut type_toks: Vec<&Token> = Vec::new();
+                while j < inner.len() {
+                    let tt = inner[j];
+                    if angle_depth == 0 && paren_depth == 0 && bracket_depth == 0 {
+                        if matches!(
+                            tt.kind,
+                            TokenKind::Newline
+                                | TokenKind::Comment
+                                | TokenKind::DocComment
+                                | TokenKind::Comma
+                                | TokenKind::Semicolon
+                                | TokenKind::BraceEnd
+                        ) || tt.value == ","
+                            || tt.value == ";"
+                        {
+                            break;
+                        }
+                    }
+                    match tt.value.as_str() {
+                        "<" => angle_depth += 1,
+                        ">" => angle_depth = angle_depth.saturating_sub(1),
+                        "(" => paren_depth += 1,
+                        ")" => paren_depth = paren_depth.saturating_sub(1),
+                        "[" => bracket_depth += 1,
+                        "]" => bracket_depth = bracket_depth.saturating_sub(1),
+                        _ => {}
+                    }
+                    type_toks.push(tt);
+                    j += 1;
+                }
+                if type_toks.is_empty() {
+                    break;
+                }
+                let raw_type = Self::join_type_tokens(&type_toks);
+                fields.push((a.value.clone(), raw_type));
+                i = j;
+                if i < inner.len() && (inner[i].value == "," || inner[i].value == ";") {
+                    i += 1;
+                }
             } else {
                 break;
             }
         }
 
         // Build the struct (Copper `class` lowers to a Rust struct + impl).
-        // Clone/Debug always; Copy only when every field is a clearly
-        // Copy-compatible scalar so `&self` methods can return field copies.
+        // Clone/Debug always unless the user already supplied `#[derive(...)]`.
         let rust_fields: Vec<(String, String)> = fields
             .iter()
             .map(|(n, t)| {
@@ -1784,11 +2206,16 @@ impl Parser {
                 (n.clone(), rtype)
             })
             .collect();
-        let all_copy = rust_fields.iter().all(|(_, t)| Self::type_is_copyish(t));
-        if all_copy {
-            output.push_str("#[derive(Clone, Copy, Debug)]\n");
-        } else {
-            output.push_str("#[derive(Clone, Debug)]\n");
+        if !self.has_preceding_derive() {
+            let all_copy = rust_fields.iter().all(|(_, t)| Self::type_is_copyish(t));
+            if all_copy {
+                output.push_str("#[derive(Clone, Copy, Debug)]\n");
+            } else if rust_fields
+                .iter()
+                .all(|(_, t)| Self::type_is_clone_debug_safe(t))
+            {
+                output.push_str("#[derive(Clone, Debug)]\n");
+            }
         }
         output.push_str(&format!("pub struct {} {{\n", class_name));
         for (n, t) in &rust_fields {
@@ -1796,12 +2223,19 @@ impl Parser {
         }
         output.push_str("}\n\n");
 
-        // Build the constructor
+        // Build the constructor (only classic `ClassName(...)` at member level)
         output.push_str(&format!("impl {} {{\n", class_name));
-        if let Some(pos) = inner
-            .iter()
-            .position(|t| t.kind == TokenKind::Identifier && t.value == class_name)
-        {
+        if let Some(pos) = inner.iter().enumerate().position(|(idx, t)| {
+            t.kind == TokenKind::Identifier
+                && t.value == class_name
+                && inner.get(idx + 1).map(|n| n.kind) == Some(TokenKind::ParenthesesStart)
+                && (idx == 0
+                    || matches!(
+                        inner[idx - 1].kind,
+                        TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment
+                    )
+                    || inner[idx - 1].value == "pub")
+        }) {
             if pos + 1 < inner.len() && inner[pos + 1].kind == TokenKind::ParenthesesStart {
                 // coleta params
                 let mut params = Vec::new();
@@ -1930,102 +2364,207 @@ impl Parser {
             }
         }
 
-        // Methods: `RetType name(params) { body }` or `static RetType name(...)`.
-        // Instance methods take an implicit `&self` (Copper bodies reference
-        // `self.field` without declaring `self`). `static` methods are associated
-        // functions (no `&self`) — used for factories like `Vec2::zero()`.
-        // The constructor (`ClassName(...)`) is handled above and skipped here.
+        // Methods:
+        //   1) `func RetType name(params) { body }` (explicit `func`: associated unless `self` is in params)
+        //   2) Classic `RetType name(params) { body }` or `static RetType name(...)`
         let mut k = 0;
         while k + 2 < inner.len() {
-            let is_static = inner[k].value == "static"
+            while k < inner.len()
                 && matches!(
                     inner[k].kind,
-                    TokenKind::Keyword | TokenKind::Identifier | TokenKind::Unknown
-                );
-            let head = if is_static { k + 1 } else { k };
-            if head + 2 >= inner.len() {
+                    TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment
+                )
+            {
+                k += 1;
+            }
+            if k + 2 >= inner.len() {
                 break;
             }
-            let return_type = &inner[head];
-            let name_t = &inner[head + 1];
-            let pstart = &inner[head + 2];
-
-            let valid_return_type = return_type.kind == TokenKind::Identifier
-                || return_type.kind == TokenKind::ParamType
-                || return_type.kind == TokenKind::Keyword;
-
-            let is_method_head = valid_return_type
-                && name_t.kind == TokenKind::Identifier
-                && name_t.value != class_name
-                && pstart.kind == TokenKind::ParenthesesStart;
-
-            if !is_method_head {
-                k += 1;
-                continue;
-            }
-
-            // Collect declared params between `(` and the matching close.
-            // Receiver forms:
-            //   (none) / omitted → `&self` (instance) or nothing (static)
-            //   `self`           → by-value `self`
-            //   `mut self`       → `&mut self`
-            //   `&self`          → `&self`
-            let mut params: Vec<String> = Vec::new();
-            let mut receiver: Option<&'static str> = None;
-            let mut pending_mut = false;
-            let mut pending_ref = false;
-            let mut idx = head + 3;
-            while idx < inner.len() {
-                let t = &inner[idx];
-                if t.kind == TokenKind::ParametersEnd || t.kind == TokenKind::ParenthesesEnd {
+            let mut scan = k;
+            let mut is_static = false;
+            let mut is_explicit_func = false;
+            while scan < inner.len() {
+                let tv = inner[scan].value.as_str();
+                if tv == "pub" || tv == "unsafe" {
+                    scan += 1;
+                } else if tv == "static" {
+                    is_static = true;
+                    scan += 1;
+                } else if tv == "func" {
+                    is_explicit_func = true;
+                    scan += 1;
+                    break;
+                } else {
                     break;
                 }
-                if t.value == "," {
-                    pending_mut = false;
-                    pending_ref = false;
-                    idx += 1;
-                    continue;
+            }
+
+            let mut ret_type_raw = String::new();
+            let mut name_opt: Option<String> = None;
+            let mut pstart_idx: Option<usize> = None;
+
+            if is_explicit_func {
+                let mut m = scan;
+                let mut a_depth = 0usize;
+                let mut p_depth = 0usize;
+                let mut b_depth = 0usize;
+                while m + 1 < inner.len() {
+                    if a_depth == 0
+                        && p_depth == 0
+                        && b_depth == 0
+                        && inner[m].kind == TokenKind::Identifier
+                        && matches!(
+                            inner[m + 1].kind,
+                            TokenKind::ParenthesesStart | TokenKind::ParametersStart
+                        )
+                    {
+                        ret_type_raw = Self::join_type_tokens(&inner[scan..m]);
+                        name_opt = Some(inner[m].value.clone());
+                        pstart_idx = Some(m + 1);
+                        break;
+                    }
+                    match inner[m].value.as_str() {
+                        "<" => a_depth += 1,
+                        ">" => a_depth = a_depth.saturating_sub(1),
+                        "(" => p_depth += 1,
+                        ")" => p_depth = p_depth.saturating_sub(1),
+                        "[" => b_depth += 1,
+                        "]" => b_depth = b_depth.saturating_sub(1),
+                        _ => {}
+                    }
+                    if inner[m].kind == TokenKind::BraceStart {
+                        break;
+                    }
+                    m += 1;
                 }
-                if t.value == "&" {
-                    pending_ref = true;
-                    idx += 1;
-                    continue;
+            } else if scan + 2 < inner.len() {
+                let return_type = &inner[scan];
+                let name_t = &inner[scan + 1];
+                let pstart = &inner[scan + 2];
+                let valid_return_type = return_type.kind == TokenKind::Identifier
+                    || return_type.kind == TokenKind::ParamType
+                    || return_type.kind == TokenKind::Keyword;
+                if valid_return_type
+                    && name_t.kind == TokenKind::Identifier
+                    && name_t.value != class_name
+                    && pstart.kind == TokenKind::ParenthesesStart
+                {
+                    ret_type_raw = return_type.value.clone();
+                    name_opt = Some(name_t.value.clone());
+                    pstart_idx = Some(scan + 2);
                 }
-                if t.value == "mut" {
-                    pending_mut = true;
-                    idx += 1;
-                    continue;
+            }
+
+            let (Some(method_name), Some(pstart_i)) = (name_opt, pstart_idx) else {
+                k += 1;
+                continue;
+            };
+
+            // Collect declared params between `(` and the matching `)`.
+            let mut params: Vec<String> = Vec::new();
+            let mut param_names: Vec<String> = Vec::new();
+            let mut receiver: Option<&'static str> = None;
+            let mut idx = pstart_i + 1;
+            let mut param_paren_depth = 1usize;
+            let mut angle_depth = 0usize;
+            let mut bracket_depth = 0usize;
+            let mut cur_arg: Vec<&Token> = Vec::new();
+
+            let flush_arg = |arg: &[&Token],
+                             params: &mut Vec<String>,
+                             param_names: &mut Vec<String>,
+                             receiver: &mut Option<&'static str>| {
+                if arg.is_empty() {
+                    return;
                 }
-                if t.value == "self" {
-                    receiver = Some(if pending_mut && pending_ref {
+                if arg.iter().any(|t| t.value == "self") && !arg.iter().any(|t| t.value == ":") {
+                    let has_ref = arg.iter().any(|t| t.value == "&");
+                    let has_mut = arg.iter().any(|t| t.value == "mut");
+                    *receiver = Some(if has_ref && has_mut {
                         "&mut self"
-                    } else if pending_mut {
-                        "&mut self"
-                    } else if pending_ref {
+                    } else if has_mut {
+                        if is_explicit_func {
+                            "mut self"
+                        } else {
+                            "&mut self"
+                        }
+                    } else if has_ref {
                         "&self"
                     } else {
                         "self"
                     });
-                    pending_mut = false;
-                    pending_ref = false;
+                    return;
+                }
+                if let Some(colon_pos) = arg.iter().position(|t| t.value == ":") {
+                    let is_mut_param = arg[..colon_pos].iter().any(|t| t.value == "mut");
+                    if is_mut_param {
+                        for t in &arg[..colon_pos] {
+                            if t.kind == TokenKind::Identifier
+                                || (t.kind == TokenKind::Param && t.value != "mut")
+                            {
+                                param_names.push(t.value.clone());
+                            }
+                        }
+                    }
+                    let lhs = arg[..colon_pos]
+                        .iter()
+                        .map(|t| t.value.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let raw_ty = Self::join_type_tokens(&arg[colon_pos + 1..]);
+                    let (ptype, _) = utils::convert_type_with_marking(&raw_ty);
+                    params.push(format!("{}: {}", lhs.trim(), ptype));
+                }
+            };
+
+            while idx < inner.len() {
+                let t = inner[idx];
+                if matches!(
+                    t.kind,
+                    TokenKind::ParenthesesStart | TokenKind::ParametersStart
+                ) || t.value == "("
+                {
+                    param_paren_depth += 1;
+                    cur_arg.push(t);
                     idx += 1;
                     continue;
                 }
-                if (t.kind == TokenKind::Param || t.kind == TokenKind::Identifier)
-                    && idx + 2 < inner.len()
+                if matches!(t.kind, TokenKind::ParenthesesEnd | TokenKind::ParametersEnd)
+                    || t.value == ")"
                 {
-                    let sep = &inner[idx + 1];
-                    let typ = &inner[idx + 2];
-                    let ok_sep = (sep.kind == TokenKind::Operator || sep.kind == TokenKind::Colon)
-                        && sep.value == ":";
-                    if ok_sep {
-                        let (ptype, _) = utils::convert_type_with_marking(&typ.value);
-                        params.push(format!("{}: {}", t.value, ptype));
-                        pending_mut = false;
-                        pending_ref = false;
-                        idx += 3;
-                        continue;
+                    param_paren_depth -= 1;
+                    if param_paren_depth == 0 {
+                        flush_arg(&cur_arg, &mut params, &mut param_names, &mut receiver);
+                        cur_arg.clear();
+                        idx += 1;
+                        break;
                     }
+                    cur_arg.push(t);
+                    idx += 1;
+                    continue;
+                }
+                if param_paren_depth == 1
+                    && angle_depth == 0
+                    && bracket_depth == 0
+                    && t.value == ","
+                {
+                    flush_arg(&cur_arg, &mut params, &mut param_names, &mut receiver);
+                    cur_arg.clear();
+                    idx += 1;
+                    continue;
+                }
+                match t.value.as_str() {
+                    "<" => angle_depth += 1,
+                    ">" => angle_depth = angle_depth.saturating_sub(1),
+                    "[" => bracket_depth += 1,
+                    "]" => bracket_depth = bracket_depth.saturating_sub(1),
+                    _ => {}
+                }
+                if !matches!(
+                    t.kind,
+                    TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment
+                ) {
+                    cur_arg.push(t);
                 }
                 idx += 1;
             }
@@ -2057,8 +2596,12 @@ impl Parser {
                 idx += 1;
             }
 
-            let body_str = Self::lower_method_body(body_toks);
-            let (rust_type, data_type) = utils::convert_type_with_marking(&return_type.value);
+            let body_str = Self::lower_method_body(body_toks, &param_names);
+            let (rust_type, data_type) = if ret_type_raw.is_empty() || ret_type_raw == "void" {
+                ("()".to_string(), None)
+            } else {
+                utils::convert_type_with_marking(&ret_type_raw)
+            };
             if let Some(dt) = data_type {
                 self.uses_data_types = true;
                 match dt.as_str() {
@@ -2069,7 +2612,7 @@ impl Parser {
                 }
             }
 
-            let receivers = if is_static {
+            let receivers = if is_static || (is_explicit_func && receiver.is_none()) {
                 params.join(", ")
             } else {
                 let recv = receiver.unwrap_or("&self");
@@ -2080,11 +2623,11 @@ impl Parser {
                 }
             };
             if rust_type == "()" {
-                output.push_str(&format!("    pub fn {}({}) {{\n", name_t.value, receivers));
+                output.push_str(&format!("    pub fn {}({}) {{\n", method_name, receivers));
             } else {
                 output.push_str(&format!(
                     "    pub fn {}({}) -> {} {{\n",
-                    name_t.value, receivers, rust_type
+                    method_name, receivers, rust_type
                 ));
             }
             output.push_str(&format!("        {}\n", body_str));
@@ -2093,6 +2636,21 @@ impl Parser {
         }
         output.push_str("}\n");
         output
+    }
+
+    fn type_is_clone_debug_safe(ty: &str) -> bool {
+        let t = ty.trim();
+        if Self::type_is_copyish(t) || matches!(t, "String" | "StaticStr" | "&'static str" | "&str")
+        {
+            return true;
+        }
+        if let Some(inner) = t.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
+            return Self::type_is_clone_debug_safe(inner);
+        }
+        if let Some(inner) = t.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
+            return Self::type_is_clone_debug_safe(inner);
+        }
+        false
     }
 
     /// True when a Rust type name is safe to include in `#[derive(Copy)]`.
@@ -2537,8 +3095,8 @@ impl Parser {
                 }
             }
 
-            // Name of the type being implemented
-            let target_type = if let Some(tok) = self.select(self.current + consumed) {
+            // Name of the type (or qualified trait path like `fmt::Display`) being implemented
+            let mut target_type = if let Some(tok) = self.select(self.current + consumed) {
                 if tok.kind == TokenKind::Identifier {
                     consumed += 1;
                     tok.value.clone()
@@ -2548,6 +3106,20 @@ impl Parser {
             } else {
                 return Consumed::consume(0);
             };
+            while self
+                .select(self.current + consumed)
+                .map(|t| t.value == "::")
+                .unwrap_or(false)
+            {
+                consumed += 1;
+                target_type.push_str("::");
+                if let Some(seg) = self.select(self.current + consumed) {
+                    consumed += 1;
+                    target_type.push_str(&seg.value);
+                } else {
+                    break;
+                }
+            }
 
             // Type generics (optional). As with impl generics, `<`/`>` may
             // arrive as `Operator` tokens; accept both and track depth so
@@ -2607,7 +3179,21 @@ impl Parser {
                         // `bool`, `f64`, ...) — e.g. `impl Reflect for i64`.
                         if tok.kind == TokenKind::Identifier || tok.kind == TokenKind::Keyword {
                             consumed += 1;
-                            let actual_target = tok.value.clone();
+                            let mut actual_target = tok.value.clone();
+                            while self
+                                .select(self.current + consumed)
+                                .map(|t| t.value == "::")
+                                .unwrap_or(false)
+                            {
+                                consumed += 1;
+                                actual_target.push_str("::");
+                                if let Some(seg) = self.select(self.current + consumed) {
+                                    consumed += 1;
+                                    actual_target.push_str(&seg.value);
+                                } else {
+                                    break;
+                                }
+                            }
                             self.current_impl_target = Some(actual_target.clone());
 
                             // Optional generics on the target type itself
@@ -2739,11 +3325,14 @@ impl Parser {
     /// all lower correctly. The sub-parser wraps top-level statements in
     /// `fn main() { … }`; we return the inside of that block, re-indented one
     /// level deeper so it nests under the method signature.
-    fn lower_method_body(body_tokens: Vec<Token>) -> String {
+    fn lower_method_body(body_tokens: Vec<Token>, param_names: &[String]) -> String {
         if body_tokens.is_empty() {
             return String::new();
         }
         let mut sub = Parser::new(body_tokens);
+        for p in param_names {
+            sub.fn_locals.insert(p.clone());
+        }
         let raw = sub.parse();
 
         // Pull out the inside of the sub-parser's `fn main() { … }` wrapper.
@@ -2799,15 +3388,6 @@ impl Parser {
                         continue;
                     }
 
-                    let return_type_token = &tokens[fn_idx + 1];
-
-                    // Gobble any generic arguments that follow the base return
-                    // type (`Option<GameObject>`, `Result<T, E>`, `Vec<int>`).
-                    // The tokenizer splits these into separate `<` / args / `>`
-                    // tokens (angle brackets lex as `Operator`, see the parser's
-                    // ReturnType arm). Without collecting them the method name
-                    // would appear to be `<` and the whole method would be
-                    // silently dropped.
                     let is_open = |t: &Token| {
                         t.kind == TokenKind::AngleStart
                             || (t.kind == TokenKind::Operator && t.value == "<")
@@ -2816,37 +3396,134 @@ impl Parser {
                         t.kind == TokenKind::AngleEnd
                             || (t.kind == TokenKind::Operator && t.value == ">")
                     };
-                    let mut name_idx = fn_idx + 2;
-                    // Collect `::segment` path parts for a QUALIFIED return type
-                    // (`serde_json::Value`, `std::collections::HashMap`) before
-                    // the generic args. Otherwise the `::` lands where the
-                    // method name is expected and the method is silently dropped.
-                    let mut path_suffix = String::new();
-                    while name_idx + 1 < tokens.len() && tokens[name_idx].value == "::" {
-                        path_suffix.push_str("::");
-                        path_suffix.push_str(&tokens[name_idx + 1].value);
-                        name_idx += 2;
+
+                    let mut name_idx = fn_idx + 1;
+                    let mut return_type = String::new();
+                    while name_idx < tokens.len()
+                        && matches!(
+                            tokens[name_idx].value.as_str(),
+                            "&" | "&&" | "*" | "const" | "mut"
+                        )
+                    {
+                        return_type.push_str(&tokens[name_idx].value);
+                        if matches!(tokens[name_idx].value.as_str(), "const" | "mut") {
+                            return_type.push(' ');
+                        }
+                        name_idx += 1;
                     }
-                    let mut generic_suffix = String::new();
-                    if name_idx < tokens.len() && is_open(&tokens[name_idx]) {
+                    if name_idx < tokens.len() && tokens[name_idx].value.starts_with('\'') {
+                        return_type.push_str(&tokens[name_idx].value);
+                        return_type.push(' ');
+                        name_idx += 1;
+                        if name_idx < tokens.len() && tokens[name_idx].value == "mut" {
+                            return_type.push_str("mut ");
+                            name_idx += 1;
+                        }
+                    }
+
+                    if name_idx >= tokens.len() {
+                        i += 1;
+                        continue;
+                    }
+
+                    if matches!(
+                        tokens[name_idx].kind,
+                        TokenKind::ParenthesesStart | TokenKind::ParametersStart
+                    ) {
                         let mut depth = 0usize;
                         while name_idx < tokens.len() {
                             let t = &tokens[name_idx];
-                            if is_open(t) {
+                            if matches!(
+                                t.kind,
+                                TokenKind::ParenthesesStart | TokenKind::ParametersStart
+                            ) {
                                 depth += 1;
-                                generic_suffix.push('<');
-                            } else if is_close(t) {
+                                return_type.push('(');
+                            } else if matches!(
+                                t.kind,
+                                TokenKind::ParenthesesEnd | TokenKind::ParametersEnd
+                            ) {
                                 depth -= 1;
-                                generic_suffix.push('>');
+                                return_type.push(')');
+                                name_idx += 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                continue;
+                            } else if t.kind == TokenKind::Comma {
+                                return_type.push_str(", ");
+                            } else {
+                                return_type.push_str(&convert_type(&t.value));
+                            }
+                            name_idx += 1;
+                        }
+                    } else if tokens[name_idx].kind == TokenKind::BracketStart {
+                        let mut depth = 0usize;
+                        while name_idx < tokens.len() {
+                            let t = &tokens[name_idx];
+                            if t.kind == TokenKind::BracketStart {
+                                depth += 1;
+                                return_type.push('[');
+                            } else if t.kind == TokenKind::BracketEnd {
+                                depth -= 1;
+                                return_type.push(']');
                                 name_idx += 1;
                                 if depth == 0 {
                                     break;
                                 }
                                 continue;
                             } else {
-                                generic_suffix.push_str(&t.value);
+                                return_type.push_str(&convert_type(&t.value));
                             }
                             name_idx += 1;
+                        }
+                    } else {
+                        let return_type_token = &tokens[name_idx];
+                        name_idx += 1;
+
+                        let mut path_suffix = String::new();
+                        while name_idx + 1 < tokens.len() && tokens[name_idx].value == "::" {
+                            path_suffix.push_str("::");
+                            path_suffix.push_str(&tokens[name_idx + 1].value);
+                            name_idx += 2;
+                        }
+                        let mut generic_suffix = String::new();
+                        if name_idx < tokens.len() && is_open(&tokens[name_idx]) {
+                            let mut depth = 0usize;
+                            while name_idx < tokens.len() {
+                                let t = &tokens[name_idx];
+                                if is_open(t) {
+                                    depth += 1;
+                                    generic_suffix.push('<');
+                                } else if is_close(t) {
+                                    depth -= 1;
+                                    generic_suffix.push('>');
+                                    name_idx += 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                    continue;
+                                } else {
+                                    generic_suffix.push_str(&t.value);
+                                }
+                                name_idx += 1;
+                            }
+                        }
+
+                        let (base_ret, data_type) =
+                            utils::convert_type_with_marking(&return_type_token.value);
+                        return_type.push_str(&base_ret);
+                        return_type.push_str(&path_suffix);
+                        return_type.push_str(&generic_suffix);
+
+                        if let Some(dt) = data_type {
+                            self.uses_data_types = true;
+                            match dt.as_str() {
+                                "json" => self.result.mark_json_usage(),
+                                "xml" => self.result.mark_xml_usage(),
+                                "toml" => self.result.mark_toml_usage(),
+                                _ => {}
+                            }
                         }
                     }
 
@@ -2856,28 +3533,15 @@ impl Parser {
                     }
                     let method_name_token = &tokens[name_idx];
 
-                    let (mut return_type, data_type) =
-                        utils::convert_type_with_marking(&return_type_token.value);
-                    return_type.push_str(&path_suffix);
-                    return_type.push_str(&generic_suffix);
-
-                    // Mark data type usage for return types
-                    if let Some(dt) = data_type {
-                        self.uses_data_types = true;
-                        match dt.as_str() {
-                            "json" => self.result.mark_json_usage(),
-                            "xml" => self.result.mark_xml_usage(),
-                            "toml" => self.result.mark_toml_usage(),
-                            _ => {}
-                        }
-                    }
-
                     let method_name = &method_name_token.value;
 
                     // Find parameters
                     let mut param_start = name_idx + 1;
                     while param_start < tokens.len()
-                        && tokens[param_start].kind != TokenKind::ParenthesesStart
+                        && !matches!(
+                            tokens[param_start].kind,
+                            TokenKind::ParenthesesStart | TokenKind::ParametersStart
+                        )
                     {
                         param_start += 1;
                     }
@@ -3034,6 +3698,11 @@ impl Parser {
                                 // This mirrors the struct-field tuple fix in
                                 // `parse_struct_definition`.
                                 let mut k = k_type + 1;
+                                while k + 1 < param_tokens.len() && param_tokens[k].value == "::" {
+                                    param_type.push_str("::");
+                                    param_type.push_str(&param_tokens[k + 1].value);
+                                    k += 2;
+                                }
                                 if k < param_tokens.len() && is_open(param_tokens[k]) {
                                     let mut depth = 0usize;
                                     while k < param_tokens.len() {
@@ -3108,7 +3777,7 @@ impl Parser {
                     // (they carry the statement boundaries); the old naive
                     // token-join dropped them and collapsed the body to one line.
                     let body_tokens: Vec<Token> = tokens[body_start + 1..body_end - 1].to_vec();
-                    let body_str = Self::lower_method_body(body_tokens);
+                    let body_str = Self::lower_method_body(body_tokens, &[]);
 
                     // Generate method using Rust syntax
                     let visibility = if is_pub { "pub " } else { "" };
@@ -3881,7 +4550,14 @@ impl Parser {
                             self.select(self.current + 1).map(|t| t.value.clone()),
                             Some(v) if v == "."
                         );
-                        let coerce = in_field_value && !next_is_chain;
+                        let next_is_colon = self
+                            .select(self.current + 1)
+                            .map(|t| t.value == ":")
+                            .unwrap_or(false);
+                        let coerce = in_field_value
+                            && !next_is_chain
+                            && !next_is_colon
+                            && !self.is_inside_json_macro();
                         if coerce {
                             self.append(&format!("{}.into()", self.value()), AppendMode::Append);
                         } else {

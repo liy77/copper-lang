@@ -11,6 +11,8 @@
 // the relevant code paths are rewritten.
 #![allow(
     clippy::borrow_interior_mutable_const,
+    clippy::collapsible_if,
+    clippy::collapsible_match,
     clippy::declare_interior_mutable_const,
     clippy::doc_lazy_continuation,
     clippy::if_same_then_else,

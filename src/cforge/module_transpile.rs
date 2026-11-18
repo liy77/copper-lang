@@ -5,6 +5,8 @@
 //! or `src/*.rs` stubs in Copper projects such as `mocidad-engine`,
 //! `engine/native-host`, and `mocidad-launcher`.
 
+#![allow(unused_variables, clippy::all)]
+
 use crate::cforge::cache::{hash_source, write_if_changed, TranspileCache, TranspileEntry};
 use crate::parser::parse;
 use crate::tokenizer::tokenizer::Tokenizer;
@@ -216,68 +218,134 @@ fn rewrite_manifest_and_out_dir(rust: &str, project_dir: &str, src_dir: &str) ->
     s = s.replace("env! (\"CARGO_MANIFEST_DIR\")", &format!("{project_dir:?}"));
     s = s.replace("env!(\"OUT_DIR\")", &format!("{src_dir:?}"));
     s = s.replace("env! (\"OUT_DIR\")", &format!("{src_dir:?}"));
-    s = s.replace(
-        "include_str!(\"../../",
-        &format!("include_str!(concat!({project_dir:?}, \"/../"),
-    );
-    let prefix = format!("include_str!(concat!({project_dir:?}, \"/../");
-    let mut fixed = String::with_capacity(s.len() + 128);
-    let mut rest = s.as_str();
-    while let Some(pos) = rest.find(&prefix) {
-        fixed.push_str(&rest[..pos]);
-        fixed.push_str(&prefix);
-        rest = &rest[pos + prefix.len()..];
-        if let Some(end_q) = rest.find("\")") {
-            fixed.push_str(&rest[..end_q]);
-            fixed.push_str("\"))");
-            rest = &rest[end_q + 2..];
-        }
-    }
-    fixed.push_str(rest);
-    fixed
+    s = s.replace("include_str!(\"../../", "include_str!(\"../../../../");
+    s = s.replace("include_bytes!(\"../../", "include_bytes!(\"../../../../");
+    s
 }
 
 fn transpile_main_entry(src: &str) -> String {
     convert_crs_host_to_rust(src)
 }
 
+fn brace_delta(line: &str) -> i32 {
+    let bytes = line.as_bytes();
+    let mut delta = 0i32;
+    let mut in_str = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_str {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            break;
+        }
+        if b == b'\'' {
+            if let Some(end) = char_literal_end(line, i) {
+                i = end;
+                continue;
+            }
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => delta += 1,
+            b'}' => delta -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    delta
+}
+
 fn convert_crs_host_to_rust(src: &str) -> String {
     let mut out = Vec::new();
     let lines: Vec<&str> = src.lines().collect();
     let mut in_class_fields = false;
+    let mut in_class_methods = false;
     let mut class_brace_depth = 0i32;
+    let mut class_name = String::new();
+    let mut class_indent = String::new();
+    let mut pending_class_comments: Vec<String> = Vec::new();
 
     for line in lines {
         let trimmed = line.trim_start();
         let indent = &line[..line.len() - trimmed.len()];
 
         if in_class_fields {
-            for ch in trimmed.chars() {
-                if ch == '{' {
-                    class_brace_depth += 1;
-                } else if ch == '}' {
-                    class_brace_depth -= 1;
-                }
+            if class_brace_depth == 1
+                && (trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#["))
+                && !trimmed.starts_with("///")
+            {
+                pending_class_comments.push(line.to_string());
+                continue;
             }
-            if class_brace_depth <= 0 {
+            if class_brace_depth == 1 && trimmed.starts_with("///") {
+                pending_class_comments.push(line.to_string());
+                continue;
+            }
+            let starts_method = class_brace_depth == 1
+                && (trimmed.starts_with("func ")
+                    || trimmed.starts_with("pub func ")
+                    || trimmed.starts_with("unsafe func ")
+                    || trimmed.starts_with("pub unsafe func ")
+                    || trimmed.starts_with("static ")
+                    || trimmed.starts_with("fn ")
+                    || trimmed.starts_with("pub fn "));
+            if starts_method {
+                out.push(format!("{class_indent}}}\n"));
+                out.push(format!("{class_indent}impl {class_name} {{"));
+                out.extend(pending_class_comments.drain(..));
                 in_class_fields = false;
+                in_class_methods = true;
+                // Fall through to convert this method line and track its braces.
+            } else {
+                out.extend(pending_class_comments.drain(..));
+                class_brace_depth += brace_delta(trimmed);
+                if class_brace_depth <= 0 {
+                    in_class_fields = false;
+                }
+                out.push(line.to_string());
+                continue;
             }
-            out.push(line.to_string());
-            continue;
+        }
+
+        if in_class_methods {
+            class_brace_depth += brace_delta(trimmed);
+            if class_brace_depth <= 0 {
+                in_class_methods = false;
+            }
         }
 
         // Convert `pub class Foo` / `class Foo` -> `pub struct Foo` / `struct Foo`
         if trimmed.starts_with("pub class ") || trimmed.starts_with("class ") {
-            let replaced = if trimmed.starts_with("pub class ") {
-                format!("{indent}pub struct {}", &trimmed["pub class ".len()..])
+            let (kw_prefix, after_kw) = if trimmed.starts_with("pub class ") {
+                ("pub struct ", &trimmed["pub class ".len()..])
             } else {
-                format!("{indent}struct {}", &trimmed["class ".len()..])
+                ("struct ", &trimmed["class ".len()..])
             };
+            let replaced = format!("{indent}{kw_prefix}{after_kw}");
             if replaced.contains('{') && !replaced.contains('}') {
                 in_class_fields = true;
                 class_brace_depth = 1;
+                class_indent = indent.to_string();
+                class_name = after_kw.split('{').next().unwrap_or("").trim().to_string();
+                pending_class_comments.clear();
             }
             out.push(replaced);
+            continue;
+        }
+
+        // Promote top-level `const` / `static` in host modules so sibling modules can access them (e.g. `CANVAS_ID`)
+        if indent.is_empty() && (trimmed.starts_with("const ") || trimmed.starts_with("static ")) {
+            out.push(format!("pub {trimmed}"));
             continue;
         }
 
@@ -287,9 +355,110 @@ fn convert_crs_host_to_rust(src: &str) -> String {
             continue;
         }
 
+        // Convert Copper variable declarations (`mut x = ...`, `x: Type = ...`)
+        if let Some(converted) = try_convert_var_decl_line(indent, trimmed) {
+            out.push(converted);
+            continue;
+        }
+
         out.push(line.to_string());
     }
-    out.join("\n") + "\n"
+    let mut converted_rust = out.join("\n") + "\n";
+    converted_rust = fix_bare_assigns(&converted_rust);
+    converted_rust
+}
+
+fn try_convert_var_decl_line(indent: &str, trimmed: &str) -> Option<String> {
+    if trimmed.ends_with(',') {
+        return None;
+    }
+    if trimmed.starts_with("mut ") {
+        let rest = trimmed["mut ".len()..].trim_start();
+        let ident_end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        if ident_end > 0 {
+            let after_ident = rest[ident_end..].trim_start();
+            if (after_ident.starts_with('=') && !after_ident.starts_with("=="))
+                || after_ident.starts_with(':')
+            {
+                return Some(format!("{indent}let {trimmed}"));
+            }
+        }
+    }
+    let ident_end = trimmed
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(0);
+    if ident_end > 0 {
+        let ident = &trimmed[..ident_end];
+        let is_kw = matches!(
+            ident,
+            "let"
+                | "mut"
+                | "const"
+                | "static"
+                | "pub"
+                | "fn"
+                | "struct"
+                | "enum"
+                | "impl"
+                | "trait"
+                | "type"
+                | "use"
+                | "mod"
+                | "if"
+                | "else"
+                | "for"
+                | "while"
+                | "loop"
+                | "match"
+                | "return"
+                | "break"
+                | "continue"
+                | "self"
+                | "Self"
+                | "super"
+                | "crate"
+        );
+        if !is_kw {
+            let after_ident = trimmed[ident_end..].trim_start();
+            if after_ident.starts_with(':')
+                && !after_ident.starts_with("::")
+                && trimmed.ends_with(';')
+            {
+                let after_colon = after_ident[1..].trim_start();
+                let mut angle = 0i32;
+                let mut paren = 0i32;
+                let mut bracket = 0i32;
+                let bytes = after_colon.as_bytes();
+                let mut i = 0;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'<' => angle += 1,
+                        b'>' if i > 0 && bytes[i - 1] != b'=' => angle = (angle - 1).max(0),
+                        b'(' => paren += 1,
+                        b')' => paren = (paren - 1).max(0),
+                        b'[' => bracket += 1,
+                        b']' => bracket = (bracket - 1).max(0),
+                        b'=' if angle == 0 && paren == 0 && bracket == 0 => {
+                            let next = bytes.get(i + 1).copied();
+                            let prev = if i > 0 { Some(bytes[i - 1]) } else { None };
+                            if next != Some(b'=')
+                                && next != Some(b'>')
+                                && !matches!(prev, Some(b'!' | b'<' | b'>' | b'='))
+                            {
+                                return Some(format!("{indent}let {trimmed}"));
+                            }
+                        }
+                        b';' | b',' if angle == 0 && paren == 0 && bracket == 0 => break,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+    None
 }
 
 fn try_convert_func_line(indent: &str, trimmed: &str) -> Option<String> {
@@ -369,6 +538,9 @@ fn try_convert_func_line(indent: &str, trimmed: &str) -> Option<String> {
         other => format!(" -> {other}"),
     };
     let sep = if tail_part.is_empty() { "" } else { " " };
+    if indent.is_empty() && !prefix.contains("pub ") && !fn_name_and_generics.starts_with("main") {
+        prefix.insert_str(0, "pub ");
+    }
     Some(format!(
         "{indent}{prefix}fn {fn_name_and_generics}{params_part}{mapped_ret}{sep}{tail_part}"
     ))
@@ -651,7 +823,6 @@ fn post_fix_copper_bugs(rust: &str) -> String {
     // Typed assigns Copper emits without let: `names:Vec<String>=`
     s = s.replace("names:Vec<String>=", "let names: Vec<String> = ");
     // let-else missing `let`: `Some(x)=... else` / `Ok(x)=... else`
-    s = fix_match_arm_lets(&s);
     s = fix_missing_let_else(&s);
     // Struct field `main: Defaults {` mangled to `let main: Defaults; {`
     s = fix_typed_field_init(&s);
@@ -678,6 +849,27 @@ fn post_fix_copper_bugs(rust: &str) -> String {
     s = s.replace(";;", ";");
     s = strip_struct_semicolons(&s);
     s = strip_return_before_match_arms(&s);
+    s = s.replace("\"text\":text;", "\"text\":text");
+    s = s.replace(
+        "\"contentChanges\".into():vec![{\"text\".into():text}",
+        "\"contentChanges\":[{\"text\":text}",
+    );
+    s = s.replace(
+        "\"contentChanges\":vec![{\"text\":text}",
+        "\"contentChanges\":[{\"text\":text}",
+    );
+    s = s.replace("];\n                    }", "]\n                    }");
+    s = s.replace("];\n}", "]\n}");
+    s = s.replace(
+        "};\n            crate::device_frame::",
+        "},\n            crate::device_frame::",
+    );
+    s = s.replace("};\ncrate::device_frame::", "},\ncrate::device_frame::");
+    s = s.replace(
+        "};\n            crate::device_frame::",
+        "},\n            crate::device_frame::",
+    );
+    s = s.replace("};\ncrate::device_frame::", "},\ncrate::device_frame::");
     s = s.replace("let t = match node_type", "t = match node_type");
     s = s.replace(
         "None => None,\n            }}",
@@ -709,41 +901,7 @@ fn post_fix_copper_bugs(rust: &str) -> String {
     s
 }
 
-fn fix_match_arm_lets(rust: &str) -> String {
-    // `"arm"=>{name =` → `"arm"=>{ let name =`
-    let mut out = String::with_capacity(rust.len() + 32);
-    let bytes = rust.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i..].starts_with(b"=>{") {
-            out.push_str("=>{");
-            i += 3;
-            // skip whitespace
-            while i < bytes.len() && bytes[i].is_ascii_whitespace() && bytes[i] != b'\n' {
-                out.push(bytes[i] as char);
-                i += 1;
-            }
-            // if ident =
-            let rest = &rust[i..];
-            if let Some(eq) = rest.find('=') {
-                let name = rest[..eq].trim();
-                if !name.is_empty()
-                    && !name.starts_with("let ")
-                    && name.chars().next().unwrap().is_ascii_lowercase()
-                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                    && !rest[eq..].starts_with("==")
-                    && !rest[eq..].starts_with("=>")
-                {
-                    out.push_str("let ");
-                }
-            }
-            continue;
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
-}
+// let-else missing `let` handled by fix_missing_let_else below.
 
 fn fix_missing_let_else(rust: &str) -> String {
     let mut out = String::with_capacity(rust.len() + 32);
@@ -882,6 +1040,107 @@ fn fix_typed_lets(rust: &str) -> String {
     out
 }
 
+fn extract_pattern_idents(pat: &str, out: &mut Vec<String>) {
+    let mut cur = String::new();
+    for ch in pat.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            cur.push(ch);
+        } else if !cur.is_empty() {
+            if !matches!(cur.as_str(), "mut" | "ref" | "self" | "_")
+                && cur
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+            {
+                out.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+        }
+    }
+    if !cur.is_empty()
+        && !matches!(cur.as_str(), "mut" | "ref" | "self" | "_")
+        && cur
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+    {
+        out.push(cur);
+    }
+}
+
+fn collect_fn_param_idents(sig_line: &str, out: &mut Vec<String>) {
+    let Some(p_start) = sig_line.find('(') else {
+        return;
+    };
+    let bytes = sig_line.as_bytes();
+    let mut depth = 0i32;
+    let mut p_end = None;
+    for i in p_start..bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    p_end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(p_end) = p_end else {
+        return;
+    };
+    if p_end <= p_start + 1 {
+        return;
+    }
+    let inner = &sig_line[p_start + 1..p_end];
+    // Split top-level commas respecting nested `()`, `<>`, `[]`
+    let mut parts = Vec::new();
+    let mut cur_start = 0;
+    let mut paren = 0i32;
+    let mut angle = 0i32;
+    let mut bracket = 0i32;
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '<' => angle += 1,
+            '>' => angle -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            ',' if paren == 0 && angle == 0 && bracket == 0 => {
+                parts.push(&inner[cur_start..i]);
+                cur_start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[cur_start..]);
+
+    for part in parts {
+        let mut p_paren = 0i32;
+        let mut colon_at = None;
+        for (i, ch) in part.char_indices() {
+            match ch {
+                '(' => p_paren += 1,
+                ')' => p_paren -= 1,
+                ':' if p_paren == 0 => {
+                    colon_at = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let lhs = match colon_at {
+            Some(c) => &part[..c],
+            None => part,
+        };
+        extract_pattern_idents(lhs, out);
+    }
+}
+
 fn fix_bare_assigns(rust: &str) -> String {
     // Only insert `let` the first time a simple name is assigned in a scope.
     // Reassignments to `mut` bindings must stay bare (`cur = ...`), not `let cur =`.
@@ -889,43 +1148,88 @@ fn fix_bare_assigns(rust: &str) -> String {
     let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut depth: i32 = 0;
     let mut depth_stack: Vec<std::collections::HashSet<String>> = Vec::new();
+    let mut pending_fn_params: Vec<String> = Vec::new();
     for line in rust.lines() {
         let t = line.trim_start();
         let indent = &line[..line.len() - t.len()];
-        // Track brace depth roughly so nested blocks get their own declared set.
-        let opens = line.chars().filter(|c| *c == '{').count() as i32;
-        let closes = line.chars().filter(|c| *c == '}').count() as i32;
-        // Record names introduced by explicit let/mut on this line.
+
+        // Pop any leading closing braces (`}` / `} else {`) BEFORE analyzing
+        // declarations/assignments on this line so sibling branches don't leak locals.
+        let mut scan_from = line.len() - t.len();
+        let bytes = line.as_bytes();
+        while scan_from < bytes.len() {
+            if bytes[scan_from] == b'}' {
+                if depth > 0 {
+                    depth -= 1;
+                    if let Some(prev) = depth_stack.pop() {
+                        declared = prev;
+                    }
+                } else {
+                    declared.clear();
+                }
+                scan_from += 1;
+            } else if bytes[scan_from].is_ascii_whitespace() {
+                scan_from += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Collect `fn` parameter names into `pending_fn_params` (inserted only after `{` opens).
+        let is_fn_header = t.starts_with("fn ")
+            || t.starts_with("pub fn ")
+            || t.starts_with("unsafe fn ")
+            || t.starts_with("pub unsafe fn ")
+            || t.starts_with("async fn ")
+            || t.starts_with("pub async fn ");
+        if is_fn_header && t.contains('(') {
+            pending_fn_params.clear();
+            collect_fn_param_idents(t, &mut pending_fn_params);
+        }
+
         if let Some(rest) = t
             .strip_prefix("let mut ")
             .or_else(|| t.strip_prefix("let "))
         {
-            if let Some(name) = rest.split('=').next() {
-                let name = name
-                    .trim()
-                    .trim_end_matches(':')
-                    .split(':')
-                    .next()
-                    .unwrap_or("")
-                    .trim();
-                if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                    declared.insert(name.to_string());
+            if let Some(lhs) = rest.split('=').next() {
+                let lhs = match lhs.find(':') {
+                    Some(c) if !lhs[..c].contains('(') => &lhs[..c],
+                    _ => lhs,
+                };
+                let mut bound = Vec::new();
+                extract_pattern_idents(lhs, &mut bound);
+                for b in bound {
+                    declared.insert(b);
                 }
             }
         }
         let add_let = {
-            if t.starts_with("let ")
+            if depth == 0
+                || t.starts_with("let ")
                 || t.starts_with("mut ")
                 || t.starts_with("pub ")
+                || t.starts_with("fn ")
+                || t.starts_with("struct ")
+                || t.starts_with("enum ")
+                || t.starts_with("impl ")
+                || t.starts_with("trait ")
+                || t.starts_with("use ")
+                || t.starts_with("mod ")
                 || t.starts_with("if ")
+                || t.starts_with("else")
                 || t.starts_with("while ")
                 || t.starts_with("for ")
+                || t.starts_with("loop")
+                || t.starts_with("match ")
                 || t.starts_with("return ")
                 || t.starts_with("type ")
                 || t.starts_with("const ")
                 || t.starts_with("static ")
                 || t.starts_with("//")
+                || t.starts_with("/*")
                 || t.starts_with('*')
+                || t.starts_with('#')
+                || t.starts_with('|')
             {
                 false
             } else if let Some(eq) = t.find('=') {
@@ -947,7 +1251,11 @@ fn fix_bare_assigns(rust: &str) -> String {
                 if is_cmp || !(simple || tuple) {
                     false
                 } else if tuple {
-                    // Destructure: always needs let the first time; treat as fresh.
+                    let mut bound = Vec::new();
+                    extract_pattern_idents(lhs, &mut bound);
+                    for b in bound {
+                        declared.insert(b);
+                    }
                     true
                 } else if declared.contains(lhs) {
                     false
@@ -967,20 +1275,54 @@ fn fix_bare_assigns(rust: &str) -> String {
             out.push_str(line);
         }
         out.push('\n');
-        // Push/pop declared sets around braces (best-effort).
-        for _ in 0..opens {
-            depth += 1;
-            depth_stack.push(declared.clone());
-        }
-        for _ in 0..closes {
-            if depth > 0 {
-                depth -= 1;
-                if let Some(prev) = depth_stack.pop() {
-                    declared = prev;
+
+        // Apply remaining `{` and `}` braces left-to-right (skipping strings/chars/comments).
+        let mut bi = scan_from;
+        let mut in_str = false;
+        while bi < bytes.len() {
+            if in_str {
+                if bytes[bi] == b'\\' {
+                    bi += 2;
+                    continue;
                 }
-            } else {
-                declared.clear();
+                if bytes[bi] == b'"' {
+                    in_str = false;
+                }
+                bi += 1;
+                continue;
             }
+            if bytes[bi] == b'/' && bytes.get(bi + 1) == Some(&b'/') {
+                break;
+            }
+            if bytes[bi] == b'"' {
+                in_str = true;
+            } else if bytes[bi] == b'\'' {
+                if bytes.get(bi + 1) == Some(&b'\\') && bytes.get(bi + 3) == Some(&b'\'') {
+                    bi += 4;
+                    continue;
+                } else if bytes.get(bi + 2) == Some(&b'\'') {
+                    bi += 3;
+                    continue;
+                }
+            } else if bytes[bi] == b'{' {
+                depth += 1;
+                depth_stack.push(declared.clone());
+                if !pending_fn_params.is_empty() {
+                    for p in pending_fn_params.drain(..) {
+                        declared.insert(p);
+                    }
+                }
+            } else if bytes[bi] == b'}' {
+                if depth > 0 {
+                    depth -= 1;
+                    if let Some(prev) = depth_stack.pop() {
+                        declared = prev;
+                    }
+                } else {
+                    declared.clear();
+                }
+            }
+            bi += 1;
         }
     }
     if !rust.ends_with('\n') && out.ends_with('\n') {
@@ -1181,17 +1523,7 @@ fn fix_closure_tail_semicolons(rust: &str) -> String {
                         .next()
                         .map(|c| c.is_ascii_lowercase())
                         .unwrap_or(false);
-                if simple_ident
-                    || body.ends_with(".collect()")
-                    || body.ends_with(".clone()")
-                    || body.ends_with(".to_string()")
-                    || body.ends_with(".unwrap_or_default()")
-                    || body.starts_with("vec![")
-                {
-                    out.push(format!("{indent}{body}"));
-                } else {
-                    out.push(format!("{indent}return {body};"));
-                }
+                out.push(format!("{indent}{body}"));
                 continue;
             }
         }
@@ -1374,19 +1706,6 @@ fn fix_tail_expr_semicolons(rust: &str) -> String {
                     if out.ends_with(';') {
                         out.pop();
                     }
-                    let line_at = out.rfind('\n').map(|x| x + 1).unwrap_or(0);
-                    let indent: String = out[line_at..]
-                        .chars()
-                        .take_while(|c| c.is_whitespace())
-                        .collect();
-                    let rest = out[line_at + indent.len()..].to_string();
-                    out.truncate(line_at);
-                    out.push_str(&indent);
-                    if !rest.starts_with("return ") {
-                        out.push_str("return ");
-                    }
-                    out.push_str(&rest);
-                    out.push(';');
                 }
             }
         }
@@ -1620,49 +1939,99 @@ fn is_hoistable(t: &str) -> bool {
         || t.starts_with("pub use ")
 }
 
+fn char_literal_end(s: &str, quote_at: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if bytes.get(quote_at) != Some(&b'\'') {
+        return None;
+    }
+    let next = quote_at + 1;
+    if bytes.get(next) == Some(&b'\\') {
+        let mut j = next + 2;
+        let limit = (quote_at + 18).min(bytes.len());
+        while j < limit {
+            if bytes[j] == b'\'' {
+                return Some(j + 1);
+            }
+            if bytes[j] == b'\n' || bytes[j] == b'\r' {
+                return None;
+            }
+            j += 1;
+        }
+        return None;
+    }
+    let ch = s[next..].chars().next()?;
+    if ch == '\'' || ch == '\n' || ch == '\r' {
+        return None;
+    }
+    let after = next + ch.len_utf8();
+    if bytes.get(after) == Some(&b'\'') {
+        Some(after + 1)
+    } else {
+        None
+    }
+}
+
 fn split_top_level_items(body: &str) -> Vec<String> {
     let mut items = Vec::new();
-    let mut cur = String::new();
+    let mut cur_start = 0usize;
     let mut depth = 0i32;
     let mut in_str = false;
-    let mut chars = body.chars().peekable();
-    while let Some(c) = chars.next() {
+    let bytes = body.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
         if in_str {
-            cur.push(c);
-            if c == '\\' {
-                if let Some(n) = chars.next() {
-                    cur.push(n);
-                }
-            } else if c == '"' {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
                 in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
             }
             continue;
         }
-        match c {
-            '"' => {
+        if b == b'\'' {
+            if let Some(end) = char_literal_end(body, i) {
+                i = end;
+                continue;
+            }
+        }
+        match b {
+            b'"' => {
                 in_str = true;
-                cur.push(c);
+                i += 1;
             }
-            '{' => {
+            b'{' => {
                 depth += 1;
-                cur.push(c);
+                i += 1;
             }
-            '}' => {
+            b'}' => {
                 depth -= 1;
-                cur.push(c);
+                i += 1;
                 if depth == 0 {
-                    items.push(std::mem::take(&mut cur));
+                    items.push(body[cur_start..i].to_string());
+                    cur_start = i;
                 }
             }
-            ';' if depth == 0 => {
-                cur.push(c);
-                items.push(std::mem::take(&mut cur));
+            b';' if depth == 0 => {
+                i += 1;
+                items.push(body[cur_start..i].to_string());
+                cur_start = i;
             }
-            _ => cur.push(c),
+            _ => {
+                i += 1;
+            }
         }
     }
-    if !cur.trim().is_empty() {
-        items.push(cur);
+    if !body[cur_start..].trim().is_empty() {
+        items.push(body[cur_start..].to_string());
     }
     items
 }
@@ -1676,22 +2045,34 @@ fn find_closing_brace(s: &str, open_at: usize) -> Option<usize> {
     let mut in_str = false;
     let mut i = open_at;
     while i < bytes.len() {
-        let c = bytes[i] as char;
+        let b = bytes[i];
         if in_str {
-            if c == '\\' {
+            if b == b'\\' {
                 i += 2;
                 continue;
             }
-            if c == '"' {
+            if b == b'"' {
                 in_str = false;
             }
             i += 1;
             continue;
         }
-        match c {
-            '"' => in_str = true,
-            '{' => depth += 1,
-            '}' => {
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'\'' {
+            if let Some(end) = char_literal_end(s, i) {
+                i = end;
+                continue;
+            }
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
                 depth -= 1;
                 if depth == 0 {
                     return Some(i);
@@ -1824,6 +2205,9 @@ fn inject_aliases(module: &str, rust: &str) -> String {
             prelude.push_str("type StringMap = std::collections::HashMap<String, String>;\n");
         }
         // mocidad-launcher modules
+        "input_view" => {
+            // Imports and constants live in input_view.crs directly.
+        }
         "templates" => {
             prelude.push_str("include!(concat!(env!(\"OUT_DIR\"), \"/templates_gen.rs\"));\n");
             prelude.push_str("type Bytes = &'static [u8];\n");
@@ -1891,7 +2275,7 @@ fn inject_aliases(module: &str, rust: &str) -> String {
         }
         "api_docs" => {
             prelude.push_str("use std::fmt::Write;\n");
-            prelude.push_str("use mocidad_engine::platform::{self, GROUPS};\n");
+            prelude.push_str("use mocidad_engine::platform;\n");
             prelude.push_str(
                 "use mocidad_engine::{block_defs, node_types, BlockDef, Category, PinType};\n",
             );
@@ -1944,7 +2328,7 @@ fn inject_aliases(module: &str, rust: &str) -> String {
             prelude.push_str("use crate::{input_view, scene, scene_view};\n");
         }
         "lsp" => {
-            prelude.push_str("use serde_json::{json, Value};\n");
+            prelude.push_str("use serde_json::Value;\n");
             prelude.push_str("use std::collections::HashMap;\n");
             prelude.push_str("use std::io::{BufRead, BufReader, Write};\n");
             prelude.push_str("use std::path::Path;\n");
@@ -1963,14 +2347,6 @@ fn inject_aliases(module: &str, rust: &str) -> String {
             prelude.push_str("use std::io::Read;\n");
             prelude.push_str("use std::path::{Path, PathBuf};\n");
             prelude.push_str("use std::process::{Child, Command, Stdio};\n");
-            prelude.push_str(
-                "pub const TEXTURE_EXTS: &[&str] = &[\"png\", \"jpg\", \"jpeg\", \"gif\", \"bmp\", \"webp\", \"svg\", \"tga\"];\n",
-            );
-            prelude.push_str(
-                "pub const AUDIO_EXTS: &[&str] = &[\"wav\", \"ogg\", \"mp3\", \"flac\", \"m4a\", \"aif\", \"aiff\"];\n",
-            );
-            prelude.push_str("const THUMB_PX: u32 = 96;\n");
-            prelude.push_str("const MAX_ASSETS: usize = 4000;\n");
         }
         _ => {}
     }
@@ -2119,7 +2495,7 @@ pub fn search_str_pairs(query: &str, pages: &[(&str, String)]) -> String {
 "#,
         );
     }
-    if module == "lsp" {
+    if module == "lsp" && !body.contains("impl Drop for Client") {
         body = insert_after_struct(
             &body,
             "Client",
@@ -2132,7 +2508,7 @@ impl Drop for Client {
 "#,
         );
     }
-    if module == "assets" {
+    if module == "assets" && !body.contains("impl Drop for Player") {
         body = insert_after_struct(
             &body,
             "Player",
@@ -2420,54 +2796,68 @@ fn promote_all_fns(rust: &str) -> String {
 }
 
 fn strip_pub_in_trait_impls(rust: &str) -> String {
-    let markers = [
-        "impl Default for",
-        "impl std::fmt::Display for",
-        "impl std::fmt::Debug for",
-        "impl From<",
-        "impl Into<",
-    ];
+    let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let header_has_for = |hdr: &str| -> bool {
+        let bytes = hdr.as_bytes();
+        let mut i = 0;
+        while let Some(pos) = hdr[i..].find("for") {
+            let abs = i + pos;
+            let left_ok = abs == 0
+                || bytes[abs - 1].is_ascii_whitespace()
+                || matches!(bytes[abs - 1], b'>' | b')' | b']');
+            let after = abs + 3;
+            let right_ok = after < bytes.len() && bytes[after].is_ascii_whitespace();
+            if left_ok && right_ok {
+                return true;
+            }
+            i = abs + 3;
+        }
+        false
+    };
+
     let mut out = String::with_capacity(rust.len());
     let mut rest = rust;
     while !rest.is_empty() {
-        let mut hit_at: Option<(usize, &str)> = None;
-        for m in markers {
-            if let Some(at) = rest.find(m) {
-                match hit_at {
-                    Some((prev, _)) if prev <= at => {}
-                    _ => hit_at = Some((at, m)),
-                }
-            }
-        }
-        let Some((at, m)) = hit_at else {
+        let Some(at) = rest.find("impl") else {
             out.push_str(rest);
             break;
         };
-        out.push_str(&rest[..at]);
-        out.push_str(m);
-        rest = &rest[at + m.len()..];
+        let bytes = rest.as_bytes();
+        let left_ok = at == 0 || !is_ident_char(bytes[at - 1]);
+        let after = at + 4;
+        let right_ok =
+            after < bytes.len() && (bytes[after].is_ascii_whitespace() || bytes[after] == b'<');
+
+        out.push_str(&rest[..after]);
+        rest = &rest[after..];
+        if !(left_ok && right_ok) {
+            continue;
+        }
+
         let Some(brace_rel) = rest.find('{') else {
             continue;
         };
+        let header = &rest[..brace_rel];
+        if header.contains(';') || header.contains('}') || !header_has_for(header) {
+            continue;
+        }
+
         out.push_str(&rest[..brace_rel + 1]);
-        let open_in_full = out.len() - 1;
-        // Re-find brace index in original combined string for find_closing_brace:
-        let combined = format!("{out}{}", &rest[brace_rel + 1..]);
-        // Simpler: scan braces in rest from brace_rel
         let open = brace_rel;
         let Some(close_rel) = find_closing_brace(rest, open) else {
             out.push_str(&rest[brace_rel + 1..]);
             break;
         };
         let body = &rest[open + 1..close_rel];
-        let fixed = body
+        let mut fixed = body
             .replace(" pub fn ", " fn ")
             .replace("\npub fn ", "\nfn ");
+        if fixed.starts_with("pub fn ") {
+            fixed = format!("fn {}", &fixed["pub fn ".len()..]);
+        }
         out.push_str(&fixed);
         out.push('}');
         rest = &rest[close_rel + 1..];
-        let _ = open_in_full;
-        let _ = combined;
     }
     out
 }
