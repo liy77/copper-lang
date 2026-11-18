@@ -6,6 +6,9 @@ CalVer scheme (`0.YY.M`, stamped from the build date).
 ## [Unreleased]
 
 ### Added
+- **`cforge update`** — downloads the newest `nightly*` release of
+  `liy77/copper-lang` whose asset matches this OS (`apple`/`darwin`,
+  `windows`, `linux`) and replaces the running `cforge` binary.
 - **`cforge format`** — a pretty-printer for MUI (`.mui` / `.crm`) files. Tokenizes
   the source (keeping comments + strings verbatim), builds a shallow node tree and
   re-emits it with a **fit-or-break** rule: an element call `Name(prop: v, …)` that

@@ -8,6 +8,7 @@ pub mod mui;
 pub mod mui_fmt;
 pub mod pretty;
 pub mod properties;
+pub mod update;
 pub mod vprint;
 
 use colored::Colorize;

@@ -186,6 +186,9 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
         )
         // `cforge check <file.crs>` — real Rust verification (borrow + Miri),
         // with auto-provisioned toolchain (~/.alloy/rustup).
+        .subcommand(ClapCommand::new("update")
+            .about("Download the latest cforge nightly from GitHub and replace this install")
+        )
         .subcommand(ClapCommand::new("check")
             .about("Check a .crs with real Rust (borrow checker + Miri), provisioning the toolchain automatically")
             .arg(Arg::new("input").value_name("FILE").required(true).index(1))
@@ -585,6 +588,9 @@ async fn main() {
         Some(("list", _)) => {
             cforge::commands::list();
             return;
+        }
+        Some(("update", _)) => {
+            std::process::exit(cforge::update::run());
         }
         Some(("cache", cache_matches)) => {
             let action = cache_matches

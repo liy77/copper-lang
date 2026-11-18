@@ -71,6 +71,10 @@ cforge run examples/copper/loops.crs
 | `-V` | `--verbose` | Verbose output | `cforge -V run main.crs` |
 | `-v` | `--version` | Print version (with build date for pre-releases) | `cforge -v` |
 
+```sh
+cforge update                  # install the latest GitHub nightly
+```
+
 ## Alloy — the Copper interpreter
 
 `alloy` interprets `.crs` files directly with no compile step and can also
