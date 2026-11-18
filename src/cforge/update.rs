@@ -136,7 +136,15 @@ fn curl_download(url: &str, dest: &Path) -> Result<(), String> {
         let _ = std::fs::create_dir_all(parent);
     }
     let out = Command::new("curl")
-        .args(["-fL", "-H", "User-Agent: cforge-update", "-o"])
+        .args([
+            "-fL",
+            "--no-cache",
+            "-H",
+            "User-Agent: cforge-update",
+            "-H",
+            "Accept: application/octet-stream",
+            "-o",
+        ])
         .arg(dest)
         .arg(url)
         .status()
