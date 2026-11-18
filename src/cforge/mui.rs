@@ -628,7 +628,6 @@ fn run_native_host(file: &str, host: &str) -> Option<i32> {
         return None;
     }
     if !dir.join("Cargo.toml").is_file() && dir.join("properties.kson").is_file() {
-        crate::cforge::ensure_copper_dep_built(&dir);
         return Some(cargo_run_host(&dir, file));
     }
     // Pre-built binary first (no toolchain needed), named by the crate's

@@ -410,6 +410,7 @@ impl Result {
             .arg("stdout")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()?;
 
         // Write the code to rustfmt's stdin.

@@ -34,7 +34,15 @@ pub fn transpile_crs_project(project_dir: &Path) -> Result<PathBuf, String> {
     let src_dir_str = clean_win_path(&src_dir);
     let dist_dir_str = clean_win_path(&dist_dir);
 
-    let mut cache = TranspileCache::load(&dist_dir_str, crate::cforge::VERSION);
+    let compiler_ver = format!(
+        "{}-{}",
+        crate::cforge::VERSION,
+        hash_source(
+            include_str!("module_transpile.rs"),
+            include_str!("../../crates/copper-parser/src/parser/mod.rs"),
+        )
+    );
+    let mut cache = TranspileCache::load(&dist_dir_str, &compiler_ver);
 
     // 1. Optional root `mocidad_logic.crs`
     let logic_crs = project_dir.join("mocidad_logic.crs");
@@ -109,7 +117,7 @@ pub fn transpile_crs_project(project_dir: &Path) -> Result<PathBuf, String> {
 
         let src = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let key = path.to_string_lossy().replace('\\', "/");
-        let src_hash = hash_source(&src, crate::cforge::VERSION);
+        let src_hash = hash_source(&src, &compiler_ver);
         let dest = src_dir.join(format!("{name}.rs"));
         if cache.get_valid(&key, &src_hash).is_none() {
             let mut r = transpile(&name, &src);
@@ -159,7 +167,7 @@ pub fn transpile_crs_project(project_dir: &Path) -> Result<PathBuf, String> {
         let main_path = crs_dir.join("main.crs");
         let main_src = std::fs::read_to_string(&main_path).map_err(|e| e.to_string())?;
         let key = main_path.to_string_lossy().replace('\\', "/");
-        let src_hash = hash_source(&main_src, crate::cforge::VERSION);
+        let src_hash = hash_source(&main_src, &compiler_ver);
         let dest = src_dir.join("main.rs");
         if cache.get_valid(&key, &src_hash).is_none() {
             let mut r = transpile_main_entry(&main_src);
