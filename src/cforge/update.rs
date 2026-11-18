@@ -89,8 +89,21 @@ fn pick_release(json: &str) -> Option<(String, String)> {
 
 fn url_matches_platform(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
-    let key = platform_key();
-    lower.contains(key) || (key == "apple" && lower.contains("darwin"))
+    if cfg!(windows) {
+        return lower.contains("windows") || lower.ends_with(".exe");
+    }
+    if cfg!(target_os = "macos") {
+        let mac = lower.contains("macos") || lower.contains("apple") || lower.contains("darwin");
+        if !mac {
+            return false;
+        }
+        return if cfg!(target_arch = "aarch64") {
+            lower.contains("arm64") || lower.contains("aarch64") || lower.contains("apple")
+        } else {
+            lower.contains("x86_64") || lower.contains("intel")
+        };
+    }
+    lower.contains("linux")
 }
 
 fn release_assets(json: &str) -> Vec<(String, String)> {

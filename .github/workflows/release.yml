@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'nightly*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -57,6 +58,10 @@ jobs:
       if: matrix.os != 'windows-latest'
       run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
 
+    - name: Name the asset for this platform
+      shell: bash
+      run: cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "${{ matrix.asset_name }}"
+
     - name: Get version from tag
       id: get_version
       shell: bash
@@ -65,8 +70,9 @@ jobs:
     - name: Create Release and Upload Asset
       uses: softprops/action-gh-release@v2
       with:
-        files: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+        files: ${{ matrix.asset_name }}
         name: CForge ${{ steps.get_version.outputs.VERSION }}
+        prerelease: ${{ startsWith(github.ref_name, 'nightly') }}
         body: |
           ## CForge ${{ steps.get_version.outputs.VERSION }}
           
@@ -94,6 +100,5 @@ jobs:
           cforge --help
           ```
         draft: false
-        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
