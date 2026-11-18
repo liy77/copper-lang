@@ -32,14 +32,10 @@ fn render_with_is_macos(is_macos: &str) -> (f32, f32, f32, f32) {
     let doc = mui_syntax::parse(TOOLBAR_STACK);
     let view = doc.views.first().expect("no view in toolbar mirror");
     let env = ReactiveEnv {
-        signals: [("is_macos".into(), is_macos.into())]
-            .into_iter()
-            .collect(),
+        signals: [("is_macos".into(), is_macos.into())].into_iter().collect(),
     };
-    let el = find_el(&view.body, "Stack")
-        .expect("no Stack element in toolbar mirror");
-    box_spacing_reactive(el, "padding", Some(&env))
-        .expect("padding not set on toolbar mirror")
+    let el = find_el(&view.body, "Stack").expect("no Stack element in toolbar mirror");
+    box_spacing_reactive(el, "padding", Some(&env)).expect("padding not set on toolbar mirror")
 }
 
 fn find_el<'a>(
@@ -62,8 +58,14 @@ fn find_el<'a>(
 #[test]
 fn toolbar_padding_on_macos() {
     let (l, t, _r, _b) = render_with_is_macos("1");
-    assert_eq!(t, 28.0, "paddingTop should be 28 on Mac (traffic-lights clear)");
-    assert_eq!(l, 80.0, "paddingLeft should be 80 on Mac (traffic-lights clear)");
+    assert_eq!(
+        t, 28.0,
+        "paddingTop should be 28 on Mac (traffic-lights clear)"
+    );
+    assert_eq!(
+        l, 80.0,
+        "paddingLeft should be 80 on Mac (traffic-lights clear)"
+    );
 }
 
 #[test]
@@ -111,7 +113,9 @@ fn files_panel_scroll_height_reactive() {
         };
         let resolved = style::dim_prop_reactive(scroll, "height", &env)
             .expect("height should be set on Scroll");
-        assert_eq!(resolved, expected,
-            "Scroll height should follow scene_h (got {resolved} for scene_h={scene_h})");
+        assert_eq!(
+            resolved, expected,
+            "Scroll height should follow scene_h (got {resolved} for scene_h={scene_h})"
+        );
     }
 }

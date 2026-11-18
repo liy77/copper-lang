@@ -293,7 +293,9 @@ impl Handler {
     /// Every recognised effect of a `;`-separated body, in order
     /// (`{ kind = t ; open = "0" ; n += 1 }`).
     pub fn actions(&self) -> Vec<HandlerAction> {
-        split_statements(&self.raw).filter_map(parse_handler_action).collect()
+        split_statements(&self.raw)
+            .filter_map(parse_handler_action)
+            .collect()
     }
 }
 
@@ -415,9 +417,9 @@ fn parse_handler_action(raw: &str) -> Option<HandlerAction> {
             let values: Vec<String> = inner
                 .iter()
                 .filter(|t| **t != ",")
-                .filter_map(|t| string_literal(t).or_else(|| {
-                    t.parse::<i64>().ok().map(|n| n.to_string())
-                }))
+                .filter_map(|t| {
+                    string_literal(t).or_else(|| t.parse::<i64>().ok().map(|n| n.to_string()))
+                })
                 .collect();
             if values.is_empty() {
                 return Some(HandlerAction::ClearList {

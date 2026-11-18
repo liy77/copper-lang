@@ -1,9 +1,14 @@
-use copper_syntax::tokenizer::tokenizer::Tokenizer;
 use copper_syntax::tokenizer::kind::TokenKind;
+use copper_syntax::tokenizer::tokenizer::Tokenizer;
 
 fn show(src: &str) {
     let tokens = Tokenizer::new(src.to_string()).tokenize();
-    for t in tokens.iter().filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment | TokenKind::Eof)) {
+    for t in tokens.iter().filter(|t| {
+        !matches!(
+            t.kind,
+            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment | TokenKind::Eof
+        )
+    }) {
         println!("  {:?} = {:?}", t.kind, t.value);
     }
 }

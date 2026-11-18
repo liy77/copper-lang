@@ -6,7 +6,10 @@ use mui_syntax::style::{box_spacing_reactive, f32_prop_reactive, ReactiveEnv};
 
 fn env_with(pairs: &[(&str, &str)]) -> ReactiveEnv {
     ReactiveEnv {
-        signals: pairs.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect(),
+        signals: pairs
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect(),
     }
 }
 
@@ -84,8 +87,14 @@ fn ternary_macos_false() {
 fn arithmetic_signal() {
     // ${is_macos * 66 + 14} = 80 when is_macos=1, 14 when is_macos=0
     let src = r"view V() { Stack(paddingLeft: ${is_macos * 66 + 14}) {} }";
-    assert_eq!(f32_with_env(src, "paddingLeft", &env_with(&[("is_macos", "1")])), Some(80.0));
-    assert_eq!(f32_with_env(src, "paddingLeft", &env_with(&[("is_macos", "0")])), Some(14.0));
+    assert_eq!(
+        f32_with_env(src, "paddingLeft", &env_with(&[("is_macos", "1")])),
+        Some(80.0)
+    );
+    assert_eq!(
+        f32_with_env(src, "paddingLeft", &env_with(&[("is_macos", "0")])),
+        Some(14.0)
+    );
 }
 
 #[test]

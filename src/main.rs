@@ -109,6 +109,27 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
                 .required(false)
                 .index(1))
         )
+        .subcommand(ClapCommand::new("remove")
+            .visible_alias("uninstall")
+            .about("Remove a dependency from properties.kson and properties.lock")
+            .arg(Arg::new("package")
+                .help("Crate to remove")
+                .value_name("NAME")
+                .required(true)
+                .index(1))
+        )
+        .subcommand(ClapCommand::new("list")
+            .visible_alias("ls")
+            .about("List dependencies declared in properties.kson")
+        )
+        .subcommand(ClapCommand::new("cache")
+            .about("Inspect or clean CForge transpilation and registry caches")
+            .arg(Arg::new("action")
+                .help("status (default) or clean")
+                .value_name("ACTION")
+                .required(false)
+                .index(1))
+        )
         // `cforge build <file>` — a friendly alias for `cforge -c -i <file>`.
         // Accepts the same flags so `cforge build app.mui --release --clean` works
         // exactly like `cforge -c -i app.mui --release --clean`.
@@ -117,7 +138,8 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
             .arg(Arg::new("input")
                 .help("File (.crs/.mui/.crm) or directory to compile")
                 .value_name("FILE")
-                .required(true)
+                .required(false)
+                .default_value(".")
                 .index(1))
             .arg(Arg::new("output").short('o').long("output")
                 .help("Output directory for compiled files"))
@@ -554,6 +576,23 @@ async fn main() {
             }
             return;
         }
+        Some(("remove", rm_matches)) => {
+            if let Some(pkg) = rm_matches.get_one::<String>("package") {
+                cforge::commands::remove(pkg);
+            }
+            return;
+        }
+        Some(("list", _)) => {
+            cforge::commands::list();
+            return;
+        }
+        Some(("cache", cache_matches)) => {
+            let action = cache_matches
+                .get_one::<String>("action")
+                .map(String::as_str);
+            cforge::cache::handle_cache_command(action, Some("./dist"));
+            return;
+        }
         // `cforge format` only rewrites source text — no toolchain needed.
         Some(("format", fmt_matches)) => {
             let paths: Vec<String> = fmt_matches
@@ -714,6 +753,25 @@ async fn main() {
                 cforge::mui::compile(&files[0], output_dir.as_deref(), is_release, embed_bundle);
             println!();
             std::process::exit(code);
+        }
+
+        if let Some(ref dir) = input_dir {
+            let p = path::Path::new(dir);
+            if p.join("crs").is_dir() && p.join("properties.kson").is_file() {
+                match cforge::module_transpile::transpile_crs_project(p) {
+                    Ok(rust_dir) => {
+                        cforge::pretty::ok(&format!(
+                            "Transpiled Copper project → {}",
+                            rust_dir.display()
+                        ));
+                    }
+                    Err(e) => {
+                        cforge::pretty::fail(&e);
+                        std::process::exit(1);
+                    }
+                }
+                return;
+            }
         }
 
         let detected_dependencies =

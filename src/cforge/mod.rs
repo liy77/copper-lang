@@ -1,7 +1,9 @@
+pub mod cache;
 pub mod check;
 pub mod commands;
 pub mod fetch;
 pub mod kson;
+pub mod module_transpile;
 pub mod mui;
 pub mod mui_fmt;
 pub mod pretty;
@@ -16,18 +18,42 @@ use crate::{parser, tokenizer::tokenizer::Tokenizer, vprint};
 
 pub const VERSION: &str = env!("CFORGE_VERSION");
 
-/// Run a `cargo` command behind cforge's own spinner instead of cargo's output:
-/// stdout+stderr are captured (so cargo's progress bar / `Compiling …` spam is
-/// hidden), the spinner label tracks the crate currently compiling, and the
-/// captured output is only printed on failure. Returns `(success, output)`.
+/// Run a `cargo` command behind cforge's live progress bar (`BuildProgress`)
+/// instead of cargo's raw stdout/stderr:
+/// - Queries `cargo metadata --offline` in parallel to learn the package count.
+/// - Passes `--message-format=json(-diagnostic-rendered-ansi)` so cargo emits
+///   structured artifact completion, build-script execution, and diagnostics.
+/// - Displays a progress bar (`done/total`), active parallel crates (including
+///   `(build.rs)`), lock/error notices, and elapsed time.
+/// - Surfaces captured compiler diagnostics and stderr cleanly on failure.
 pub(crate) fn cargo_with_spinner(
     mut cmd: Command,
     building_label: &str,
     done_label: &str,
 ) -> (bool, String) {
+    use std::collections::HashSet;
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     use std::sync::{Arc, Mutex};
+
+    let animated = pretty::is_tty();
+    let has_msg_fmt = cmd
+        .get_args()
+        .any(|a| a.to_string_lossy().starts_with("--message-format"));
+    if !has_msg_fmt {
+        cmd.arg(if animated {
+            "--message-format=json-diagnostic-rendered-ansi"
+        } else {
+            "--message-format=json"
+        });
+    }
+
+    let work_dir = cmd
+        .get_current_dir()
+        .map(path::PathBuf::from)
+        .unwrap_or_else(|| path::PathBuf::from("."));
+    let target_triple =
+        extract_target_arg(&cmd).unwrap_or_else(|| env!("CFORGE_HOST_TARGET").to_string());
 
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -40,39 +66,54 @@ pub(crate) fn cargo_with_spinner(
         }
     };
 
-    let sp = pretty::Spinner::start(building_label);
-    let label = sp.label_handle();
-    let collected = Arc::new(Mutex::new(String::new()));
+    let progress = pretty::BuildProgress::start(building_label);
+    let state = progress.state_handle();
 
-    // stderr carries cargo's `Compiling <crate>` progress → drive the spinner.
+    // Resolve total non-dev package count in the background without blocking cargo.
+    let meta_state = state.clone();
+    let meta_thread = std::thread::spawn(move || {
+        if let Some(total) = query_package_count(&work_dir, &target_triple) {
+            if let Ok(mut s) = meta_state.lock() {
+                s.total = Some(total);
+            }
+        }
+    });
+
+    let diagnostics = Arc::new(Mutex::new(String::new()));
+    let stderr_buf = Arc::new(Mutex::new(String::new()));
+
     let mut readers = Vec::new();
-    if let Some(stderr) = child.stderr.take() {
-        let label = label.clone();
-        let collected = collected.clone();
+    if let Some(stdout) = child.stdout.take() {
+        let state = state.clone();
+        let diagnostics = diagnostics.clone();
         readers.push(std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let t = line.trim_start();
-                if let Some(rest) = t.strip_prefix("Compiling ") {
-                    if let Some(name) = rest.split_whitespace().next() {
-                        if let Ok(mut l) = label.lock() {
-                            *l = format!("compiling {name}");
-                        }
-                    }
+            let mut done_pkgs: HashSet<String> = HashSet::new();
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let t = line.trim();
+                if t.is_empty() {
+                    continue;
                 }
-                if let Ok(mut c) = collected.lock() {
-                    c.push_str(&line);
-                    c.push('\n');
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(t) {
+                    handle_cargo_json(&val, &state, &diagnostics, &mut done_pkgs, animated);
+                } else if let Ok(mut d) = diagnostics.lock() {
+                    d.push_str(&line);
+                    d.push('\n');
                 }
             }
         }));
     }
-    if let Some(stdout) = child.stdout.take() {
-        let collected = collected.clone();
+
+    if let Some(stderr) = child.stderr.take() {
+        let state = state.clone();
+        let stderr_buf = stderr_buf.clone();
         readers.push(std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Ok(mut c) = collected.lock() {
-                    c.push_str(&line);
-                    c.push('\n');
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                handle_cargo_stderr_line(&line, &state, animated);
+                if !is_cargo_progress_noise(&line) {
+                    if let Ok(mut c) = stderr_buf.lock() {
+                        c.push_str(&line);
+                        c.push('\n');
+                    }
                 }
             }
         }));
@@ -82,17 +123,286 @@ pub(crate) fn cargo_with_spinner(
     for r in readers {
         let _ = r.join();
     }
-    let output = collected.lock().map(|c| c.clone()).unwrap_or_default();
+    let _ = meta_thread.join();
+
+    let diag_out = diagnostics.lock().map(|c| c.clone()).unwrap_or_default();
+    let err_out = stderr_buf.lock().map(|c| c.clone()).unwrap_or_default();
+    let combined = format!("{diag_out}{err_out}");
     let ok = status.map(|s| s.success()).unwrap_or(false);
 
     if ok {
-        sp.done(done_label);
+        progress.done(done_label);
     } else {
-        sp.fail("Build failed");
-        // Surface cargo's captured output so the error is visible.
-        print!("{output}");
+        progress.fail("Build failed");
+        if !diag_out.is_empty() {
+            print!("{diag_out}");
+        }
+        if !err_out.is_empty() {
+            print!("{err_out}");
+        }
     }
-    (ok, output)
+    (ok, combined)
+}
+
+fn extract_target_arg(cmd: &Command) -> Option<String> {
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    for (i, arg) in args.iter().enumerate() {
+        if let Some(t) = arg.strip_prefix("--target=") {
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        } else if arg == "--target" {
+            if let Some(next) = args.get(i + 1) {
+                if !next.is_empty() {
+                    return Some(next.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn query_package_count(work_dir: &path::Path, target_triple: &str) -> Option<usize> {
+    let out = Command::new("cargo")
+        .arg("metadata")
+        .arg("--format-version")
+        .arg("1")
+        .arg("--filter-platform")
+        .arg(target_triple)
+        .arg("--offline")
+        .current_dir(work_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let val: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    count_non_dev_packages(&val)
+}
+
+fn count_non_dev_packages(metadata: &serde_json::Value) -> Option<usize> {
+    use std::collections::{HashMap, HashSet};
+    let resolve = metadata.get("resolve")?;
+    let root = resolve.get("root")?.as_str()?;
+    let nodes_arr = resolve.get("nodes")?.as_array()?;
+    let mut nodes: HashMap<&str, &serde_json::Value> = HashMap::with_capacity(nodes_arr.len());
+    for n in nodes_arr {
+        if let Some(id) = n.get("id").and_then(|v| v.as_str()) {
+            nodes.insert(id, n);
+        }
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut stack: Vec<&str> = vec![root];
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur) {
+            continue;
+        }
+        let Some(node) = nodes.get(cur) else {
+            continue;
+        };
+        let Some(deps) = node.get("deps").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for dep in deps {
+            let Some(pkg) = dep.get("pkg").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let kinds = dep.get("dep_kinds").and_then(|v| v.as_array());
+            let needed = match kinds {
+                None => true,
+                Some(arr) if arr.is_empty() => true,
+                Some(arr) => arr.iter().any(|k| {
+                    matches!(k.get("kind").and_then(|v| v.as_str()), None | Some("build"))
+                }),
+            };
+            if needed {
+                stack.push(pkg);
+            }
+        }
+    }
+    Some(seen.len())
+}
+
+fn pkg_name_from_id(id: &str) -> &str {
+    if let Some((before_hash, after_hash)) = id.split_once('#') {
+        if let Some((name, _ver)) = after_hash.split_once('@') {
+            return name;
+        }
+        if let Some(seg) = before_hash.rsplit(['/', '\\']).next() {
+            if !seg.is_empty() {
+                return seg;
+            }
+        }
+    }
+    id.split_whitespace().next().unwrap_or(id)
+}
+
+fn crate_name_eq(a: &str, b: &str) -> bool {
+    let a = a.strip_suffix(" (build.rs)").unwrap_or(a);
+    let b = b.strip_suffix(" (build.rs)").unwrap_or(b);
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .all(|(x, y)| x == y || (matches!(x, b'-' | b'_') && matches!(y, b'-' | b'_')))
+}
+
+fn handle_cargo_json(
+    val: &serde_json::Value,
+    state: &std::sync::Mutex<pretty::BuildProgressState>,
+    diagnostics: &std::sync::Mutex<String>,
+    done_pkgs: &mut std::collections::HashSet<String>,
+    animated: bool,
+) {
+    let Some(reason) = val.get("reason").and_then(|v| v.as_str()) else {
+        return;
+    };
+    match reason {
+        "compiler-artifact" => {
+            let pkg_id = val.get("package_id").and_then(|v| v.as_str()).unwrap_or("");
+            let fresh = val.get("fresh").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_build_script = val
+                .get("target")
+                .and_then(|t| t.get("kind"))
+                .and_then(|k| k.as_array())
+                .map(|arr| arr.iter().any(|x| x.as_str() == Some("custom-build")))
+                .unwrap_or(false);
+            let pkg_name = pkg_name_from_id(pkg_id);
+            let inserted =
+                !is_build_script && !pkg_id.is_empty() && done_pkgs.insert(pkg_id.to_string());
+
+            if let Ok(mut s) = state.lock() {
+                if inserted {
+                    s.done = done_pkgs.len();
+                }
+                if is_build_script && !fresh {
+                    if let Some(slot) = s.active.iter_mut().find(|a| crate_name_eq(a, pkg_name)) {
+                        *slot = format!("{pkg_name} (build.rs)");
+                    } else if !pkg_name.is_empty() {
+                        s.active.push(format!("{pkg_name} (build.rs)"));
+                    }
+                    if !animated && !pkg_name.is_empty() {
+                        pretty::step(&format!("running {pkg_name} build.rs"));
+                    }
+                } else {
+                    s.active.retain(|a| !crate_name_eq(a, pkg_name));
+                }
+            }
+        }
+        "build-script-executed" => {
+            let pkg_id = val.get("package_id").and_then(|v| v.as_str()).unwrap_or("");
+            let pkg_name = pkg_name_from_id(pkg_id);
+            if let Ok(mut s) = state.lock() {
+                // After build.rs completes, cargo compiles the crate itself.
+                if let Some(slot) = s
+                    .active
+                    .iter_mut()
+                    .find(|a| a.ends_with(" (build.rs)") && crate_name_eq(a, pkg_name))
+                {
+                    *slot = pkg_name.to_string();
+                }
+            }
+        }
+        "compiler-message" => {
+            let Some(msg) = val.get("message") else {
+                return;
+            };
+            let level = msg.get("level").and_then(|v| v.as_str()).unwrap_or("");
+            if level == "error" {
+                if let Ok(mut s) = state.lock() {
+                    s.errors += 1;
+                    if !animated && s.errors == 1 {
+                        pretty::warn("compiler error detected; waiting for active jobs...");
+                    }
+                }
+            }
+            if let Some(rendered) = msg.get("rendered").and_then(|v| v.as_str()) {
+                if let Ok(mut d) = diagnostics.lock() {
+                    d.push_str(rendered);
+                    if !rendered.ends_with('\n') {
+                        d.push('\n');
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_cargo_stderr_line(
+    line: &str,
+    state: &std::sync::Mutex<pretty::BuildProgressState>,
+    animated: bool,
+) {
+    let t = line.trim_start();
+    if let Some(rest) = t
+        .strip_prefix("Compiling ")
+        .or_else(|| t.strip_prefix("Checking "))
+    {
+        if let Some(name) = rest.split_whitespace().next() {
+            if let Ok(mut s) = state.lock() {
+                s.started += 1;
+                if !s.active.iter().any(|a| crate_name_eq(a, name)) {
+                    s.active.push(name.to_string());
+                }
+                s.status.clear();
+            }
+            if !animated {
+                pretty::step(&format!("compiling {name}"));
+            }
+        }
+        return;
+    }
+
+    if t.starts_with("Blocking waiting for file lock") {
+        if let Ok(mut s) = state.lock() {
+            s.status = "waiting for cargo lock...".to_string();
+        }
+        if !animated {
+            pretty::warn("waiting for cargo build directory lock...");
+        }
+    } else if t.starts_with("Updating ") {
+        if let Ok(mut s) = state.lock() {
+            s.status = "updating crates index".to_string();
+        }
+    } else if t.starts_with("Downloading ") || t.starts_with("Downloaded ") {
+        if let Ok(mut s) = state.lock() {
+            s.status = "downloading crates".to_string();
+        }
+    } else if t.starts_with("Locking ") {
+        if let Ok(mut s) = state.lock() {
+            s.status = "locking dependencies".to_string();
+        }
+    } else if t.starts_with("warning: build failed") {
+        if let Ok(mut s) = state.lock() {
+            s.build_failed = true;
+        }
+        if !animated {
+            pretty::warn("build failed, waiting for other jobs...");
+        }
+    } else if t.starts_with("Finished ") {
+        if let Ok(mut s) = state.lock() {
+            s.active.clear();
+            s.status = "finishing".to_string();
+        }
+    }
+}
+
+fn is_cargo_progress_noise(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("Compiling ")
+        || t.starts_with("Checking ")
+        || t.starts_with("Fresh ")
+        || t.starts_with("Updating ")
+        || t.starts_with("Downloading ")
+        || t.starts_with("Downloaded ")
+        || t.starts_with("Locking ")
+        || t.starts_with("Finished ")
 }
 
 /// mocida build env for a spawned cargo build. The generated crate depends on
@@ -418,10 +728,7 @@ pub fn compile(
         // Non-entry modules must export their types/fns so
         // `use crate::math::vec2::{Vec2}` resolves.
         let is_entry = single_file_entry
-            || path::Path::new(&file)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                == Some("main");
+            || path::Path::new(&file).file_stem().and_then(|s| s.to_str()) == Some("main");
         if !is_entry {
             result_code = promote_module_pub(&result_code);
         }
@@ -482,7 +789,7 @@ pub fn compile(
         // root so `engine/math/vec2.crs` becomes `src/math/vec2.rs` (and
         // `crate::math::vec2` resolves). Never concatenate absolute paths into
         // the output root.
-        let mut path = if single_file_entry {
+        let path = if single_file_entry {
             format!("{basepath}main.rs")
         } else if let Some(ref input_dir) = input_dir {
             let file_n = file.replace('\\', "/");
@@ -506,9 +813,7 @@ pub fn compile(
                 .or_else(|| file_c.strip_prefix(&dir_n))
                 .unwrap_or_else(|| {
                     // Fallback: file may already be relative to input_dir.
-                    file_n
-                        .strip_prefix("./")
-                        .unwrap_or(file_n.as_str())
+                    file_n.strip_prefix("./").unwrap_or(file_n.as_str())
                 });
             let rel = rel.trim_start_matches('/');
             format!(
@@ -688,7 +993,10 @@ fn wire_nested_copper_modules(src_root: &str, written: &[String]) {
         }
         // `math.rs` at src root — already a top-level module file.
         if parts.len() == 1 {
-            if let Some(stem) = path::Path::new(parts[0]).file_stem().and_then(|s| s.to_str()) {
+            if let Some(stem) = path::Path::new(parts[0])
+                .file_stem()
+                .and_then(|s| s.to_str())
+            {
                 if path::Path::new(parts[0])
                     .extension()
                     .and_then(|e| e.to_str())
@@ -719,10 +1027,7 @@ fn wire_nested_copper_modules(src_root: &str, written: &[String]) {
                 if child_name.contains('.') {
                     continue;
                 }
-                children
-                    .entry(parent)
-                    .or_default()
-                    .insert(child_name);
+                children.entry(parent).or_default().insert(child_name);
             }
             top_level.insert(parts[0].to_string());
         }
@@ -750,7 +1055,11 @@ fn wire_nested_copper_modules(src_root: &str, written: &[String]) {
             if let Err(e) = fs::write(&mod_rs, &existing) {
                 eprintln!("⚠️  could not write {}: {e}", mod_rs.display());
             } else {
-                vprint!("🔗 nested mod {} → {}", parent, mods.iter().cloned().collect::<Vec<_>>().join(", "));
+                vprint!(
+                    "🔗 nested mod {} → {}",
+                    parent,
+                    mods.iter().cloned().collect::<Vec<_>>().join(", ")
+                );
             }
         }
     }
@@ -784,7 +1093,10 @@ fn wire_nested_copper_modules(src_root: &str, written: &[String]) {
         if fs::write(&entry_path, existing).is_ok() {
             vprint!(
                 "🔗 crate mods ({}): {}",
-                entry_path.file_name().and_then(|s| s.to_str()).unwrap_or("?"),
+                entry_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("?"),
                 top_level.iter().cloned().collect::<Vec<_>>().join(", ")
             );
         }
@@ -993,6 +1305,30 @@ pub fn run() {
     }
 }
 
+pub fn ensure_copper_dep_built(pkg_dir: &path::Path) {
+    if pkg_dir.join("crs").is_dir() {
+        if let Err(e) = module_transpile::transpile_crs_project(pkg_dir) {
+            eprintln!(
+                "⚠️  Failed to transpile Copper package {}: {e}",
+                pkg_dir.display()
+            );
+        }
+        return;
+    }
+    let dist_cargo = pkg_dir.join("dist").join("rust").join("Cargo.toml");
+    if dist_cargo.exists() {
+        return;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe)
+            .arg("-c")
+            .arg("-i")
+            .arg(pkg_dir)
+            .current_dir(pkg_dir)
+            .status();
+    }
+}
+
 pub async fn generate_toml(extra_dependencies: Vec<String>) {
     let properties = kson::read_properties(
         std::env::current_dir()
@@ -1059,4 +1395,113 @@ pub async fn generate_toml(extra_dependencies: Vec<String>) {
 
     fs::write("./dist/rust/Cargo.toml", toml).unwrap();
     vprint!("📦 Cargo.toml generated")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    #[test]
+    fn parses_cargo_package_ids() {
+        assert_eq!(
+            pkg_name_from_id("registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228"),
+            "serde"
+        );
+        assert_eq!(
+            pkg_name_from_id("path+file:///C:/Users/dev/mocida/mocida-rs/mocida-sys#0.1.0"),
+            "mocida-sys"
+        );
+        assert_eq!(
+            pkg_name_from_id("mocida 0.1.0 (path+file:///...)"),
+            "mocida"
+        );
+    }
+
+    #[test]
+    fn tracks_parallel_crates_build_scripts_and_errors() {
+        let state = Mutex::new(pretty::BuildProgressState::default());
+        let diagnostics = Mutex::new(String::new());
+        let mut done = HashSet::new();
+
+        handle_cargo_stderr_line("   Compiling mocida-sys v0.1.0", &state, true);
+        handle_cargo_stderr_line("   Compiling mocidad-launcher v0.1.0", &state, true);
+        assert_eq!(state.lock().unwrap().started, 2);
+        assert_eq!(
+            state.lock().unwrap().active,
+            vec!["mocida-sys", "mocidad-launcher"]
+        );
+
+        let build_script_built = serde_json::json!({
+            "reason": "compiler-artifact",
+            "package_id": "path+file:///repo/mocidad-launcher#0.1.0",
+            "target": { "kind": ["custom-build"], "name": "build-script-build" },
+            "fresh": false
+        });
+        handle_cargo_json(&build_script_built, &state, &diagnostics, &mut done, true);
+        assert_eq!(done.len(), 0);
+        assert_eq!(
+            state.lock().unwrap().active,
+            vec!["mocida-sys", "mocidad-launcher (build.rs)"]
+        );
+
+        let build_script_done = serde_json::json!({
+            "reason": "build-script-executed",
+            "package_id": "path+file:///repo/mocidad-launcher#0.1.0"
+        });
+        handle_cargo_json(&build_script_done, &state, &diagnostics, &mut done, true);
+        assert_eq!(
+            state.lock().unwrap().active,
+            vec!["mocida-sys", "mocidad-launcher"]
+        );
+
+        let lib_done = serde_json::json!({
+            "reason": "compiler-artifact",
+            "package_id": "path+file:///repo/mocida-sys#0.1.0",
+            "target": { "kind": ["lib"], "name": "mocida_sys" },
+            "fresh": false
+        });
+        handle_cargo_json(&lib_done, &state, &diagnostics, &mut done, true);
+        assert_eq!(done.len(), 1);
+        assert_eq!(state.lock().unwrap().active, vec!["mocidad-launcher"]);
+
+        let err_msg = serde_json::json!({
+            "reason": "compiler-message",
+            "message": { "level": "error", "rendered": "error[E0308]: mismatched types\n" }
+        });
+        handle_cargo_json(&err_msg, &state, &diagnostics, &mut done, true);
+        assert_eq!(state.lock().unwrap().errors, 1);
+        assert!(diagnostics.lock().unwrap().contains("E0308"));
+
+        handle_cargo_stderr_line(
+            "warning: build failed, waiting for other jobs to finish...",
+            &state,
+            true,
+        );
+        assert!(state.lock().unwrap().build_failed);
+    }
+
+    #[test]
+    fn counts_only_non_dev_packages_from_metadata() {
+        let meta = serde_json::json!({
+            "resolve": {
+                "root": "root#0.1.0",
+                "nodes": [
+                    {
+                        "id": "root#0.1.0",
+                        "deps": [
+                            { "pkg": "dep#1.0.0", "dep_kinds": [{ "kind": null }] },
+                            { "pkg": "build_dep#1.0.0", "dep_kinds": [{ "kind": "build" }] },
+                            { "pkg": "dev_only#1.0.0", "dep_kinds": [{ "kind": "dev" }] }
+                        ]
+                    },
+                    { "id": "dep#1.0.0", "deps": [] },
+                    { "id": "build_dep#1.0.0", "deps": [] },
+                    { "id": "dev_only#1.0.0", "deps": [] }
+                ]
+            }
+        });
+        assert_eq!(count_non_dev_packages(&meta), Some(3));
+    }
 }

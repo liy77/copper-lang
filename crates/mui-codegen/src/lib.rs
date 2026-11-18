@@ -350,7 +350,12 @@ fn generate_main(
     // `decorations: none`, `customTitlebar: true`).
     let custom_titlebar = app
         .and_then(|a| a.titlebar.clone())
-        .map(|t| matches!(t.to_ascii_lowercase().as_str(), "custom" | "client" | "none"))
+        .map(|t| {
+            matches!(
+                t.to_ascii_lowercase().as_str(),
+                "custom" | "client" | "none"
+            )
+        })
         .unwrap_or(false);
     if custom_titlebar {
         e.line("mocida::app::request_custom_titlebar(true);");
@@ -365,7 +370,9 @@ fn generate_main(
     if let Some(spec) = app.and_then(|a| a.backdrop.clone()) {
         e.line("{");
         e.indent();
-        e.line(&format!("let __bd = BackdropMaterial::from_effect({spec:?});"));
+        e.line(&format!(
+            "let __bd = BackdropMaterial::from_effect({spec:?});"
+        ));
         e.line("if __bd != BackdropMaterial::None {");
         e.indent();
         e.line("if let Some(mut __w) = mocida::window::Window::active() {");
@@ -578,11 +585,19 @@ fn emit_node(
                 }
             }
         }
-        Node::If { cond_raw, then, els, .. } => {
+        Node::If {
+            cond_raw,
+            then,
+            els,
+            ..
+        } => {
             let parsed = copper_syntax::expr::parse_expr(cond_raw).0;
             let sig_lookup = |n: &str| sigs.kind(n);
             let env_lookup = |n: &str| env.get(n).map(|s| s.to_string());
-            match parsed.as_ref().map(|c| crate::eval::expr_to_rust(c, &sig_lookup, &env_lookup)) {
+            match parsed
+                .as_ref()
+                .map(|c| crate::eval::expr_to_rust(c, &sig_lookup, &env_lookup))
+            {
                 Some(Ok(rust_cond)) => {
                     // Subscribe structural signals to dirty (once each).
                     if let Some(c) = &parsed {
@@ -594,12 +609,16 @@ fn emit_node(
                     }
                     e.line(&format!("if {rust_cond} {{"));
                     e.indent();
-                    for n in then { emit_node(e, n, env, sigs, comps, sink); }
+                    for n in then {
+                        emit_node(e, n, env, sigs, comps, sink);
+                    }
                     e.dedent();
                     if let Some(els) = els {
                         e.line("} else {");
                         e.indent();
-                        for n in els { emit_node(e, n, env, sigs, comps, sink); }
+                        for n in els {
+                            emit_node(e, n, env, sigs, comps, sink);
+                        }
                         e.dedent();
                     }
                     e.line("}");
@@ -611,7 +630,12 @@ fn emit_node(
                 }
             }
         }
-        Node::For { pattern, iter, body, .. } => {
+        Node::For {
+            pattern,
+            iter,
+            body,
+            ..
+        } => {
             let sig_lookup = |n: &str| sigs.kind(n);
             let env_lookup = |n: &str| env.get(n).map(|s| s.to_string());
             match crate::eval::expr_to_rust(iter, &sig_lookup, &env_lookup) {
@@ -644,7 +668,9 @@ fn emit_node(
                 }
             }
         }
-        Node::Match { scrutinee, arms, .. } => {
+        Node::Match {
+            scrutinee, arms, ..
+        } => {
             let sig_lookup = |n: &str| sigs.kind(n);
             let env_lookup = |n: &str| env.get(n).map(|s| s.to_string());
             match crate::eval::expr_to_rust(scrutinee, &sig_lookup, &env_lookup) {
@@ -679,7 +705,9 @@ fn emit_node(
                         }
                     }
                     // String scrutinee: match on &str so literal-string arm patterns work.
-                    let scrut_is_str = reads.iter().any(|r| sigs.kind(r) == Some(crate::eval::SigKind::Str));
+                    let scrut_is_str = reads
+                        .iter()
+                        .any(|r| sigs.kind(r) == Some(crate::eval::SigKind::Str));
                     if scrut_is_str {
                         e.line(&format!("match ({rust_scrut}).as_str() {{"));
                     } else {
@@ -1108,7 +1136,10 @@ fn emit_glass(
     let effect = style::enum_member(el, "method")
         .or_else(|| style::enum_member(el, "effect"))
         .unwrap_or_else(|| "auto".to_string());
-    let horizontal = matches!(style::enum_member(el, "orientation").as_deref(), Some("horizontal"));
+    let horizontal = matches!(
+        style::enum_member(el, "orientation").as_deref(),
+        Some("horizontal")
+    );
     let sw = dim(e, el, "width").unwrap_or(400.0);
     let sh = dim(e, el, "height").unwrap_or(400.0);
     let var = e.fresh("glass");
@@ -1128,12 +1159,15 @@ fn emit_glass(
     if let Some(o) = style::f32_prop(el, "tintOpacity") {
         e.line(&format!("{var} = {var}.tint_opacity({});", fmt_f32(o)));
     }
-    if let Some(th) = style::enum_member(el, "thickness").as_deref().and_then(|t| match t {
-        "thin" => Some("GlassThickness::Thin"),
-        "thick" => Some("GlassThickness::Thick"),
-        "regular" | "medium" => Some("GlassThickness::Regular"),
-        _ => None,
-    }) {
+    if let Some(th) = style::enum_member(el, "thickness")
+        .as_deref()
+        .and_then(|t| match t {
+            "thin" => Some("GlassThickness::Thin"),
+            "thick" => Some("GlassThickness::Thick"),
+            "regular" | "medium" => Some("GlassThickness::Regular"),
+            _ => None,
+        })
+    {
         e.line(&format!("{var} = {var}.thickness({th});"));
     }
     if let Some(b) = style::f32_prop(el, "blur") {
@@ -1145,12 +1179,15 @@ fn emit_glass(
     if let Some(n) = style::f32_prop(el, "noise") {
         e.line(&format!("{var} = {var}.noise({});", fmt_f32(n)));
     }
-    if let Some(s) = style::enum_member(el, "state").as_deref().and_then(|s| match s {
-        "inactive" => Some("VibrancyState::Inactive"),
-        "pressed" => Some("VibrancyState::Pressed"),
-        "active" => Some("VibrancyState::Active"),
-        _ => None,
-    }) {
+    if let Some(s) = style::enum_member(el, "state")
+        .as_deref()
+        .and_then(|s| match s {
+            "inactive" => Some("VibrancyState::Inactive"),
+            "pressed" => Some("VibrancyState::Pressed"),
+            "active" => Some("VibrancyState::Active"),
+            _ => None,
+        })
+    {
         e.line(&format!("{var} = {var}.vibrancy_state({s});"));
     }
     if let Some(gap) = style::f32_prop(el, "gap") {
@@ -1160,21 +1197,27 @@ fn emit_glass(
         let p = fmt_f32(pad);
         e.line(&format!("{var} = {var}.padding({p}, {p}, {p}, {p});"));
     }
-    if let Some(a) = style::enum_member(el, "align").as_deref().and_then(|a| match a {
-        "center" | "middle" => Some(1),
-        "end" | "right" | "bottom" => Some(2),
-        "start" | "left" | "top" => Some(0),
-        _ => None,
-    }) {
+    if let Some(a) = style::enum_member(el, "align")
+        .as_deref()
+        .and_then(|a| match a {
+            "center" | "middle" => Some(1),
+            "end" | "right" | "bottom" => Some(2),
+            "start" | "left" | "top" => Some(0),
+            _ => None,
+        })
+    {
         e.line(&format!("{var} = {var}.align({a});"));
     }
-    if let Some(j) = style::enum_member(el, "justify").as_deref().and_then(|j| match j {
-        "center" | "middle" => Some(1),
-        "end" => Some(2),
-        "spacebetween" | "between" | "space-between" => Some(3),
-        "start" => Some(0),
-        _ => None,
-    }) {
+    if let Some(j) = style::enum_member(el, "justify")
+        .as_deref()
+        .and_then(|j| match j {
+            "center" | "middle" => Some(1),
+            "end" => Some(2),
+            "spacebetween" | "between" | "space-between" => Some(3),
+            "start" => Some(0),
+            _ => None,
+        })
+    {
         e.line(&format!("{var} = {var}.justify({j});"));
     }
 
@@ -1223,10 +1266,7 @@ fn emit_text(e: &mut Emitter, el: &Element, env: &Env, sigs: &SignalScope, sink:
     // the Rust loop local, not baked as a literal. `loop_label` is the runtime
     // `format!(...)` expression (a `String`); when present it overrides the
     // literal first arg to `Text::new`.
-    let loop_label = el
-        .positional
-        .as_ref()
-        .and_then(|x| loop_var_format(x, env));
+    let loop_label = el.positional.as_ref().and_then(|x| loop_var_format(x, env));
 
     e.line("{");
     e.indent();
@@ -3515,11 +3555,17 @@ view V() {
 }
 "#;
         let code = crate::generate_from_str(src).expect("codegen");
-        assert!(code.contains("if (__sig_count.borrow().get() > 0) {"), "real cond:\n{code}");
+        assert!(
+            code.contains("if (__sig_count.borrow().get() > 0) {"),
+            "real cond:\n{code}"
+        );
         assert!(code.contains("} else {"), "else branch:\n{code}");
         // structural subscribe marks dirty:
         assert!(code.contains("__dirty"), "dirty subscribe:\n{code}");
-        assert!(!code.contains("static lowering renders the `then` branch"), "placeholder gone");
+        assert!(
+            !code.contains("static lowering renders the `then` branch"),
+            "placeholder gone"
+        );
     }
 
     #[test]
@@ -3536,8 +3582,14 @@ view App(title: string = "Todos") {
 }
 "#;
         let code = crate::generate_from_str(src).expect("codegen");
-        assert!(code.contains("for item in __sig_items.borrow().clone() {"), "dynamic loop:\n{code}");
-        assert!(!code.contains("renders one iteration"), "placeholder gone:\n{code}");
+        assert!(
+            code.contains("for item in __sig_items.borrow().clone() {"),
+            "dynamic loop:\n{code}"
+        );
+        assert!(
+            !code.contains("renders one iteration"),
+            "placeholder gone:\n{code}"
+        );
     }
 
     #[test]
@@ -3553,7 +3605,10 @@ view V() {
 }
 "#;
         let code = crate::generate_from_str(src).expect("codegen");
-        assert!(code.contains("match (__sig_status.borrow().get()).as_str() {"), "match scrutinee:\n{code}");
+        assert!(
+            code.contains("match (__sig_status.borrow().get()).as_str() {"),
+            "match scrutinee:\n{code}"
+        );
         assert!(code.contains("\"on\" =>"), "literal arm:\n{code}");
         assert!(code.contains("_ =>"), "wildcard arm:\n{code}");
     }
@@ -3616,4 +3671,3 @@ view V() {
         );
     }
 }
-

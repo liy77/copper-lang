@@ -1,10 +1,15 @@
-use copper_syntax::tokenizer::tokenizer::Tokenizer;
 use copper_syntax::tokenizer::kind::TokenKind;
+use copper_syntax::tokenizer::tokenizer::Tokenizer;
 
 fn show(src: &str) -> String {
     let tokens = Tokenizer::new(src.to_string()).tokenize();
-    tokens.iter()
-        .filter(|t| t.kind != TokenKind::Whitespace && t.kind != TokenKind::Newline && t.kind != TokenKind::Comment)
+    tokens
+        .iter()
+        .filter(|t| {
+            t.kind != TokenKind::Whitespace
+                && t.kind != TokenKind::Newline
+                && t.kind != TokenKind::Comment
+        })
         .map(|t| format!("{:?}='{}'", t.kind, t.value))
         .collect::<Vec<_>>()
         .join(" | ")
@@ -14,7 +19,13 @@ fn show(src: &str) -> String {
 fn division_after_field_access() {
     let src = "func f64 c(self) { return self.size.x / 2.0 }\n";
     let tokens = Tokenizer::new(src.to_string()).tokenize();
-    assert!(tokens.iter().any(|t| t.kind == TokenKind::Operator && t.value == "/"), "{}", show(src));
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.kind == TokenKind::Operator && t.value == "/"),
+        "{}",
+        show(src)
+    );
 }
 
 #[test]
@@ -30,8 +41,16 @@ class AABB {
 "#;
     let tokens = Tokenizer::new(src.to_string()).tokenize();
     let s = show(src);
-    assert!(tokens.iter().any(|t| t.kind == TokenKind::Operator && t.value == "/"), "{s}");
-    assert!(!tokens.iter().any(|t| matches!(t.kind, TokenKind::Regex)), "{s}");
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.kind == TokenKind::Operator && t.value == "/"),
+        "{s}"
+    );
+    assert!(
+        !tokens.iter().any(|t| matches!(t.kind, TokenKind::Regex)),
+        "{s}"
+    );
 }
 
 #[test]
@@ -56,9 +75,14 @@ class AABB {
         "unterminated regex on field div: {:?} | {s}",
         tok.errors
     );
-    assert!(!tokens.iter().any(|t| matches!(t.kind, TokenKind::Regex)), "regex: {s}");
     assert!(
-        tokens.iter().any(|t| t.kind == TokenKind::Operator && t.value == "/"),
+        !tokens.iter().any(|t| matches!(t.kind, TokenKind::Regex)),
+        "regex: {s}"
+    );
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.kind == TokenKind::Operator && t.value == "/"),
         "missing / operator: {s}"
     );
 }

@@ -222,10 +222,18 @@ pub async fn install_all() {
     let mut done = 0usize;
     for (name, req) in &deps {
         pb.set(done, &format!("resolving {name} {req}"));
+        // Local path or inline object dependency — keep as-is without hitting crates.io.
+        if req.starts_with("path:") || req.starts_with('{') {
+            resolved.push((name.clone(), req.clone()));
+            reused += 1;
+            done += 1;
+            pb.set(done, &format!("{name} (local/custom)"));
+            continue;
+        }
         // Reuse the locked version when present and the request still names it
         // (exact pin) — that's the reproducible fast path, no network.
         if let Some(v) = lock.get(name) {
-            if req == v || req == "*" || req.is_empty() {
+            if req == v || req == "*" || req.is_empty() || v.starts_with(&format!("{req}.")) {
                 resolved.push((name.clone(), v.clone()));
                 reused += 1;
                 done += 1;
@@ -437,4 +445,75 @@ fn join_lines(lines: &[String], original: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// `cforge remove <name>` — remove a dependency from `properties.kson` and `properties.lock`.
+pub fn remove(name: &str) {
+    if !Path::new(PROPERTIES_FILE).exists() {
+        pretty::fail(&format!("No {} found.", PROPERTIES_FILE));
+        std::process::exit(1);
+    }
+    let Ok(text) = fs::read_to_string(PROPERTIES_FILE) else {
+        pretty::fail(&format!("Could not read {}.", PROPERTIES_FILE));
+        std::process::exit(1);
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut removed = false;
+    let key_prefix = format!("{name} ");
+    let key_eq = format!("{name}=");
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if (line.starts_with(' ') || line.starts_with('\t'))
+            && (trimmed.starts_with(&key_prefix) || trimmed.starts_with(&key_eq))
+        {
+            removed = true;
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    if !removed {
+        pretty::warn(&format!(
+            "Dependency `{name}` not found in {PROPERTIES_FILE}."
+        ));
+        return;
+    }
+    let _ = fs::write(PROPERTIES_FILE, join_lines(&lines, &text));
+    let mut locked = read_lock();
+    if locked.remove(name).is_some() {
+        let pairs: Vec<(String, String)> = locked.into_iter().collect();
+        let _ = write_lock(&pairs);
+    }
+    pretty::ok(&format!(
+        "Removed {} from {}",
+        name.green(),
+        PROPERTIES_FILE
+    ));
+}
+
+/// `cforge list` — print all declared dependencies and their locked versions.
+pub fn list() {
+    if !Path::new(PROPERTIES_FILE).exists() {
+        pretty::fail(&format!("No {} found.", PROPERTIES_FILE));
+        return;
+    }
+    let deps = read_dependencies();
+    let lock = read_lock();
+    pretty::head(&format!("Dependencies in {PROPERTIES_FILE}"));
+    if deps.is_empty() {
+        println!("  (no dependencies declared)");
+        return;
+    }
+    for (name, spec) in deps {
+        let locked = lock
+            .get(&name)
+            .map(|v| format!(" (locked: {v})"))
+            .unwrap_or_default();
+        println!(
+            "  {} {} {}{}",
+            name.green().bold(),
+            "=>".yellow(),
+            spec.cyan(),
+            locked.dimmed()
+        );
+    }
 }

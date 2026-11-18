@@ -13,7 +13,9 @@ pub mod ast;
 pub mod loader;
 pub mod style;
 
-use ast::{Document, Element, Handler, MatchArm, MuiError, MuiValue, Node, Param, Prop, PropValue, View};
+use ast::{
+    Document, Element, Handler, MatchArm, MuiError, MuiValue, Node, Param, Prop, PropValue, View,
+};
 use copper_syntax::ast::Span;
 use copper_syntax::expr::Expr;
 use copper_syntax::tokenizer::kind::TokenKind;
@@ -343,11 +345,9 @@ impl Parser {
             // `decorations: none` alias, or `customTitlebar: true`.
             "titlebar" => cfg.titlebar = prop_ident_or_string(&value),
             "decorations" => {
-                cfg.titlebar = prop_ident_or_string(&value).map(|d| {
-                    match d.as_str() {
-                        "none" | "custom" | "client" => "custom".to_string(),
-                        _ => "native".to_string(),
-                    }
+                cfg.titlebar = prop_ident_or_string(&value).map(|d| match d.as_str() {
+                    "none" | "custom" | "client" => "custom".to_string(),
+                    _ => "native".to_string(),
                 });
             }
             "customTitlebar" => {
@@ -366,7 +366,9 @@ impl Parser {
             "maxWidth" => cfg.max_width = prop_int(&value),
             "maxHeight" => cfg.max_height = prop_int(&value),
             "renderer" => cfg.renderer = prop_ident_or_string(&value),
-            "rendererWindows" | "rendererWin" => cfg.renderer_windows = prop_ident_or_string(&value),
+            "rendererWindows" | "rendererWin" => {
+                cfg.renderer_windows = prop_ident_or_string(&value)
+            }
             "rendererMacos" | "rendererMac" => cfg.renderer_macos = prop_ident_or_string(&value),
             "rendererLinux" => cfg.renderer_linux = prop_ident_or_string(&value),
             "msaa" => cfg.msaa = prop_int(&value),
@@ -1554,10 +1556,16 @@ view V() {
 "#;
         let doc = parse(src);
         let view = doc.views.iter().find(|v| v.name == "V").unwrap();
-        let m = view.body.iter().find_map(|n| match n {
-            Node::Match { arms, scrutinee, .. } => Some((arms.clone(), scrutinee.clone())),
-            _ => None,
-        }).expect("match node");
+        let m = view
+            .body
+            .iter()
+            .find_map(|n| match n {
+                Node::Match {
+                    arms, scrutinee, ..
+                } => Some((arms.clone(), scrutinee.clone())),
+                _ => None,
+            })
+            .expect("match node");
         assert_eq!(m.0.len(), 2, "two arms");
         assert_eq!(m.0[0].pattern, "\"on\"");
         assert_eq!(m.0[1].pattern, "_");

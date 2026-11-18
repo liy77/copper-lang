@@ -30,6 +30,10 @@ fn main() {
     let hash = git_short_hash();
     println!("cargo:rustc-env=GIT_COMMIT_HASH={}", hash);
 
+    if let Ok(target) = std::env::var("TARGET") {
+        println!("cargo:rustc-env=CFORGE_HOST_TARGET={target}");
+    }
+
     // Copy Cargo.toml next to the binary so cforge can read project metadata.
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let target_dir = Path::new("target").join(profile);

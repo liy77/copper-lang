@@ -104,11 +104,7 @@ pub struct ReactiveEnv {
 
 /// A numeric prop, reactive to signals when `env` is Some. With `env = None`
 /// only literals resolve (preserves the static-only contract of the old API).
-pub fn f32_prop_reactive(
-    el: &Element,
-    name: &str,
-    env: Option<&ReactiveEnv>,
-) -> Option<f32> {
+pub fn f32_prop_reactive(el: &Element, name: &str, env: Option<&ReactiveEnv>) -> Option<f32> {
     let e = match &find(el, name)?.value {
         PropValue::Expr(e) => e,
         _ => return None,
@@ -200,11 +196,7 @@ pub fn eval_dim_reactive(e: &Expr, env: &ReactiveEnv) -> (Option<f32>, Vec<Strin
     (v, deps)
 }
 
-fn eval_dim_reactive_inner(
-    e: &Expr,
-    env: &ReactiveEnv,
-    deps: &mut Vec<String>,
-) -> Option<f32> {
+fn eval_dim_reactive_inner(e: &Expr, env: &ReactiveEnv, deps: &mut Vec<String>) -> Option<f32> {
     match &e.kind {
         ExprKind::Literal(Literal::Int(i)) => Some(*i as f32),
         ExprKind::Literal(Literal::Float(f)) => Some(*f as f32),
@@ -230,10 +222,8 @@ fn eval_dim_reactive_inner(
             // signal on one side of `==` and a literal string on the other
             // (`is_macos == "1"`) both resolve. The literal helper also
             // extracts numeric content from non-interpolated string literals.
-            let a = eval_dim_reactive_inner(lhs, env, deps)
-                .or_else(|| literal_f32_or_str(lhs))?;
-            let b = eval_dim_reactive_inner(rhs, env, deps)
-                .or_else(|| literal_f32_or_str(rhs))?;
+            let a = eval_dim_reactive_inner(lhs, env, deps).or_else(|| literal_f32_or_str(lhs))?;
+            let b = eval_dim_reactive_inner(rhs, env, deps).or_else(|| literal_f32_or_str(rhs))?;
             match op {
                 BinOp::Add => Some(a + b),
                 BinOp::Sub => Some(a - b),
@@ -344,7 +334,10 @@ fn literal_f32(e: &Expr) -> Option<f32> {
         ExprKind::Literal(Literal::Int(i)) => Some(*i as f32),
         ExprKind::Literal(Literal::Float(f)) => Some(*f as f32),
         // `marginTop: -36` parses as a negation, not a negative literal.
-        ExprKind::Unary { op: UnOp::Neg, expr } => literal_f32(expr).map(|v| -v),
+        ExprKind::Unary {
+            op: UnOp::Neg,
+            expr,
+        } => literal_f32(expr).map(|v| -v),
         _ => None,
     }
 }

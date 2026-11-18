@@ -77,7 +77,7 @@ pub fn compile(file: &str, output_dir: Option<&str>, do_build: bool, embed: bool
             .parent()
             .map(|p| p.join(&host))
             .unwrap_or_else(|| PathBuf::from(&host));
-        if !dir.join("Cargo.toml").is_file() {
+        if !dir.join("Cargo.toml").is_file() && !dir.join("properties.kson").is_file() {
             // Declared but missing: warn and fall through to static codegen.
             eprintln!(
                 "{}",
@@ -278,11 +278,17 @@ fn compile_host(
         return 0;
     }
 
-    // `-c -r`: build the host crate in release. apply_mocida_env points mocida-sys
-    // at the C source headers + built lib (same as the static build above).
+    // `-c -r`: build the host crate in release. If the host is a Copper package
+    // (`properties.kson` without `Cargo.toml`), transpile it into `dist/rust` first.
+    let cargo_dir = if !dir.join("Cargo.toml").is_file() && dir.join("properties.kson").is_file() {
+        crate::cforge::ensure_copper_dep_built(dir);
+        dir.join("dist").join("rust")
+    } else {
+        dir.to_path_buf()
+    };
     println!();
     let mut cmd = Command::new("cargo");
-    cmd.arg("build").arg("--release").current_dir(dir);
+    cmd.arg("build").arg("--release").current_dir(&cargo_dir);
     if let Some(ws) = find_mocida_rs() {
         crate::cforge::apply_mocida_env(&mut cmd, &ws);
     }
@@ -296,13 +302,14 @@ fn compile_host(
     }
 
     // Resolve the produced executable (crate's [[bin]]/package name, else host).
-    let bin_name = crate_bin_name(&dir.join("Cargo.toml")).unwrap_or_else(|| host.to_string());
+    let bin_name =
+        crate_bin_name(&cargo_dir.join("Cargo.toml")).unwrap_or_else(|| host.to_string());
     let exe_name = if cfg!(windows) {
         format!("{bin_name}.exe")
     } else {
         bin_name.clone()
     };
-    let release_dir = dir.join("target").join("release");
+    let release_dir = cargo_dir.join("target").join("release");
     let exe = release_dir.join(&exe_name);
 
     // Stage a self-contained bundle under <output>/mui/. The .mui + assets are
@@ -617,8 +624,12 @@ fn mui_app_host(file: &str) -> Option<String> {
 /// needs no clang/env); else `cargo run` it. `None` if the crate isn't there.
 fn run_native_host(file: &str, host: &str) -> Option<i32> {
     let dir = Path::new(file).parent()?.join(host);
-    if !dir.join("Cargo.toml").is_file() {
+    if !dir.join("Cargo.toml").is_file() && !dir.join("properties.kson").is_file() {
         return None;
+    }
+    if !dir.join("Cargo.toml").is_file() && dir.join("properties.kson").is_file() {
+        crate::cforge::ensure_copper_dep_built(&dir);
+        return Some(cargo_run_host(&dir, file));
     }
     // Pre-built binary first (no toolchain needed), named by the crate's
     // [[bin]] (e.g. MocidadEngine), else the host dir.
@@ -660,7 +671,13 @@ fn spawn_host(bin: &str, file: &str) -> i32 {
 /// Build + run the host crate in `dir`. Build is run through `cargo_with_spinner`
 /// so cargo's verbose output is hidden; only the actual app gets inherited stdio.
 fn cargo_run_host(dir: &Path, file: &str) -> i32 {
-    let host_name = crate_bin_name(&dir.join("Cargo.toml")).unwrap_or_else(|| {
+    let cargo_dir = if !dir.join("Cargo.toml").is_file() && dir.join("properties.kson").is_file() {
+        crate::cforge::ensure_copper_dep_built(dir);
+        dir.join("dist").join("rust")
+    } else {
+        dir.to_path_buf()
+    };
+    let host_name = crate_bin_name(&cargo_dir.join("Cargo.toml")).unwrap_or_else(|| {
         dir.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("host")
@@ -668,7 +685,10 @@ fn cargo_run_host(dir: &Path, file: &str) -> i32 {
     });
 
     let mut build_cmd = Command::new("cargo");
-    build_cmd.arg("build").arg("--release").current_dir(dir);
+    build_cmd
+        .arg("build")
+        .arg("--release")
+        .current_dir(&cargo_dir);
     if let Some(ws) = find_mocida_rs() {
         crate::cforge::apply_mocida_env(&mut build_cmd, &ws);
     }
@@ -686,7 +706,7 @@ fn cargo_run_host(dir: &Path, file: &str) -> i32 {
     } else {
         host_name.clone()
     };
-    let binary = dir.join("target").join("release").join(&exe_name);
+    let binary = cargo_dir.join("target").join("release").join(&exe_name);
     spawn_host(&binary.to_string_lossy(), file)
 }
 

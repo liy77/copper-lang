@@ -303,13 +303,83 @@ impl Tokenizer {
         s
     }
 
+    /// Find the end of the current logical line, extending past newlines that
+    /// occur inside multi-line raw string literals (`r"..."`, `r#"..."#`).
+    fn find_logical_line_end(&self, start: usize) -> usize {
+        let bytes = self.source.as_bytes();
+        let len = bytes.len();
+        let mut i = start;
+        let mut in_string = false;
+        let mut escape = false;
+        let mut raw_hashes: Option<usize> = None;
+
+        while i < len {
+            let b = bytes[i];
+            if let Some(hashes) = raw_hashes {
+                if b == b'"' {
+                    let mut h = 0;
+                    while i + 1 + h < len && h < hashes && bytes[i + 1 + h] == b'#' {
+                        h += 1;
+                    }
+                    if h == hashes {
+                        i += 1 + h;
+                        raw_hashes = None;
+                        continue;
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            if in_string {
+                if escape {
+                    escape = false;
+                } else if b == b'\\' {
+                    escape = true;
+                } else if b == b'"' {
+                    in_string = false;
+                } else if b == b'\n' {
+                    return i + 1;
+                }
+                i += 1;
+                continue;
+            }
+            if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+                while i < len && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                return if i < len { i + 1 } else { len };
+            }
+            if (b == b'r' || (b == b'b' && i + 1 < len && bytes[i + 1] == b'r'))
+                && (i == start || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+            {
+                let r_pos = if b == b'b' { i + 1 } else { i };
+                let mut h = 0;
+                while r_pos + 1 + h < len && bytes[r_pos + 1 + h] == b'#' {
+                    h += 1;
+                }
+                if r_pos + 1 + h < len && bytes[r_pos + 1 + h] == b'"' {
+                    raw_hashes = Some(h);
+                    i = r_pos + 2 + h;
+                    continue;
+                }
+            }
+            if b == b'"' {
+                in_string = true;
+                i += 1;
+                continue;
+            }
+            if b == b'\n' {
+                return i + 1;
+            }
+            i += 1;
+        }
+        len
+    }
+
     pub fn tokenize(&mut self) -> Vec<Token> {
         while self.index < self.source.len() {
-            // Find the end of current line
-            let line_end = self.source[self.index..]
-                .find('\n')
-                .map(|pos| self.index + pos + 1)
-                .unwrap_or(self.source.len());
+            // Find the end of current logical line (extending past multi-line raw strings)
+            let line_end = self.find_logical_line_end(self.index);
 
             self.chunk = self.source[self.index..line_end].to_string();
             self.chunk_line += 1;
@@ -847,6 +917,40 @@ impl Tokenizer {
         let mut kind = TokenKind::Unknown;
 
         if self.current_char() == '\'' {
+            let rest = &self.chunk[self.chunk_column..];
+            if rest.starts_with("'\\") {
+                let mut char_len = 0usize;
+                for (i, ch) in rest.char_indices().skip(2) {
+                    if ch == '\'' {
+                        char_len = i + 1;
+                        break;
+                    }
+                    if ch == '\n' {
+                        break;
+                    }
+                }
+                if char_len > 0 {
+                    let lit = rest[..char_len].to_string();
+                    self.chunk_column += char_len;
+                    self.token(TokenKind::String, lit);
+                    return Consumed::Consumed(char_len as isize);
+                }
+            } else {
+                let mut chars = rest.char_indices();
+                let _ = chars.next(); // opening '
+                if let Some((_, ch)) = chars.next() {
+                    if ch != '\'' && ch != '\n' {
+                        if let Some((close_idx, '\'')) = chars.next() {
+                            let char_len = close_idx + 1;
+                            let lit = rest[..char_len].to_string();
+                            self.chunk_column += char_len;
+                            self.token(TokenKind::String, lit);
+                            return Consumed::Consumed(char_len as isize);
+                        }
+                    }
+                }
+            }
+
             value.push(self.current_char());
             self.next_char();
             consumed += 1;
@@ -860,6 +964,66 @@ impl Tokenizer {
 
             kind = TokenKind::Lifetime;
         } else if self.current_char().is_alphabetic() || self.current_char() == '_' {
+            // Raw string (`r"..."`, `r#"..."#`, `br"..."`, `br#"..."#`) or byte literal (`b"..."`, `b'...'`)
+            let rest = &self.chunk[self.chunk_column..];
+            if rest.starts_with("r\"")
+                || rest.starts_with("r#")
+                || rest.starts_with("br\"")
+                || rest.starts_with("br#")
+            {
+                let prefix_len = if rest.starts_with("br") { 2 } else { 1 };
+                let after_r = &rest[prefix_len..];
+                let hashes = after_r.chars().take_while(|&c| c == '#').count();
+                let after_hashes = &after_r[hashes..];
+                if after_hashes.starts_with('"') {
+                    let closing = format!("\"{}", "#".repeat(hashes));
+                    let content_start = prefix_len + hashes + 1;
+                    if let Some(end_rel) = rest[content_start..].find(&closing) {
+                        let total_len = content_start + end_rel + closing.len();
+                        let raw_lit = rest[..total_len].to_string();
+                        self.chunk_column += total_len;
+                        self.token(TokenKind::String, raw_lit);
+                        return Consumed::Consumed(total_len as isize);
+                    }
+                }
+            } else if rest.starts_with("b\"") {
+                let bytes = rest.as_bytes();
+                let mut i = 2;
+                let mut esc = false;
+                while i < bytes.len() {
+                    if esc {
+                        esc = false;
+                    } else if bytes[i] == b'\\' {
+                        esc = true;
+                    } else if bytes[i] == b'"' {
+                        let total_len = i + 1;
+                        let lit = rest[..total_len].to_string();
+                        self.chunk_column += total_len;
+                        self.token(TokenKind::String, lit);
+                        return Consumed::Consumed(total_len as isize);
+                    }
+                    i += 1;
+                }
+            } else if rest.starts_with("b'") {
+                let bytes = rest.as_bytes();
+                let mut i = 2;
+                let mut esc = false;
+                while i < bytes.len() && i < 8 {
+                    if esc {
+                        esc = false;
+                    } else if bytes[i] == b'\\' {
+                        esc = true;
+                    } else if bytes[i] == b'\'' {
+                        let total_len = i + 1;
+                        let lit = rest[..total_len].to_string();
+                        self.chunk_column += total_len;
+                        self.token(TokenKind::String, lit);
+                        return Consumed::Consumed(total_len as isize);
+                    }
+                    i += 1;
+                }
+            }
+
             while self.current_char().is_alphanumeric() || self.current_char() == '_' {
                 value.push(self.current_char());
                 self.next_char();
@@ -972,9 +1136,9 @@ impl Tokenizer {
                 kind = TokenKind::ReturnType;
             } else if self.seen_import
                 && self.last_significant_is_from()
-                && matches!(value.as_str(), "crate" | "super" | "self")
+                && matches!(value.as_str(), "crate" | "super" | "self" | "std")
             {
-                // `from crate::…` / `from super::…` / `from self::…` — path
+                // `from crate::…` / `from super::…` / `from self::…` / `from std::…` — path
                 // roots, not statement keywords (wins over RUST_KEYWORDS).
                 kind = TokenKind::ModulePath;
             } else if RUST_KEYWORDS.contains(&value.as_str()) {
@@ -1200,8 +1364,8 @@ impl Tokenizer {
             return Consumed::consume(0);
         }
 
-        // Check if it's not a comment (//)
-        if self.peek() == '/' {
+        // Check if it's not a comment (//), compound assignment (/=), or spaced division (/ )
+        if self.peek() == '/' || self.peek() == ' ' || self.peek() == '=' {
             return Consumed::consume(0);
         }
 
@@ -1229,14 +1393,34 @@ impl Tokenizer {
                 prev.kind,
                 TokenKind::Identifier
                     | TokenKind::Param
+                    | TokenKind::ParamType
+                    | TokenKind::ReturnType
                     | TokenKind::Number
                     | TokenKind::String
                     | TokenKind::InterpolatedString
                     | TokenKind::ParenthesesEnd
                     | TokenKind::ParametersEnd
                     | TokenKind::BracketEnd
+                    | TokenKind::BraceEnd
             ) || (prev.kind == TokenKind::Keyword
-                && matches!(prev.value.as_str(), "self" | "true" | "false"));
+                && matches!(
+                    prev.value.as_str(),
+                    "self"
+                        | "true"
+                        | "false"
+                        | "f32"
+                        | "f64"
+                        | "i32"
+                        | "i64"
+                        | "u32"
+                        | "u64"
+                        | "usize"
+                        | "isize"
+                        | "u8"
+                        | "u16"
+                        | "i8"
+                        | "i16"
+                ));
             if prev_is_operand {
                 // Division — let operator_token handle the `/`.
                 return Consumed::consume(0);
@@ -1636,7 +1820,10 @@ impl Tokenizer {
             return '\0';
         }
         if self.chunk.is_char_boundary(self.chunk_column) {
-            self.chunk[self.chunk_column..].chars().next().unwrap_or('\0')
+            self.chunk[self.chunk_column..]
+                .chars()
+                .next()
+                .unwrap_or('\0')
         } else {
             // Misaligned UTF-8 position (shouldn't normally happen).
             '\0'

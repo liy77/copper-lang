@@ -127,3 +127,30 @@ func String minify(s: &str) {
     if v_opt.is_none() { return String::new() }
     return serde_json::to_string(&v_opt.unwrap()).unwrap_or_default()
 }
+
+/// Parse a JSON string into a native `serde_json::Value` (`Null` on error).
+func serde_json::Value parse(s: &str) {
+    return serde_json::from_str::<serde_json::Value>(s).unwrap_or(serde_json::Value::Null)
+}
+
+/// Serialize a `serde_json::Value` to compact JSON text.
+func String stringify(v: &serde_json::Value) {
+    return serde_json::to_string(v).unwrap_or_default()
+}
+
+/// Serialize a `serde_json::Value` to pretty-printed JSON text.
+func String stringify_pretty(v: &serde_json::Value) {
+    return serde_json::to_string_pretty(v).unwrap_or_default()
+}
+
+/// Object keys at `path` (empty vector if missing or not an object).
+func Vec<String> keys(s: &str, path: &str) {
+    mut frag_opt = locate(s, path)
+    if frag_opt.is_none() { return Vec::new() }
+    mut frag = frag_opt.unwrap()
+    return match serde_json::from_str::<serde_json::Value>(&frag) {
+        Ok(serde_json::Value::Object(o)) => o.keys().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+

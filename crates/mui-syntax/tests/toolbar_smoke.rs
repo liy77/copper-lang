@@ -69,18 +69,27 @@ fn padding_left_for(toolbar_macos: bool) -> f32 {
 
     // Build the env as the runtime's build_reactive_env would.
     let mut env = ReactiveEnv::default();
-    env.signals.insert("is_macos".into(), if toolbar_macos { "1".into() } else { "0".into() });
+    env.signals.insert(
+        "is_macos".into(),
+        if toolbar_macos {
+            "1".into()
+        } else {
+            "0".into()
+        },
+    );
 
     // The exact call the runtime makes for paddingLeft.
-    let (l, _t, _r, _b) =
-        box_spacing_reactive(stack, "padding", Some(&env)).expect("padding set");
+    let (l, _t, _r, _b) = box_spacing_reactive(stack, "padding", Some(&env)).expect("padding set");
     l
 }
 
 #[test]
 fn toolbar_padding_left_is_80_on_macos() {
     let l = padding_left_for(true);
-    assert_eq!(l, 80.0, "macOS: paddingLeft must be 80.0 to clear traffic-lights");
+    assert_eq!(
+        l, 80.0,
+        "macOS: paddingLeft must be 80.0 to clear traffic-lights"
+    );
 }
 
 #[test]

@@ -37,8 +37,7 @@ pub fn expr_to_rust(
             Some(SigKind::Int) => Ok(format!("{}.borrow().get()", sig_var(name))),
             Some(SigKind::Str) => Ok(format!("{}.borrow().get()", sig_var(name))),
             Some(SigKind::List) => Ok(format!("{}.borrow().clone()", sig_var(name))),
-            None => env(name)
-                .ok_or_else(|| format!("unknown name `{name}` in control-flow expr")),
+            None => env(name).ok_or_else(|| format!("unknown name `{name}` in control-flow expr")),
         },
         ExprKind::Unary { op, expr } => {
             let inner = expr_to_rust(expr, sig, env)?;
@@ -108,10 +107,7 @@ pub fn expr_to_rust(
         } => {
             let s = expr_to_rust(start, sig, env)?;
             let en = expr_to_rust(end, sig, env)?;
-            Ok(format!(
-                "({s}..{}{en})",
-                if *inclusive { "=" } else { "" }
-            ))
+            Ok(format!("({s}..{}{en})", if *inclusive { "=" } else { "" }))
         }
         other => Err(format!(
             "unsupported expression {other:?} in control-flow position"

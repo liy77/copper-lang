@@ -281,6 +281,19 @@ impl Parser {
         // `mut (a, b) = expr` → `let (mut a, mut b) = expr`
         if self.peek_kind() == Some(TokenKind::ParenthesesStart) {
             if let Some((pattern, total)) = self.scan_tuple_destructure(self.current + 1, true) {
+                for part in pattern.split(',') {
+                    let clean = part
+                        .trim()
+                        .trim_start_matches('(')
+                        .trim_end_matches(')')
+                        .trim();
+                    if let Some(name) = clean.strip_prefix("mut ") {
+                        let name = name.trim();
+                        if !name.is_empty() && name != "_" {
+                            self.fn_locals.insert(name.to_string());
+                        }
+                    }
+                }
                 // total includes `(` through `=`; add 1 for leading `mut`
                 self.append(&format!("let ({pattern}) ="), AppendMode::AppendWithSpace);
                 return Consumed::consume((total + 1) as isize);
@@ -303,10 +316,7 @@ impl Parser {
             // `mut name = …` — emit `let mut name` and leave `=` for the
             // normal operator path (so reassignment tracking sees the local).
             // Also covers `mut name: Type` / bare `mut name`.
-            self.append(
-                &format!("let mut {name}"),
-                AppendMode::AppendWithSpace,
-            );
+            self.append(&format!("let mut {name}"), AppendMode::AppendWithSpace);
             return Consumed::consume(2);
         }
 
@@ -409,8 +419,63 @@ impl Parser {
         let Some((pattern, total)) = self.scan_tuple_destructure(self.current, false) else {
             return Consumed::consume(0);
         };
+        for part in pattern.split(',') {
+            let clean = part
+                .trim()
+                .trim_start_matches('(')
+                .trim_end_matches(')')
+                .trim();
+            if let Some(name) = clean.strip_prefix("mut ") {
+                let name = name.trim();
+                if !name.is_empty() && name != "_" {
+                    self.fn_locals.insert(name.to_string());
+                }
+            }
+        }
         self.append(&format!("let ({pattern}) ="), AppendMode::AppendWithSpace);
         Consumed::consume(total as isize)
+    }
+
+    /// True if the `{` or `[` at `idx` opens a JSON object/array literal
+    /// (`{ "key": val }` or `[{ "key": val }]`) rather than a Rust block or
+    /// typed Vec literal (`[1, 2, 3]`).
+    fn is_json_literal_at(&self, idx: usize) -> bool {
+        let Some(open) = self.select(idx) else {
+            return false;
+        };
+        let mut k = idx + 1;
+        while let Some(t) = self.select(k) {
+            if matches!(
+                t.kind,
+                TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment
+            ) {
+                k += 1;
+                continue;
+            }
+            if open.kind == TokenKind::BraceStart {
+                if t.kind == TokenKind::String {
+                    let mut m = k + 1;
+                    while let Some(nt) = self.select(m) {
+                        if matches!(
+                            nt.kind,
+                            TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment
+                        ) {
+                            m += 1;
+                            continue;
+                        }
+                        return nt.kind == TokenKind::Colon || nt.value == ":";
+                    }
+                }
+                return false;
+            } else if open.kind == TokenKind::BracketStart {
+                if t.kind == TokenKind::BraceStart {
+                    return self.is_json_literal_at(k);
+                }
+                return false;
+            }
+            break;
+        }
+        false
     }
 
     pub fn parse_var(&mut self) -> Consumed {
@@ -472,13 +537,11 @@ impl Parser {
                 if var_value.value != "=" {
                     let var_name = self.value();
 
-                    // Check if next token (after =) is { or [
-                    if var_value.kind == TokenKind::BraceStart
-                        || var_value.kind == TokenKind::BracketStart
+                    // Check if next token (after =) is a JSON object `{ "k": v }` or JSON array `[{ "k": v }]`
+                    if (var_value.kind == TokenKind::BraceStart
+                        || var_value.kind == TokenKind::BracketStart)
+                        && self.is_json_literal_at(self.current + 2)
                     {
-                        // Debug: show what type of token was detected
-                        // JSON detected var_value.kind, var_value.value);
-
                         // This is a JSON object or array!
                         consumed += 3; // identifier + = + { or [
 
@@ -634,14 +697,15 @@ impl Parser {
                         }
                         self.append("\n", AppendMode::Append);
                     } else {
-                        // Normal variable / reassignment. First `name =` in the
-                        // function declares; a later one assigns (no `let`), so
-                        // `mut x = 0` + `x = 1` no longer shadows.
+                        // Normal variable / reassignment. Only `mut` locals (and
+                        // function parameters) are registered in `fn_locals` so
+                        // `mut x = 0` + `x = 1` reassigns without `let`, while
+                        // immutable `x = ...` in separate `if`/`else` branches
+                        // each get their own `let x = `.
                         consumed += 2;
                         if self.fn_locals.contains(var_name.as_str()) {
                             self.append(&format!("{} = ", var_name), AppendMode::AppendWithSpace);
                         } else {
-                            self.fn_locals.insert(var_name.clone());
                             self.append(
                                 &format!("let {} = ", var_name),
                                 AppendMode::AppendWithSpace,
@@ -885,7 +949,7 @@ impl Parser {
         // enum, const, …) fall through to the spaced-keyword emit below.
         if token_value == "pub" {
             let item_follows = match self.peek().map(|t| t.value.as_str()) {
-                Some("func") | Some("struct") => true,
+                Some("func") | Some("struct") | Some("class") => true,
                 Some("unsafe") => self
                     .select(self.current + 2)
                     .map(|t| t.value == "func")
@@ -896,6 +960,13 @@ impl Parser {
                 self.pending_pub = true;
                 return Consumed::consume(1);
             }
+        }
+
+        if token_value == "serde_json"
+            || (token_value == "json" && self.peek_value().as_deref() == Some("!"))
+        {
+            self.uses_data_types = true;
+            self.result.mark_json_usage();
         }
 
         for (copper, rust) in RUST_MACROS.iter() {
@@ -1404,10 +1475,8 @@ impl Parser {
                     if root == "http" || root == "json" {
                         self.result.mark_json_usage();
                     }
-                } else if !matches!(
-                    root,
-                    "std" | "core" | "alloc" | "crate" | "self" | "super"
-                ) && !module.contains("::")
+                } else if !matches!(root, "std" | "core" | "alloc" | "crate" | "self" | "super")
+                    && !module.contains("::")
                 {
                     // A bare `from <crate>` that isn't std/cstd is a candidate
                     // external dependency. cforge drops it later if it turns out
@@ -1472,7 +1541,10 @@ impl Parser {
         }
         // Already a Rust-style path.
         if p.contains("::")
-            || matches!(p.as_str(), "crate" | "super" | "self" | "std" | "core" | "alloc" | "cstd")
+            || matches!(
+                p.as_str(),
+                "crate" | "super" | "self" | "std" | "core" | "alloc" | "cstd"
+            )
             || (!p.contains('/') && !p.contains('\\') && !p.starts_with('.'))
         {
             return p.replace('\\', "/");
@@ -1487,8 +1559,7 @@ impl Parser {
                 if let Some(root) = project_root {
                     let joined = base.join(&norm);
                     // Prefer real filesystem resolution when paths exist.
-                    if let (Ok(root_c), Ok(joined_c)) =
-                        (root.canonicalize(), joined.canonicalize())
+                    if let (Ok(root_c), Ok(joined_c)) = (root.canonicalize(), joined.canonicalize())
                     {
                         if let Ok(rel) = joined_c.strip_prefix(&root_c) {
                             let segs: Vec<String> = rel
@@ -1567,7 +1638,7 @@ impl Parser {
     }
 
     pub fn parse_class_definition(&mut self) -> Consumed {
-        // Detects "class Name { ... }"
+        // Detects "class Name ..."
         if self.value() == "class" && self.kind() == TokenKind::Keyword {
             let mut consumed = 1;
 
@@ -1581,8 +1652,23 @@ impl Parser {
             } else {
                 return Consumed::consume(0);
             };
-            self.current_class = Some(class_name.clone());
-            self.is_inside_class = true;
+
+            // If this class has generics `<...>`, is a tuple class `class Foo(...)`,
+            // or a unit class `class Foo;`, delegate to `parse_struct_or_class_fields(true)`.
+            if let Some(next_tok) = self.select(self.current + consumed) {
+                let is_generic = next_tok.kind == TokenKind::AngleStart
+                    || (next_tok.kind == TokenKind::Operator && next_tok.value == "<");
+                let is_tuple_or_unit = matches!(
+                    next_tok.kind,
+                    TokenKind::ParenthesesStart
+                        | TokenKind::ParametersStart
+                        | TokenKind::Semicolon
+                        | TokenKind::Newline
+                );
+                if is_generic || is_tuple_or_unit {
+                    return self.parse_struct_or_class_fields(true);
+                }
+            }
 
             let mut brace_count = 0;
             let mut class_tokens = Vec::new();
@@ -1609,6 +1695,29 @@ impl Parser {
                     break;
                 }
             }
+
+            // Check whether `class_tokens` contains an inline constructor `ClassName(...)`
+            // or inline method `RetType method_name(...) { ... }`. If not (it is a
+            // field-only class), delegate to `parse_struct_or_class_fields(true)` so
+            // complex field types (`Vec<T>`, `Option<...>`, `pub`, etc.) and external
+            // `#[derive(...)]` attributes work identically to `struct` (with `pub` by default).
+            let has_inline_ctor_or_methods = {
+                let inner = if class_tokens.len() >= 2 {
+                    &class_tokens[1..class_tokens.len() - 1]
+                } else {
+                    &[][..]
+                };
+                inner.windows(2).any(|w| {
+                    w[0].kind == TokenKind::Identifier && w[1].kind == TokenKind::ParenthesesStart
+                })
+            };
+            if !has_inline_ctor_or_methods {
+                return self.parse_struct_or_class_fields(true);
+            }
+
+            self.current_class = Some(class_name.clone());
+            self.is_inside_class = true;
+            self.pending_pub = false;
 
             // Processes members and appends the generated Rust code at MODULE
             // level (like structs/functions) — not inside main() — so sibling
@@ -1681,9 +1790,9 @@ impl Parser {
         } else {
             output.push_str("#[derive(Clone, Debug)]\n");
         }
-        output.push_str(&format!("struct {} {{\n", class_name));
+        output.push_str(&format!("pub struct {} {{\n", class_name));
         for (n, t) in &rust_fields {
-            output.push_str(&format!("    {}: {},\n", n, t));
+            output.push_str(&format!("    pub {}: {},\n", n, t));
         }
         output.push_str("}\n\n");
 
@@ -1971,10 +2080,7 @@ impl Parser {
                 }
             };
             if rust_type == "()" {
-                output.push_str(&format!(
-                    "    pub fn {}({}) {{\n",
-                    name_t.value, receivers
-                ));
+                output.push_str(&format!("    pub fn {}({}) {{\n", name_t.value, receivers));
             } else {
                 output.push_str(&format!(
                     "    pub fn {}({}) -> {} {{\n",
@@ -2017,6 +2123,13 @@ impl Parser {
     // Parses native struct definition
     pub fn parse_struct_definition(&mut self) -> Consumed {
         if self.value() == "struct" && self.kind() == TokenKind::Struct {
+            return self.parse_struct_or_class_fields(false);
+        }
+        Consumed::consume(0)
+    }
+
+    fn parse_struct_or_class_fields(&mut self, is_class: bool) -> Consumed {
+        {
             let mut consumed = 1;
 
             let struct_name = if let Some(tok) = self.select(self.current + consumed) {
@@ -2033,11 +2146,7 @@ impl Parser {
             self.current_struct = Some(struct_name.clone());
             self.is_inside_struct = true;
 
-            // Generic parameter list `<T, U, ...>`. The tokenizer may emit the
-            // brackets either as AngleStart/AngleEnd or — because the
-            // comparison-operator rule fires first — as Operator("<") /
-            // Operator(">"). Accept both, and track `<` depth so nested
-            // generics (`<Vec<T>>`) and multiple params close correctly.
+            // Generic parameter list `<T, U, ...>`.
             let mut generics = String::new();
             let opens_generics = matches!(
                 self.select(self.current + consumed),
@@ -2072,14 +2181,84 @@ impl Parser {
                 }
             }
 
-            let vis = if self.pending_pub {
+            let vis = if self.pending_pub || is_class {
                 self.pending_pub = false;
                 "pub "
             } else {
                 ""
             };
+            let field_vis = if is_class { "pub " } else { "" };
+
+            // Tuple struct/class (`class NodeId(pub u64);` or `struct Pair(i32, i32)`)
+            // or unit struct/class (`class Empty;`).
+            if let Some(next_tok) = self.select(self.current + consumed) {
+                if matches!(
+                    next_tok.kind,
+                    TokenKind::ParenthesesStart | TokenKind::ParametersStart
+                ) {
+                    consumed += 1;
+                    let mut pdepth = 1usize;
+                    let mut inner_tuple = String::new();
+                    while let Some(tok) = self.select(self.current + consumed) {
+                        consumed += 1;
+                        match tok.kind {
+                            TokenKind::ParenthesesStart | TokenKind::ParametersStart => {
+                                pdepth += 1;
+                                inner_tuple.push('(');
+                            }
+                            TokenKind::ParenthesesEnd | TokenKind::ParametersEnd => {
+                                pdepth -= 1;
+                                if pdepth == 0 {
+                                    break;
+                                }
+                                inner_tuple.push(')');
+                            }
+                            TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment => {}
+                            _ => {
+                                if tok.value == "pub" || tok.value == "public" {
+                                    inner_tuple.push_str("pub ");
+                                } else {
+                                    let (conv, _) = utils::convert_type_with_marking(&tok.value);
+                                    inner_tuple.push_str(&conv);
+                                    if tok.value == "," {
+                                        inner_tuple.push(' ');
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(semi) = self.select(self.current + consumed) {
+                        if semi.kind == TokenKind::Semicolon || semi.value == ";" {
+                            consumed += 1;
+                        }
+                    }
+                    self.append(
+                        &format!(
+                            "{}struct {}{}({});\n",
+                            vis,
+                            struct_name,
+                            generics,
+                            inner_tuple.trim()
+                        ),
+                        AppendMode::ForceAppendWithSpace,
+                    );
+                    self.is_inside_struct = false;
+                    self.current_struct = None;
+                    return Consumed::consume(consumed as isize);
+                } else if next_tok.kind == TokenKind::Semicolon || next_tok.value == ";" {
+                    consumed += 1;
+                    self.append(
+                        &format!("{}struct {}{};\n", vis, struct_name, generics),
+                        AppendMode::ForceAppendWithSpace,
+                    );
+                    self.is_inside_struct = false;
+                    self.current_struct = None;
+                    return Consumed::consume(consumed as isize);
+                }
+            }
+
             self.append(
-                &format!("{}struct {}{} {{", vis, struct_name, generics),
+                &format!("{}struct {}{} {{\n", vis, struct_name, generics),
                 AppendMode::ForceAppendWithSpace,
             );
 
@@ -2095,30 +2274,26 @@ impl Parser {
             let mut brace_count = 1;
             let mut current_field = String::new();
             let mut in_field_name = true;
-            // True once the type part of the current field has been emitted.
-            // A following name-token (Identifier in name position) then starts a
-            // NEW field even with no comma/newline separator (e.g. same-line
-            // `x: int  y: int`); without this the fields fuse into `x:i64y:`.
             let mut seen_type = false;
 
-            // For reflect codegen: ordered field names of this struct. A struct
-            // with generic params is skipped (its `impl reflect::Reflect` would
-            // need generic bounds — out of MVP scope).
             let mut reflect_fields: Vec<String> = Vec::new();
             let has_generics = !generics.is_empty();
-
-            // Nesting depth inside the CURRENT field's type, counting
-            // `<`/`(`/`[` opens. While > 0 we are inside a generic/tuple/array
-            // type (`Vec<(String, int)>`): a `,` is a tuple/generic-arg
-            // separator (not a field boundary) and an identifier is a type
-            // component (not a new field name). Without this the field flush
-            // mis-fires inside the type, yielding `Vec<(, String, int)>`.
             let mut type_depth = 0usize;
+
+            let fmt_field = |f: &str| -> String {
+                let t = f.trim();
+                if t.starts_with("pub ") || field_vis.is_empty() {
+                    format!("    {},\n", t)
+                } else {
+                    format!("    {}{},\n", field_vis, t)
+                }
+            };
 
             while brace_count > 0 && consumed < self.tokens.len() - self.current {
                 if let Some(tok) = self.select(self.current + consumed) {
                     consumed += 1;
                     match tok.kind {
+                        TokenKind::Comment | TokenKind::DocComment => {}
                         TokenKind::BraceStart => brace_count += 1,
                         TokenKind::BraceEnd => {
                             brace_count -= 1;
@@ -2128,20 +2303,18 @@ impl Parser {
                                         reflect_fields.push(name);
                                     }
                                     self.append(
-                                        &format!("    {},", current_field.trim()),
+                                        &fmt_field(&current_field),
                                         AppendMode::ForceAppendWithSpace,
                                     );
                                 }
                                 break;
                             }
                         }
+                        TokenKind::Keyword if tok.value == "pub" && in_field_name => {
+                            current_field.push_str("pub ");
+                        }
                         TokenKind::Identifier => {
                             let ident_value = tok.value.clone();
-                            // A name-position Identifier arriving after the
-                            // current field's type was emitted (no comma/newline
-                            // between) starts a NEW field on the same line. Flush
-                            // the complete field first, then read this token as
-                            // the new field name.
                             if type_depth == 0
                                 && !in_field_name
                                 && seen_type
@@ -2151,7 +2324,7 @@ impl Parser {
                                     reflect_fields.push(name);
                                 }
                                 self.append(
-                                    &format!("    {},", current_field.trim()),
+                                    &fmt_field(&current_field),
                                     AppendMode::ForceAppendWithSpace,
                                 );
                                 current_field.clear();
@@ -2159,15 +2332,13 @@ impl Parser {
                                 seen_type = false;
                             }
                             if in_field_name {
-                                current_field = ident_value;
+                                current_field.push_str(&ident_value);
                                 in_field_name = false;
                             } else {
-                                // This is a type
                                 seen_type = true;
                                 let (converted_type, data_type) =
                                     utils::convert_type_with_marking(&ident_value);
 
-                                // Mark data type usage for struct fields
                                 if let Some(dt) = data_type {
                                     self.uses_data_types = true;
                                     match dt.as_str() {
@@ -2181,11 +2352,6 @@ impl Parser {
                                 current_field.push_str(&converted_type);
                             }
                         }
-                        // The `:` separator may arrive as a dedicated `Colon`
-                        // token or — depending on the surrounding tokens — as
-                        // an `Operator(":")`. Treat both as the name→type
-                        // boundary: reset `seen_type` so the type that follows
-                        // is recognised.
                         TokenKind::Colon => {
                             current_field.push_str(": ");
                             seen_type = false;
@@ -2203,7 +2369,6 @@ impl Parser {
                             let (converted_type, data_type) =
                                 utils::convert_type_with_marking(&tok.value);
 
-                            // Mark data type usage for struct/param types
                             if let Some(dt) = data_type {
                                 self.uses_data_types = true;
                                 match dt.as_str() {
@@ -2215,29 +2380,11 @@ impl Parser {
                             }
 
                             current_field.push_str(&converted_type);
-
-                            // Note: We don't mark data types usage just by declaring them in structs
-                            // We'll only mark when actually using the types in operations
-                            // match tok.kind {
-                            //     TokenKind::Json => {
-                            //         self.uses_data_types = true;
-                            //         self.result.mark_json_usage();
-                            //     },
-                            //     TokenKind::Xml => {
-                            //         self.uses_data_types = true;
-                            //         self.result.mark_xml_usage();
-                            //     },
-                            //     TokenKind::Toml => {
-                            //         self.uses_data_types = true;
-                            //         self.result.mark_toml_usage();
-                            //     },
-                            //     _ => {}
-                            // }
                         }
-                        // Track nesting of the current field's type so commas
-                        // and identifiers inside `<...>`/`(...)`/`[...]` are not
-                        // mistaken for field boundaries. `<`/`>` arrive as
-                        // Operator tokens; parens/brackets as their own kinds.
+                        TokenKind::Lifetime => {
+                            current_field.push_str(&tok.value);
+                            current_field.push(' ');
+                        }
                         TokenKind::Operator if tok.value == "<" => {
                             type_depth += 1;
                             current_field.push('<');
@@ -2246,11 +2393,11 @@ impl Parser {
                             type_depth = type_depth.saturating_sub(1);
                             current_field.push('>');
                         }
-                        TokenKind::ParenthesesStart => {
+                        TokenKind::ParenthesesStart | TokenKind::ParametersStart => {
                             type_depth += 1;
                             current_field.push('(');
                         }
-                        TokenKind::ParenthesesEnd => {
+                        TokenKind::ParenthesesEnd | TokenKind::ParametersEnd => {
                             type_depth = type_depth.saturating_sub(1);
                             current_field.push(')');
                         }
@@ -2264,15 +2411,13 @@ impl Parser {
                         }
                         TokenKind::Comma => {
                             if type_depth > 0 {
-                                // Separator inside a tuple/generic field type
-                                // (`Vec<(String, int)>`) — not a field boundary.
                                 current_field.push_str(", ");
                             } else if !current_field.trim().is_empty() {
                                 if let Some(name) = Self::reflect_field_name(&current_field) {
                                     reflect_fields.push(name);
                                 }
                                 self.append(
-                                    &format!("    {},", current_field.trim()),
+                                    &fmt_field(&current_field),
                                     AppendMode::ForceAppendWithSpace,
                                 );
                                 current_field.clear();
@@ -2281,20 +2426,13 @@ impl Parser {
                             }
                         }
                         TokenKind::Newline => {
-                            // A newline separates struct fields in Copper
-                            // (`first: T` / `second: T` on their own lines, no
-                            // comma). Flush the accumulated field — without
-                            // this, consecutive fields fuse into
-                            // `first: Tsecond: T`. Only flush once a field is
-                            // complete (name + type seen); a blank line or the
-                            // newline right after `{` leaves nothing to emit.
                             if type_depth == 0 && !in_field_name && !current_field.trim().is_empty()
                             {
                                 if let Some(name) = Self::reflect_field_name(&current_field) {
                                     reflect_fields.push(name);
                                 }
                                 self.append(
-                                    &format!("    {},", current_field.trim()),
+                                    &fmt_field(&current_field),
                                     AppendMode::ForceAppendWithSpace,
                                 );
                                 current_field.clear();
@@ -2304,15 +2442,15 @@ impl Parser {
                         }
                         _ => {
                             if !tok.value.trim().is_empty() && tok.value != " " {
-                                // Type content that the dedicated arms above
-                                // didn't catch — most notably a primitive-type
-                                // keyword like `bool` (tokenized as `Keyword`).
-                                // Mark the type as seen so a following bare
-                                // field name flushes (`done: bool  priority:`).
                                 if !in_field_name && current_field.contains(':') {
                                     seen_type = true;
                                 }
-                                current_field.push_str(&tok.value);
+                                if tok.value == "mut" || tok.value == "dyn" {
+                                    current_field.push_str(&tok.value);
+                                    current_field.push(' ');
+                                } else {
+                                    current_field.push_str(&tok.value);
+                                }
                             }
                         }
                     }
@@ -2331,10 +2469,8 @@ impl Parser {
                     .record_reflect_struct(&struct_name, reflect_fields);
             }
 
-            return Consumed::consume(consumed.try_into().unwrap());
+            Consumed::consume(consumed.try_into().unwrap())
         }
-
-        Consumed::consume(0)
     }
 
     /// Extract the bare field name from an accumulated `current_field`
@@ -2978,10 +3114,10 @@ impl Parser {
                     let visibility = if is_pub { "pub " } else { "" };
                     let param_str = params.join(", ");
                     let sig = if return_type == "()" {
-                        format!("    {}fn {}({}) {{", visibility, method_name, param_str)
+                        format!("    {}fn {}({}) {{\n", visibility, method_name, param_str)
                     } else {
                         format!(
-                            "    {}fn {}({}) -> {} {{",
+                            "    {}fn {}({}) -> {} {{\n",
                             visibility, method_name, param_str, return_type
                         )
                     };
@@ -2989,7 +3125,7 @@ impl Parser {
                     if !body_str.is_empty() {
                         self.append(&body_str, AppendMode::ForceAppendWithSpace);
                     }
-                    self.append("    }", AppendMode::ForceAppendWithSpace);
+                    self.append("\n    }\n", AppendMode::ForceAppendWithSpace);
 
                     i = body_end;
                 } else {
@@ -3196,7 +3332,7 @@ impl Parser {
                     }
                     body.push('}');
                 }
-                TokenKind::Newline => {}
+                TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment => {}
                 _ => body.push_str(&t.value),
             }
         }
@@ -3291,7 +3427,7 @@ impl Parser {
                             }
                             params_src.push(')');
                         }
-                        TokenKind::Newline => {}
+                        TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment => {}
                         _ => params_src.push_str(&body_tokens[j].value),
                     }
                     j += 1;

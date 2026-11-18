@@ -89,7 +89,14 @@ fn parse_line(line: &str, line_off: usize) -> Option<ImportRef> {
         raw[..=end].to_string()
     } else {
         raw.chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':' || *c == '/' || *c == '.' || *c == '\\')
+            .take_while(|c| {
+                c.is_alphanumeric()
+                    || *c == '_'
+                    || *c == ':'
+                    || *c == '/'
+                    || *c == '.'
+                    || *c == '\\'
+            })
             .collect()
     };
     if module.is_empty() {

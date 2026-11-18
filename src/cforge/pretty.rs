@@ -35,6 +35,11 @@ fn color() -> bool {
     std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
 }
 
+/// True when stdout is an interactive terminal (animations + ANSI allowed).
+pub fn is_tty() -> bool {
+    color()
+}
+
 fn unicode() -> bool {
     // Best-effort: assume UTF-8 on a TTY; cforge already prints emoji elsewhere.
     std::io::stdout().is_terminal()
@@ -317,4 +322,179 @@ impl Drop for Spinner {
             }
         }
     }
+}
+
+// ---- live cargo build progress ----
+
+/// Shared state for [`BuildProgress`], updated by cargo stdout/stderr reader threads.
+#[derive(Default)]
+pub struct BuildProgressState {
+    pub done: usize,
+    pub total: Option<usize>,
+    pub started: usize,
+    pub active: Vec<String>,
+    pub status: String,
+    pub errors: usize,
+    pub build_failed: bool,
+}
+
+/// Animated cargo build progress bar + spinner + active crate list + elapsed timer.
+/// Falls back to concise discrete log lines when stdout is not a TTY.
+pub struct BuildProgress {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+    state: Arc<Mutex<BuildProgressState>>,
+    started_at: std::time::Instant,
+    animated: bool,
+}
+
+impl BuildProgress {
+    pub fn start(initial_status: &str) -> Self {
+        let animated = color();
+        let started_at = std::time::Instant::now();
+        let state = Arc::new(Mutex::new(BuildProgressState {
+            status: initial_status.to_string(),
+            ..Default::default()
+        }));
+
+        if !animated {
+            step(initial_status);
+            return Self {
+                stop: Arc::new(AtomicBool::new(true)),
+                handle: None,
+                state,
+                started_at,
+                animated,
+            };
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_t = stop.clone();
+        let state_t = state.clone();
+        let handle = std::thread::spawn(move || {
+            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut i = 0usize;
+            while !stop_t.load(Ordering::Relaxed) {
+                let f = frames[i % frames.len()];
+                let line = if let Ok(s) = state_t.lock() {
+                    format_progress_line(f, &s, started_at.elapsed())
+                } else {
+                    String::new()
+                };
+                print!("\r\x1b[2K{line}");
+                let _ = std::io::stdout().flush();
+                i += 1;
+                std::thread::sleep(Duration::from_millis(80));
+            }
+        });
+
+        Self {
+            stop,
+            handle: Some(handle),
+            state,
+            started_at,
+            animated,
+        }
+    }
+
+    pub fn state_handle(&self) -> Arc<Mutex<BuildProgressState>> {
+        self.state.clone()
+    }
+
+    pub fn is_animated(&self) -> bool {
+        self.animated
+    }
+
+    fn stop_thread(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+        if self.animated {
+            print!("\r\x1b[2K");
+            let _ = std::io::stdout().flush();
+        }
+    }
+
+    pub fn done(mut self, msg: &str) {
+        let elapsed = format_elapsed(self.started_at.elapsed());
+        self.stop_thread();
+        ok(&format!("{msg} {}", dim(&format!("({elapsed})"))));
+    }
+
+    pub fn fail(mut self, msg: &str) {
+        let elapsed = format_elapsed(self.started_at.elapsed());
+        self.stop_thread();
+        fail(&format!("{msg} {}", dim(&format!("({elapsed})"))));
+    }
+}
+
+impl Drop for BuildProgress {
+    fn drop(&mut self) {
+        if self.handle.is_some() {
+            self.stop_thread();
+        }
+    }
+}
+
+fn format_elapsed(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        if secs < 10 && d.subsec_millis() >= 100 && secs > 0 {
+            format!("{:.1}s", d.as_secs_f64())
+        } else {
+            format!("{secs}s")
+        }
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
+}
+
+fn format_progress_line(frame: &str, s: &BuildProgressState, elapsed: Duration) -> String {
+    let spin = if s.build_failed || s.errors > 0 {
+        frame.red().bold().to_string()
+    } else {
+        frame.truecolor(255, 135, 0).to_string()
+    };
+
+    let denom = s.total.unwrap_or(s.started).max(s.done);
+    let bar_part = if denom > 0 {
+        let width = 18usize;
+        let cur = s.done.min(denom);
+        let filled = width * cur / denom;
+        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(width - filled));
+        let colored_bar = if s.build_failed || s.errors > 0 {
+            bar.red().to_string()
+        } else {
+            bar.truecolor(255, 135, 0).to_string()
+        };
+        format!("[{colored_bar}] {cur}/{denom} ")
+    } else {
+        String::new()
+    };
+
+    let detail = if s.build_failed {
+        "build failed, waiting for other jobs".red().to_string()
+    } else if !s.active.is_empty() {
+        let shown: Vec<&str> = s.active.iter().take(2).map(String::as_str).collect();
+        let extra = if s.active.len() > 2 {
+            format!(" +{}", s.active.len() - 2)
+        } else {
+            String::new()
+        };
+        format!("compiling {}{}", shown.join(", "), dim(&extra))
+    } else if !s.status.is_empty() {
+        s.status.clone()
+    } else {
+        "building".to_string()
+    };
+
+    let err_part = if s.errors > 0 {
+        format!(" {}", format!("✗ {} err", s.errors).red().bold())
+    } else {
+        String::new()
+    };
+
+    let time_part = dim(&format!("({})", format_elapsed(elapsed)));
+    format!("{spin} {bar_part}{detail}{err_part} {time_part}")
 }

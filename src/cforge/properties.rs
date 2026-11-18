@@ -1,6 +1,7 @@
 use colored::Colorize;
 use once_cell::sync::Lazy;
 use serde_json::Value;
+use std::path::Path;
 
 use crate::{
     cargo,
@@ -45,23 +46,26 @@ enum MapDepMode {
 }
 
 pub struct Dependency {
-    name: String,
-    version: String,
-    features: Vec<String>,
-    kind: DepKind,
-    git: Option<String>,
-    branch: Option<String>,
-    tag: Option<String>,
-    /// Local path dependency (`{ path = "..." }`) — used for the per-module
-    /// std crates under `__copper__/std/<name>/`.
-    path: Option<String>,
+    pub name: String,
+    pub version: String,
+    pub features: Vec<String>,
+    pub kind: DepKind,
+    pub git: Option<String>,
+    pub branch: Option<String>,
+    pub tag: Option<String>,
+    /// Local path dependency (`{ path = "..." }`).
+    pub path: Option<String>,
 }
 
 pub struct Properties<'a> {
-    name: &'a str,
-    version: &'a str,
-    edition: u64,
-    dependencies: Vec<Dependency>,
+    pub name: &'a str,
+    pub version: &'a str,
+    pub edition: u64,
+    pub kind: String,
+    pub bin_name: Option<String>,
+    pub lib_name: Option<String>,
+    pub lto: Option<bool>,
+    pub dependencies: Vec<Dependency>,
 }
 
 const METADATA: Lazy<cargo::Metadata> = Lazy::new(|| {
@@ -69,21 +73,60 @@ const METADATA: Lazy<cargo::Metadata> = Lazy::new(|| {
     extractor.fetch_metadata()
 });
 
+/// Normalize a path dependency relative to the project root so that Cargo
+/// running inside `dist/rust/` can resolve it reliably. If the target directory
+/// is itself a Copper package (`properties.kson` with a `dist/rust` output),
+/// point to its `dist/rust` crate directory.
+fn normalize_dep_path(raw_path: &str) -> String {
+    normalize_dep_path_in_dir(raw_path, &std::env::current_dir().unwrap_or_default())
+}
+
+fn normalize_dep_path_in_dir(raw_path: &str, base_dir: &Path) -> String {
+    let p = Path::new(raw_path);
+    // Built-in std crate paths (`__copper__/std/...`) are already relative to `dist/rust`.
+    if raw_path.starts_with("__copper__/") {
+        return raw_path.to_string();
+    }
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base_dir.join(p)
+    };
+    let canon = abs.canonicalize().unwrap_or(abs);
+    // If target is a pure Copper package (has `properties.kson` and no `Cargo.toml`),
+    // ensure it is transpiled and point Cargo to its `dist/rust` directory.
+    let target = if canon.join("properties.kson").exists() && !canon.join("Cargo.toml").exists() {
+        crate::cforge::ensure_copper_dep_built(&canon);
+        canon.join("dist").join("rust")
+    } else {
+        canon
+    };
+    let s = target.to_string_lossy().replace('\\', "/");
+    s.strip_prefix("//?/").unwrap_or(&s).to_string()
+}
+
 // Map dependencies from properties.kson to Cargo.toml
-async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepMode) {
-    let deps = deps.as_object().unwrap();
+async fn map_deps<'a>(
+    props: &mut Properties<'a>,
+    deps: &'a Value,
+    mode: MapDepMode,
+    base_dir: &Path,
+) {
+    let Some(deps) = deps.as_object() else {
+        return;
+    };
 
     let kind = match mode {
         MapDepMode::Normal => {
-            println!("📩 Installing normal dependencies");
+            vprint!("📩 Installing normal dependencies");
             (DepKind::NormalOnlyVersion, DepKind::NormalJson)
         }
         MapDepMode::Dev => {
-            println!("🧑‍💻 Installing dev dependencies");
+            vprint!("🧑‍💻 Installing dev dependencies");
             (DepKind::DevOnlyVersion, DepKind::DevJson)
         }
         MapDepMode::Build => {
-            println!("🔨 Installing build dependencies");
+            vprint!("🔨 Installing build dependencies");
             (DepKind::BuildOnlyVersion, DepKind::BuildJson)
         }
     };
@@ -96,8 +139,23 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
         );
 
         if value.is_string() {
-            // Simple version dependency
             let version = value.as_str().unwrap().trim_matches('"').to_string();
+
+            if let Some(p) = version.strip_prefix("path:") {
+                let norm = normalize_dep_path_in_dir(p.trim(), base_dir);
+                props.dependencies.push(Dependency {
+                    name: name.to_string(),
+                    version: "0.1.0".to_string(),
+                    features: Vec::new(),
+                    kind: kind.0,
+                    git: None,
+                    branch: None,
+                    tag: None,
+                    path: Some(norm.clone()),
+                });
+                println!("📦 {} {} {}", name.green(), "=>".yellow(), norm.black());
+                continue;
+            }
 
             if !version.is_empty() && version != "*" && version != "latest" {
                 props.dependencies.push(Dependency {
@@ -157,26 +215,39 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
                 path: None,
             });
         } else if value.is_object() {
-            // Complex dependency (with git, features, etc.)
             let dep_obj = value.as_object().unwrap();
 
-            // Check if it's a git dependency
-            if let Some(git_url) = dep_obj.get("git").and_then(|v| v.as_str()) {
+            let features: Vec<String> = dep_obj
+                .get("features")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|f| f.as_str())
+                        .map(|s| s.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if let Some(path_str) = dep_obj.get("path").and_then(|v| v.as_str()) {
+                let norm = normalize_dep_path_in_dir(path_str, base_dir);
+                props.dependencies.push(Dependency {
+                    name: name.to_string(),
+                    version: "0.1.0".to_string(),
+                    features,
+                    kind: kind.1,
+                    git: None,
+                    branch: None,
+                    tag: None,
+                    path: Some(norm.clone()),
+                });
+                println!("📦 {} {} {}", name.green(), "=>".yellow(), norm.black());
+            } else if let Some(git_url) = dep_obj.get("git").and_then(|v| v.as_str()) {
                 println!("🔗 Git dependency found: {} => {}", name, git_url);
 
                 props.dependencies.push(Dependency {
                     name: name.to_string(),
-                    version: "0.1.0".to_string(), // Git dependencies don't need version
-                    features: dep_obj
-                        .get("features")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|f| f.as_str())
-                                .map(|s| s.to_string())
-                                .collect()
-                        })
-                        .unwrap_or_default(),
+                    version: "0.1.0".to_string(),
+                    features,
                     kind: kind.1,
                     git: Some(git_url.to_string()),
                     branch: dep_obj
@@ -192,28 +263,19 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
 
                 println!("✅ {} {} {}", name.green(), "=>".yellow(), git_url.black());
             } else if let Some(version) = dep_obj.get("version").and_then(|v| v.as_str()) {
-                // Regular dependency with version and possibly features
-                let (valid, v) = check_version_exists(name, version, None)
-                    .await
-                    .unwrap_or((false, version.to_string()));
+                let resolved_ver = if !version.is_empty() && version != "*" && version != "latest" {
+                    version.to_string()
+                } else {
+                    check_version_exists(name, version, None)
+                        .await
+                        .map(|(ok, v)| if ok { v } else { version.to_string() })
+                        .unwrap_or_else(|_| version.to_string())
+                };
 
                 props.dependencies.push(Dependency {
                     name: name.to_string(),
-                    version: if valid {
-                        v.clone()
-                    } else {
-                        version.to_string()
-                    },
-                    features: dep_obj
-                        .get("features")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|f| f.as_str())
-                                .map(|s| s.to_string())
-                                .collect()
-                        })
-                        .unwrap_or_default(),
+                    version: resolved_ver.clone(),
+                    features,
                     kind: kind.1,
                     git: None,
                     branch: None,
@@ -225,7 +287,7 @@ async fn map_deps<'a>(props: &mut Properties<'a>, deps: &'a Value, mode: MapDepM
                     "✅ {} {} {}",
                     name.green(),
                     "=>".yellow(),
-                    if valid { v } else { version.to_string() }.black()
+                    resolved_ver.black()
                 );
             }
         }
@@ -243,7 +305,11 @@ impl<'a> Properties<'a> {
         Self {
             name: "",
             version: "",
-            edition: 2018,
+            edition: 2021,
+            kind: "bin".to_string(),
+            bin_name: None,
+            lib_name: None,
+            lto: None,
             dependencies: Vec::new(),
         }
     }
@@ -265,12 +331,25 @@ impl<'a> Properties<'a> {
         let dev_deps = toml["dev-dependencies"].as_object();
         let build_deps = toml["build-dependencies"].as_object();
 
+        let cwd = std::env::current_dir().unwrap_or_default();
         if deps.is_some() {
-            map_deps(&mut properties, &toml["dependencies"], MapDepMode::Normal).await;
+            map_deps(
+                &mut properties,
+                &toml["dependencies"],
+                MapDepMode::Normal,
+                &cwd,
+            )
+            .await;
         }
 
         if dev_deps.is_some() {
-            map_deps(&mut properties, &toml["dev-dependencies"], MapDepMode::Dev).await;
+            map_deps(
+                &mut properties,
+                &toml["dev-dependencies"],
+                MapDepMode::Dev,
+                &cwd,
+            )
+            .await;
         }
 
         if build_deps.is_some() {
@@ -278,6 +357,7 @@ impl<'a> Properties<'a> {
                 &mut properties,
                 &toml["build-dependencies"],
                 MapDepMode::Build,
+                &cwd,
             )
             .await;
         }
@@ -286,35 +366,51 @@ impl<'a> Properties<'a> {
     }
 
     pub async fn from_kson(kson: &'a Value) -> Self {
-        let mut properties = Self::new();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        Self::from_kson_in_dir(kson, &cwd).await
+    }
 
-        vprint!(
-            "🔍 Debug: Full KSON JSON: {}",
-            serde_json::to_string_pretty(kson).unwrap()
-        );
+    pub async fn from_kson_in_dir(kson: &'a Value, base_dir: &Path) -> Self {
+        let mut properties = Self::new();
 
         validate!(properties, name, kson["name"].as_str());
         validate!(properties, version, kson["version"].as_str());
-        validate!(properties, edition, kson["edition"].as_u64());
+        properties.edition = kson["edition"].as_u64().unwrap_or(2021);
+        if let Some(k) = kson["kind"].as_str() {
+            properties.kind = k.to_string();
+        }
+        if let Some(bn) = kson["bin_name"].as_str() {
+            properties.bin_name = Some(bn.to_string());
+        }
+        if let Some(ln) = kson["lib_name"].as_str() {
+            properties.lib_name = Some(ln.to_string());
+        }
+        if let Some(lto) = kson["lto"].as_bool() {
+            properties.lto = Some(lto);
+        }
 
         let deps = kson["dependencies"].as_object();
         let dev_deps = kson["dev_dependencies"].as_object();
         let build_deps = kson["build_dependencies"].as_object();
 
-        vprint!("🔍 Debug: Dependencies found: {}", deps.is_some());
-        if let Some(deps_obj) = deps {
-            vprint!(
-                "🔍 Debug: Dependencies content: {}",
-                serde_json::to_string_pretty(deps_obj).unwrap()
-            );
-        }
-
         if deps.is_some() {
-            map_deps(&mut properties, &kson["dependencies"], MapDepMode::Normal).await;
+            map_deps(
+                &mut properties,
+                &kson["dependencies"],
+                MapDepMode::Normal,
+                base_dir,
+            )
+            .await;
         }
 
         if dev_deps.is_some() {
-            map_deps(&mut properties, &kson["dev_dependencies"], MapDepMode::Dev).await;
+            map_deps(
+                &mut properties,
+                &kson["dev_dependencies"],
+                MapDepMode::Dev,
+                base_dir,
+            )
+            .await;
         }
 
         if build_deps.is_some() {
@@ -322,6 +418,7 @@ impl<'a> Properties<'a> {
                 &mut properties,
                 &kson["build_dependencies"],
                 MapDepMode::Build,
+                base_dir,
             )
             .await;
         }
@@ -330,6 +427,9 @@ impl<'a> Properties<'a> {
     }
 
     pub async fn add_dependency(&mut self, name: &str, version: &str) {
+        if self.dependencies.iter().any(|d| d.name == name) {
+            return;
+        }
         let actual_version = if version == "latest" {
             let (valid, v) = check_version_exists(name, "*", None)
                 .await
@@ -354,16 +454,13 @@ impl<'a> Properties<'a> {
             path: None,
         };
 
-        // Check if dependency already exists
-        if !self.dependencies.iter().any(|d| d.name == name) {
-            self.dependencies.push(dep);
-            println!(
-                "✅ {} {} {}",
-                name.green(),
-                "=>".yellow(),
-                actual_version.black()
-            );
-        }
+        self.dependencies.push(dep);
+        println!(
+            "✅ {} {} {}",
+            name.green(),
+            "=>".yellow(),
+            actual_version.black()
+        );
     }
 
     /// Register a local path dependency: `name = { path = "<path>" }`.
@@ -371,6 +468,7 @@ impl<'a> Properties<'a> {
         if self.dependencies.iter().any(|d| d.name == name) {
             return;
         }
+        let norm = normalize_dep_path(path);
         self.dependencies.push(Dependency {
             name: name.to_string(),
             version: "0.1.0".to_string(),
@@ -379,9 +477,9 @@ impl<'a> Properties<'a> {
             git: None,
             branch: None,
             tag: None,
-            path: Some(path.to_string()),
+            path: Some(norm.clone()),
         });
-        println!("📦 {} {} {}", name.green(), "=>".yellow(), path.black());
+        println!("📦 {} {} {}", name.green(), "=>".yellow(), norm.black());
     }
 
     pub fn to_toml(&self) -> String {
@@ -389,10 +487,21 @@ impl<'a> Properties<'a> {
 
         for dep in &self.dependencies {
             if let Some(p) = &dep.path {
-                // Local path dependency (a per-module std crate).
-                deps_str.push_str(&format!("{} = {{ path = \"{}\" }}\n", dep.name, p));
+                if dep.features.is_empty() {
+                    deps_str.push_str(&format!("{} = {{ path = \"{}\" }}\n", dep.name, p));
+                } else {
+                    deps_str.push_str(&format!(
+                        "{} = {{ path = \"{}\", features = [{}] }}\n",
+                        dep.name,
+                        p,
+                        dep.features
+                            .iter()
+                            .map(|f| format!("\"{}\"", f))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
             } else if let Some(git_url) = &dep.git {
-                // Git dependency
                 deps_str.push_str(&format!("{} = {{ git = \"{}\"", dep.name, git_url));
                 if let Some(branch) = &dep.branch {
                     deps_str.push_str(&format!(", branch = \"{}\"", branch));
@@ -411,24 +520,28 @@ impl<'a> Properties<'a> {
                     ));
                 }
                 deps_str.push_str(" }\n");
-            } else if matches!(
-                dep.kind,
-                DepKind::NormalOnlyVersion | DepKind::DevOnlyVersion | DepKind::BuildOnlyVersion
-            ) {
+            } else if dep.features.is_empty()
+                && matches!(
+                    dep.kind,
+                    DepKind::NormalOnlyVersion
+                        | DepKind::DevOnlyVersion
+                        | DepKind::BuildOnlyVersion
+                )
+            {
+                deps_str.push_str(&format!("{} = \"{}\"\n", dep.name, dep.version));
+            } else if dep.features.is_empty() {
                 deps_str.push_str(&format!("{} = \"{}\"\n", dep.name, dep.version));
             } else {
-                deps_str.push_str(&format!("{} = {{ version = \"{}\"", dep.name, dep.version));
-                if !dep.features.is_empty() {
-                    deps_str.push_str(&format!(
-                        ", features = [{}]",
-                        dep.features
-                            .iter()
-                            .map(|f| format!("\"{}\"", f))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
-                deps_str.push_str(" }\n");
+                deps_str.push_str(&format!(
+                    "{} = {{ version = \"{}\", features = [{}] }}\n",
+                    dep.name,
+                    dep.version,
+                    dep.features
+                        .iter()
+                        .map(|f| format!("\"{}\"", f))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
             }
         }
 
@@ -438,6 +551,41 @@ impl<'a> Properties<'a> {
             format!("\n[dependencies]\n{}", deps_str)
         };
 
+        let target_section = match self.kind.as_str() {
+            "lib" => {
+                let ln = self
+                    .lib_name
+                    .clone()
+                    .unwrap_or_else(|| self.name.replace('-', "_"));
+                format!("\n[lib]\nname = \"{ln}\"\npath = \"src/lib.rs\"")
+            }
+            "both" => {
+                let ln = self
+                    .lib_name
+                    .clone()
+                    .unwrap_or_else(|| self.name.replace('-', "_"));
+                let bn = self
+                    .bin_name
+                    .clone()
+                    .unwrap_or_else(|| self.name.to_string());
+                format!(
+                    "\n[lib]\nname = \"{ln}\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{bn}\"\npath = \"src/main.rs\""
+                )
+            }
+            _ => {
+                let bn = self
+                    .bin_name
+                    .clone()
+                    .unwrap_or_else(|| self.name.to_string());
+                format!("\n[[bin]]\nname = \"{bn}\"\npath = \"src/main.rs\"")
+            }
+        };
+
+        let profile_section = match self.lto {
+            Some(lto_val) => format!("\n[profile.release]\nlto = {lto_val}\n"),
+            None => String::new(),
+        };
+
         format!(
             r#"# Cargo.toml generated by CForge v{}
 [package]
@@ -445,20 +593,16 @@ name = "{name}"
 version = "{version}"
 edition = "{edition}"
 
-# Mark this manifest as its own workspace root so it doesn't get pulled
-# into the parent copper-lang workspace when cforge is built from inside
-# its own source tree.
 [workspace]
-
-[[bin]]
-name = "{name}"
-path = "src/main.rs"{dependencies_section}"#,
+{target_section}{dependencies_section}{profile_section}"#,
             std::env::var("CFORGE_VERSION")
                 .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string()),
             name = self.name,
             version = self.version,
             edition = self.edition,
-            dependencies_section = dependencies_section
+            target_section = target_section,
+            dependencies_section = dependencies_section,
+            profile_section = profile_section,
         )
     }
 }
