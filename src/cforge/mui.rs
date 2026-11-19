@@ -712,22 +712,27 @@ fn prepare_web_package(
     };
     let entry_canon = canon_path(Path::new(&abs));
     let project_root = mui_project_root(&entry_canon, &disk_sources);
-    let (font_vfs, media_vfs) = collect_mui_asset_refs(&disk_sources);
+    let (font_vfs, early_media, lazy_media) = collect_mui_asset_refs(&disk_sources);
+    let mut all_media = early_media.clone();
+    for m in &lazy_media {
+        push_unique(&mut all_media, m.clone());
+    }
 
     stage_listen_fonts(&web, out, &project_root, &font_vfs)?;
-    stage_listen_media(&web, out, &project_root, &media_vfs)?;
+    stage_listen_media(&web, out, &project_root, &all_media)?;
 
-    // Scene3D / Sprite3D read textures from MEMFS — put media paths on the
-    // manifest so listen_boot.js can fetchIntoVfs before first paint.
+    // Scene3D / Sprite3D + ZoomImage screenshots: man.media is staged in
+    // preRun (after wasm) via fetchIntoVfs — MEMFS-first Image then paints.
+    // earlyFiles stays lean so we don't race the wasm download.
     {
         let mut files = staged.files.clone();
-        for m in &media_vfs {
+        for m in &all_media {
             push_unique(&mut files, m.clone());
         }
         let manifest = serde_json::json!({
             "entry": staged.entry_vfs,
             "files": files,
-            "media": media_vfs,
+            "media": all_media,
         });
         std::fs::write(
             out.join("manifest.json"),
@@ -746,7 +751,7 @@ fn prepare_web_package(
     for f in &staged.files {
         push_unique(&mut early, f.clone());
     }
-    for m in &media_vfs {
+    for m in &early_media {
         push_unique(&mut early, m.clone());
     }
     let title = mui_app_title(&abs);
@@ -1068,7 +1073,11 @@ fn mui_app_title(file: &str) -> String {
 
 /// Scan `.mui` sources for `FontFace(..., "path")`, `Image("path"...)`,
 /// and `Sprite3D("path"...)` (Scene3D loads from MEMFS, not HTTP fetch).
-fn collect_mui_asset_refs(sources: &[PathBuf]) -> (Vec<String>, Vec<String>) {
+/// Returns `(fonts, early_media, lazy_media)`.
+/// `early_media` = Sprite3D / bare Image (needed before first paint).
+/// `lazy_media` = ZoomImage screenshots — staged in preRun via man.media
+/// but NOT in earlyFiles (that raced the wasm download and black-screened).
+fn collect_mui_asset_refs(sources: &[PathBuf]) -> (Vec<String>, Vec<String>, Vec<String>) {
     let font_re = regex::Regex::new(
         r#"FontFace\s*\(\s*"[^"]*"\s*,\s*"([^"]+\.(?:ttf|otf|woff2?))"\s*\)"#,
     )
@@ -1079,9 +1088,13 @@ fn collect_mui_asset_refs(sources: &[PathBuf]) -> (Vec<String>, Vec<String>) {
     let sprite_re =
         regex::Regex::new(r#"Sprite3D\s*\(\s*"([^"]+\.(?:png|jpe?g|webp|gif|svg))"\s*"#)
             .expect("sprite regex");
-
+    let zoom_re = regex::Regex::new(
+        r#"ZoomImage\s*\(\s*src:\s*"([^"]+\.(?:png|jpe?g|webp|gif|svg))"\s*"#,
+    )
+    .expect("zoom regex");
     let mut fonts: Vec<String> = Vec::new();
-    let mut media: Vec<String> = Vec::new();
+    let mut early_media: Vec<String> = Vec::new();
+    let mut lazy_media: Vec<String> = Vec::new();
     for src in sources {
         let Ok(text) = std::fs::read_to_string(src) else {
             continue;
@@ -1092,18 +1105,22 @@ fn collect_mui_asset_refs(sources: &[PathBuf]) -> (Vec<String>, Vec<String>) {
         }
         for cap in image_re.captures_iter(&text) {
             let path = normalize_asset_vfs(&cap[1]);
-            push_unique(&mut media, path);
+            push_unique(&mut early_media, path);
         }
         for cap in sprite_re.captures_iter(&text) {
             let path = normalize_asset_vfs(&cap[1]);
-            push_unique(&mut media, path);
+            push_unique(&mut early_media, path);
+        }
+        for cap in zoom_re.captures_iter(&text) {
+            let path = normalize_asset_vfs(&cap[1]);
+            push_unique(&mut lazy_media, path);
         }
     }
     if fonts.is_empty() {
         fonts.push("/fonts/Inter-Regular.ttf".to_string());
         fonts.push("/fonts/Inter-Bold.ttf".to_string());
     }
-    (fonts, media)
+    (fonts, early_media, lazy_media)
 }
 
 fn normalize_asset_vfs(raw: &str) -> String {

@@ -409,12 +409,26 @@ fn parse_handler_action(raw: &str) -> Option<HandlerAction> {
     // `name = ...`
     if toks.len() >= 3 && is_ident(toks[0]) && toks[1] == "=" {
         let rhs = &toks[2..];
-        // `name = <int>`
+        // `name = <int>` / `name = true` / `name = false`
+        // Bool signals ride the int channel (false=0, true=1), so `open = true`
+        // must become SetInt — not a string — or the assignment is a silent no-op.
         if rhs.len() == 1 {
             if let Ok(v) = rhs[0].parse::<i64>() {
                 return Some(HandlerAction::SetInt {
                     name: toks[0].to_string(),
                     value: v,
+                });
+            }
+            if rhs[0] == "true" {
+                return Some(HandlerAction::SetInt {
+                    name: toks[0].to_string(),
+                    value: 1,
+                });
+            }
+            if rhs[0] == "false" {
+                return Some(HandlerAction::SetInt {
+                    name: toks[0].to_string(),
+                    value: 0,
                 });
             }
             // `name = "literal"` — string signal assignment.
@@ -565,6 +579,24 @@ mod handler_action_tests {
             Some(HandlerAction::SetStr {
                 name: "status".into(),
                 value: "off".into()
+            })
+        );
+    }
+
+    #[test]
+    fn parses_set_bool() {
+        assert_eq!(
+            parse_handler_action("nav_open = true"),
+            Some(HandlerAction::SetInt {
+                name: "nav_open".into(),
+                value: 1
+            })
+        );
+        assert_eq!(
+            parse_handler_action("nav_open = false"),
+            Some(HandlerAction::SetInt {
+                name: "nav_open".into(),
+                value: 0
             })
         );
     }

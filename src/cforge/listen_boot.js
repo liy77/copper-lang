@@ -327,37 +327,62 @@
     return fetch(assetUrl(path), opts).catch(function () { return null; });
   }
 
-  /* Images load on demand via emscripten_fetch. Only warm the logo + first
-     hero immediately; the rest after idle so they cache for the next visit
-     without fighting the wasm download. */
+  /* Docs/film screenshots: stage into MEMFS (wasm Image tries local first) and
+     warm Cache Storage so a MEMFS miss can still finish via emscripten_fetch. */
   function prefetchLazyImages() {
-    warmFetch("/logo.png", "high");
-    warmFetch("/media/editor.png", "low");
     var rest = [
+      "/logo.png",
+      "/media/editor.png",
       "/media/packages.png",
       "/media/asset-store.png",
       "/media/command-palette.png",
       "/media/play-mode.png",
+      "/media/play.png",
       "/media/mcp.png",
+      "/media/new-project.png",
+      "/media/add-node.png",
+      "/media/code.png",
+      "/media/blocks.png",
+      "/media/input-ps.png",
+      "/media/input-xbox.png",
+      "/media/assets.png",
+      "/media/guide.png",
+      "/media/guide-upscaling.png",
+      "/media/settings.png",
+      "/media/tour.png",
+      "/media/welcome.png",
+      "/media/docs-hero.png",
+      "/media/docs-tree.png",
+      "/media/docs-chest.png",
       "/fonts/Inter-Bold.ttf"
     ];
-    function warmRest() {
+    function stageRest() {
       var i = 0;
       (function next() {
         if (i >= rest.length) return;
-        warmFetch(rest[i++], "low").then(function () {
+        var batch = [rest[i++]];
+        if (i < rest.length) batch.push(rest[i++]);
+        Promise.all(batch.map(function (p) {
+          return fetchIntoVfs(p, "low").catch(function () {
+            return warmFetch(p, "low");
+          });
+        })).then(function () {
           if (window.requestIdleCallback) {
-            window.requestIdleCallback(next, { timeout: 1200 });
+            window.requestIdleCallback(next, { timeout: 800 });
           } else {
-            setTimeout(next, 180);
+            setTimeout(next, 40);
           }
         });
       })();
     }
+    /* Kick a few high-priority docs shots immediately so Input & display paints. */
+    ["/media/input-ps.png", "/media/input-xbox.png", "/media/editor.png"].forEach(function (p) {
+      fetchIntoVfs(p, "high").catch(function () { return null; });
+    });
     if (window.requestIdleCallback) {
-      window.requestIdleCallback(warmRest, { timeout: 2500 });
+      window.requestIdleCallback(stageRest, { timeout: 400 });
     } else {
-      setTimeout(warmRest, 1200);
+      setTimeout(stageRest, 120);
     }
   }
 
@@ -538,10 +563,15 @@
         }
         addRunDependency("mui-project");
         setBootProgress(Math.max(bootPct, 48));
+        var projectDone = false;
         var done = function () {
+          if (projectDone) return;
+          projectDone = true;
           try { removeRunDependency("mui-project"); } catch (e) { /* ignore */ }
           setBootProgress(Math.max(bootPct, 78));
         };
+        /* Never block first paint forever if a MEMFS stage fetch stalls. */
+        setTimeout(done, 8000);
 
         /* Stage Regular (+ any non-Bold) fonts + entry before first frame.
            Bold and anything else continue in the background — UI can paint. */

@@ -136,14 +136,19 @@ self.addEventListener("fetch", function (event) {
 
   if (!isHeavy(url)) return;
 
-  /* Cache-first for wasm/js/fonts/images — this is what makes reload free. */
+  /* Images: ignoreSearch so warmFetch(?v=BUILD) answers emscripten_fetch
+     without a query. Wasm/js/fonts MUST match the current BUILD_ID — a stale
+     wasm here caused ASM_CONSTS / missing Image fixes after every rebuild. */
+  var isImage = /\.(png|jpe?g|webp|gif|svg)(\?|$)/i.test(url.pathname);
   event.respondWith(
-    matchCached(req, url).then(function (hit) {
+    (isImage ? matchCached(req, url) : caches.match(req).then(function (hit) {
+      return hit || caches.match(url.href);
+    })).then(function (hit) {
       if (hit) {
-        /* Revalidate in background so a new ASSET_VER still gets picked up
-           eventually without blocking this navigation. */
-        if (url.search.indexOf("v=" + VER) < 0) {
-          fetchAndCache(req).catch(function () {});
+        var verOk = url.search.indexOf("v=" + VER) >= 0;
+        if (!verOk) {
+          /* Stale entry (wrong or missing ?v=) — pull fresh, don't serve old wasm. */
+          return fetchAndCache(req);
         }
         return hit;
       }
