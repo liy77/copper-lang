@@ -148,19 +148,45 @@ fn dir_of(p: &Path) -> PathBuf {
 
 /// Resolve an import path string against the importing file's directory. A
 /// relative path joins onto `base_dir`; an absolute path is used as-is.
+/// Lexically collapses `.` / `..` so Emscripten MEMFS (and other VFS hosts)
+/// can open `../card/card.mui` the same way a real filesystem would.
 fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
     let p = Path::new(raw);
-    if p.is_absolute() {
+    let joined = if p.is_absolute() {
         p.to_path_buf()
     } else {
         base_dir.join(p)
+    };
+    lexically_normalize(&joined)
+}
+
+/// Collapse `.` and `..` without touching the filesystem. Needed when the
+/// host VFS cannot open raw `a/../b` paths (browser MEMFS).
+fn lexically_normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
     }
 }
 
 /// Best-effort path normalization for cycle detection (canonicalize when the
 /// file exists, else the lexical path). Avoids re-reading a file twice.
 fn normalize(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    std::fs::canonicalize(p).unwrap_or_else(|_| lexically_normalize(p))
 }
 
 #[cfg(test)]

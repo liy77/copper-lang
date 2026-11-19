@@ -68,6 +68,10 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
             .long("bundle")
             .action(clap::ArgAction::SetTrue)
             .help("Embed the app.bundle (assets + config) into the executable for a self-contained binary (.mui only)"))
+        .arg(Arg::new("web")
+            .long("web")
+            .action(clap::ArgAction::SetTrue)
+            .help("Also build a browser package <name>_web/ for .mui/.crm (wasm host + generated boot)"))
         .arg(Arg::new("version")
             .short('v')
             .long("version")
@@ -77,7 +81,7 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
             .long("target")
             .num_args(1)
             .value_name("TARGET")
-            .help("Cross-compile target (friendly names: windows, mac, linux or full rust triple)")
+            .help("Cross-compile target (friendly names: windows, mac, linux, web or full rust triple)")
         )
         .arg(Arg::new("verbose")
             .short('V')
@@ -96,6 +100,12 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
                     .short('o')
                     .long("output")
                     .help("Output directory for compiled files"),
+                Arg::new("listen")
+                    .long("listen")
+                    .num_args(0..=1)
+                    .default_missing_value("3000")
+                    .value_name("PORT")
+                    .help("Serve a .mui/.crm as a WASM site on PORT (default 3000). Example: cforge run --listen=3000 app.mui"),
             ])
         )
         .subcommand(ClapCommand::new("init")
@@ -134,7 +144,7 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
         // Accepts the same flags so `cforge build app.mui --release --clean` works
         // exactly like `cforge -c -i app.mui --release --clean`.
         .subcommand(ClapCommand::new("build")
-            .about("Compile a file or directory (alias for `-c -i`). Accepts --release, --clean, --bundle, --output, --target.")
+            .about("Compile a file or directory (alias for `-c -i`). Accepts --release, --clean, --bundle, --web, --output, --target.")
             .arg(Arg::new("input")
                 .help("File (.crs/.mui/.crm) or directory to compile")
                 .value_name("FILE")
@@ -149,8 +159,11 @@ static BASE_CMD: Lazy<ClapCommand> = Lazy::new(|| {
                 .action(clap::ArgAction::SetTrue).help("Clean the output directory before compiling"))
             .arg(Arg::new("bundle").short('b').long("bundle")
                 .action(clap::ArgAction::SetTrue).help("Embed app.bundle into the executable (.mui only)"))
+            .arg(Arg::new("web").long("web")
+                .action(clap::ArgAction::SetTrue)
+                .help("Build browser package <name>_web/ (.mui/.crm)"))
             .arg(Arg::new("target").long("target").num_args(1).value_name("TARGET")
-                .help("Cross-compile target (windows, mac, linux or a full rust triple)"))
+                .help("Cross-compile target (windows, mac, linux, web or a full rust triple)"))
             .arg(Arg::new("verbose").short('V').long("verbose")
                 .action(clap::ArgAction::SetTrue).help("Enable verbose output"))
         )
@@ -330,7 +343,7 @@ fn parse_commands() -> ParsedCommands {
 
     // Handle flags (boolean arguments)
     for flag in [
-        "version", "verbose", "clean", "compile", "release", "bundle",
+        "version", "verbose", "clean", "compile", "release", "bundle", "web",
     ] {
         if let Some(value) = matches.get_one::<bool>(flag) {
             let mut cmd = ParsedCommand::new(flag.to_string(), vec![]);
@@ -480,6 +493,13 @@ fn parse_commands() -> ParsedCommands {
             cmd.set_valid(true);
             parsed_args.update_or_add_command(cmd);
         }
+
+        // `cforge run --listen[=PORT] file.mui` — serve the MUI as a WASM site.
+        if let Some(port) = run_matches.get_one::<String>("listen") {
+            let mut cmd = ParsedCommand::new("listen".to_string(), vec![port.clone()]);
+            cmd.set_valid(true);
+            parsed_args.update_or_add_command(cmd);
+        }
     }
 
     // `cforge build <file>` — alias for `-c -i <file>`. Translate the subcommand
@@ -520,7 +540,7 @@ fn parse_commands() -> ParsedCommands {
             parsed_args.update_or_add_command(cmd);
         }
 
-        for flag in ["release", "clean", "bundle", "verbose"] {
+        for flag in ["release", "clean", "bundle", "web", "verbose"] {
             if bm.get_flag(flag) {
                 let mut cmd = ParsedCommand::new(flag.to_string(), vec![]);
                 cmd.set_valid(true);
@@ -732,13 +752,25 @@ async fn main() {
         .get_command("bundle")
         .map(|c| c.is_valid)
         .unwrap_or(false);
+    let want_web = commands
+        .get_command("web")
+        .map(|c| c.is_valid)
+        .unwrap_or(false);
 
     // Resolve --target early so both the compile and run paths can see it.
     // parse_commands records it from either the top-level flag or `build --target`.
-    let target_triple: Option<&'static str> = commands
+    let target_raw = commands
         .get_command("target")
         .filter(|c| c.is_valid)
         .and_then(|c| c.args.first())
+        .cloned();
+    let target_is_web = target_raw
+        .as_deref()
+        .map(|t| matches!(t, "web" | "wasm-web" | "emscripten"))
+        .unwrap_or(false);
+    let target_triple: Option<&'static str> = target_raw
+        .as_deref()
+        .filter(|_| !target_is_web)
         .map(|t| cforge::resolve_target(t));
 
     if let Some(triple) = target_triple {
@@ -754,9 +786,25 @@ async fn main() {
         // transpile. Same `-c` entry point, file extension picks the backend.
         // `--release` additionally `cargo build`s the generated crate; `--bundle`
         // embeds the app.bundle (assets + config) into the binary.
+        // `--web` / `--target web` also (or only) emits `<stem>_web/` for browsers.
         if input_dir.is_none() && files.len() == 1 && cforge::mui::is_mui_file(&files[0]) {
-            let code =
-                cforge::mui::compile(&files[0], output_dir.as_deref(), is_release, embed_bundle);
+            // `--web` / `--target web` → emit `<stem>_web/` (browser package).
+            // `--web` alone → web only. `--web --release` → web + native release.
+            // `--target web` → web only (never native). Plain build keeps native path.
+            let do_web = want_web || target_is_web;
+            let do_native = !target_is_web && (!want_web || is_release || embed_bundle);
+            let mut code = 0;
+            if do_web {
+                code = cforge::mui::build_web(&files[0], output_dir.as_deref(), is_release);
+            }
+            if code == 0 && do_native {
+                code = cforge::mui::compile(
+                    &files[0],
+                    output_dir.as_deref(),
+                    is_release,
+                    embed_bundle,
+                );
+            }
             println!();
             std::process::exit(code);
         }
@@ -797,7 +845,16 @@ async fn main() {
         // mui-dev host instead of going through the Copper→Rust→cargo pipeline.
         // (Transpiling `.crm` to a native binary is the M5 release path.)
         if input_dir.is_none() && files.len() == 1 && cforge::mui::is_mui_file(&files[0]) {
-            let code = cforge::mui::run(&files[0]);
+            let listen_port = commands
+                .get_command("listen")
+                .filter(|c| c.is_valid)
+                .and_then(|c| c.args.first())
+                .and_then(|s| s.parse::<u16>().ok());
+            let code = if let Some(port) = listen_port {
+                cforge::mui::run_listen(&files[0], port)
+            } else {
+                cforge::mui::run(&files[0])
+            };
             println!();
             std::process::exit(code);
         }

@@ -151,7 +151,22 @@ pub struct AppConfig {
     /// its own title bar) or `"native"`/`None` (the OS title bar). Accepts the
     /// `decorations` (`none`/`default`) and `customTitlebar` (`true`) aliases.
     pub titlebar: Option<String>,
+    /// CSS `@font-face`-style external fonts declared on the app:
+    /// `fonts: [FontFace("Inter", "/fonts/Inter.ttf"), …]` or
+    /// `FontFace { family: "Inter", src: "https://…" }`. Applied before the
+    /// first paint so `Text(font: "Inter")` resolves like `font-family` in CSS.
+    pub fonts: Vec<FontFace>,
     pub span: Span,
+}
+
+/// One `@font-face` entry from `App() { fonts: [...] }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontFace {
+    /// CSS `font-family` name exposed to `Text(font: …)`. Empty → use the name
+    /// embedded in the font file.
+    pub family: String,
+    /// Filesystem / MEMFS path or `http(s)://` URL (CSS `src: url(...)`).
+    pub src: String,
 }
 
 /// `view Name(params) { body }`.

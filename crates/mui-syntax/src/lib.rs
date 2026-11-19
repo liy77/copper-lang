@@ -380,6 +380,11 @@ impl Parser {
                     cfg.background = Some((r, g, b, a));
                 }
             }
+            // CSS `@font-face` list: `fonts: [FontFace("Inter", "/fonts/Inter.ttf")]`
+            // or a single face / `"Inter=/fonts/Inter.ttf"` shorthand.
+            "fonts" | "fontFace" | "fontFaces" => {
+                cfg.fonts.extend(parse_font_faces(&value));
+            }
             _ => {} // unknown key — ignored (forward-compatible)
         }
     }
@@ -1179,6 +1184,92 @@ fn prop_ident_or_string(value: &PropValue) -> Option<String> {
     prop_string(value)
 }
 
+/// Pull a string out of a Copper [`Expr`] (literal / `format("…")` / ident).
+fn expr_string(e: &copper_syntax::expr::Expr) -> Option<String> {
+    prop_string(&PropValue::Expr(e.clone())).or_else(|| {
+        if let copper_syntax::expr::ExprKind::Ident(n) = &e.kind {
+            Some(n.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn expr_field<'a>(
+    fields: &'a [(String, copper_syntax::expr::Expr)],
+    names: &[&str],
+) -> Option<&'a copper_syntax::expr::Expr> {
+    fields
+        .iter()
+        .find(|(k, _)| names.iter().any(|n| k.eq_ignore_ascii_case(n)))
+        .map(|(_, v)| v)
+}
+
+/// Parse one `FontFace("Inter", "/fonts/Inter.ttf")` call, `FontFace { … }`
+/// struct, `"Inter=/path"`, or `"Inter"` + separate path pair.
+fn font_face_from_expr(e: &copper_syntax::expr::Expr) -> Option<ast::FontFace> {
+    use copper_syntax::expr::ExprKind;
+    match &e.kind {
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "FontFace" || n == "fontFace") =>
+        {
+            // FontFace("Inter", "/fonts/x.ttf") or FontFace("/fonts/x.ttf")
+            let a0 = args.first().and_then(expr_string)?;
+            if args.len() == 1 {
+                Some(ast::FontFace {
+                    family: String::new(),
+                    src: a0,
+                })
+            } else {
+                let a1 = args.get(1).and_then(expr_string)?;
+                Some(ast::FontFace {
+                    family: a0,
+                    src: a1,
+                })
+            }
+        }
+        ExprKind::StructLit { name, fields, .. }
+            if name == "FontFace" || name == "fontFace" || name.is_empty() =>
+        {
+            let src = expr_field(fields, &["src", "url", "path", "file"]).and_then(expr_string)?;
+            let family = expr_field(fields, &["family", "fontFamily", "name", "font"])
+                .and_then(expr_string)
+                .unwrap_or_default();
+            Some(ast::FontFace { family, src })
+        }
+        ExprKind::Literal(_) | ExprKind::Call { .. } | ExprKind::Ident(_) => {
+            // Shorthand: "Inter=/fonts/Inter.ttf" or just a path "/fonts/x.ttf"
+            let s = expr_string(e)?;
+            if let Some((fam, src)) = s.split_once('=') {
+                Some(ast::FontFace {
+                    family: fam.trim().to_string(),
+                    src: src.trim().to_string(),
+                })
+            } else if s.contains('/') || s.contains('\\') || s.starts_with("http") {
+                Some(ast::FontFace {
+                    family: String::new(),
+                    src: s,
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// `fonts:` value → zero or more [`ast::FontFace`] entries.
+fn parse_font_faces(value: &PropValue) -> Vec<ast::FontFace> {
+    use copper_syntax::expr::ExprKind;
+    let PropValue::Expr(e) = value else {
+        return Vec::new();
+    };
+    match &e.kind {
+        ExprKind::Array(items) => items.iter().filter_map(font_face_from_expr).collect(),
+        _ => font_face_from_expr(e).into_iter().collect(),
+    }
+}
+
 /// Decode a `__mui_color_RRGGBBAA` placeholder (8 hex digits) back into a
 /// [`MuiValue::Color`]. Returns `None` if `raw` isn't a color placeholder.
 fn decode_color_tag(raw: &str) -> Option<MuiValue> {
@@ -1542,6 +1633,27 @@ view Dashboard() { Text("hi") }
         assert_eq!(app.height, Some(520));
         assert_eq!(app.background, Some((0xf1, 0xf5, 0xf9, 255)));
         assert_eq!(app.entry.as_deref(), Some("Dashboard"));
+    }
+
+    #[test]
+    fn parses_app_font_faces() {
+        let src = r#"
+App() {
+  fonts: [
+    FontFace("Inter", "/fonts/Inter-Regular.ttf"),
+    FontFace { family: "Display", src: "https://example.com/Display.otf" },
+  ]
+  mainContent: Home
+}
+view Home() { Text("hi", font: "Inter") }
+"#;
+        let doc = parse(src);
+        let app = doc.app.expect("app config");
+        assert_eq!(app.fonts.len(), 2, "fonts: {:?}", app.fonts);
+        assert_eq!(app.fonts[0].family, "Inter");
+        assert_eq!(app.fonts[0].src, "/fonts/Inter-Regular.ttf");
+        assert_eq!(app.fonts[1].family, "Display");
+        assert_eq!(app.fonts[1].src, "https://example.com/Display.otf");
     }
 
     #[test]

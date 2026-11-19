@@ -15,8 +15,10 @@
 //!      workspace (needs the mocida C lib + clang; see `mocida-rs/EXAMPLES.md`).
 
 use colored::Colorize;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::tokenizer::tokenizer::Tokenizer;
 
@@ -542,6 +544,946 @@ fn render_cargo_toml(title: &str, mocida_path: &Path) -> String {
     )
 }
 
+/// Build a shippable web package for a `.mui` / `.crm`.
+///
+/// Writes `<output>/<stem>_web/` with the wasm host, generated `boot.js` /
+/// `index.html`, the entry + import graph, and fonts/media referenced by the
+/// document. `release` prefers the release wasm build when available.
+///
+/// Example: `cforge build app.mui --web --release` → `dist/app_web/`.
+pub fn build_web(file: &str, output_dir: Option<&str>, release: bool) -> i32 {
+    let stem = Path::new(file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("app");
+    let pkg_name = format!("{stem}_web");
+    let out = PathBuf::from(output_dir.unwrap_or("./dist")).join(&pkg_name);
+
+    crate::cforge::pretty::head(&format!(
+        "Web package ({})",
+        if release { "release" } else { "debug" }
+    ));
+
+    if out.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&out) {
+            eprintln!("❌ cannot clean {}: {e}", out.display());
+            return 1;
+        }
+    }
+    if let Err(e) = std::fs::create_dir_all(&out) {
+        eprintln!("❌ cannot create {}: {e}", out.display());
+        return 1;
+    }
+
+    match prepare_web_package(file, &out, release) {
+        Ok(staged) => {
+            let import_count = staged
+                .files
+                .iter()
+                .filter(|f| f.as_str() != "/app.mui" && f.as_str() != staged.entry_vfs.as_str())
+                .count();
+            if import_count > 0 {
+                println!(
+                    "📦 Staged {} → {} (+{} import file(s))",
+                    file.bold(),
+                    staged.entry_vfs.cyan(),
+                    import_count
+                );
+            }
+            for w in &staged.warnings {
+                eprintln!("{} {}", "⚠️ ".yellow(), w);
+            }
+            // Tiny local preview helper (not required for deployment).
+            write_web_serve_helper(&out, &pkg_name);
+            crate::cforge::pretty::ok(&format!("Web package: {}", out.display()));
+            crate::cforge::pretty::tree(
+                &pkg_name,
+                &[
+                    "index.html".into(),
+                    "build-gate.js".into(),
+                    "build-id.json".into(),
+                    "boot.js".into(),
+                    "sw.js".into(),
+                    "mui-dev.js".into(),
+                    "mui_dev.wasm".into(),
+                    "app.mui".into(),
+                    "manifest.json".into(),
+                ],
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("❌ Web build failed: {e}");
+            let _ = std::fs::remove_dir_all(&out);
+            1
+        }
+    }
+}
+
+/// Serve a `.mui` / `.crm` as a browser site via the prebuilt Emscripten
+/// `mui-dev` host (`cforge run --listen[=PORT] app.mui`).
+///
+/// Fully automated: stages the wasm shell, the entry + `import` graph, fonts /
+/// media referenced by the `.mui`, then **always** emits canonical
+/// `boot.js` + `index.html` + `sw.js` (no hand-maintained host / JS / Python).
+pub fn run_listen(file: &str, port: u16) -> i32 {
+    let stage = std::env::temp_dir().join(format!("cforge-mui-listen-{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&stage) {
+        eprintln!("❌ Could not create listen stage dir: {e}");
+        return 1;
+    }
+
+    let staged = match prepare_web_package(file, &stage, false) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            let _ = std::fs::remove_dir_all(&stage);
+            return 1;
+        }
+    };
+
+    let import_count = staged
+        .files
+        .iter()
+        .filter(|f| f.as_str() != "/app.mui" && f.as_str() != staged.entry_vfs.as_str())
+        .count();
+    if import_count > 0 {
+        println!(
+            "📦 Staged {} → {} (+{} import file(s))",
+            file.bold(),
+            staged.entry_vfs.cyan(),
+            import_count
+        );
+    }
+    for w in &staged.warnings {
+        eprintln!("{} {}", "⚠️ ".yellow(), w);
+    }
+
+    println!(
+        "🌐 Serving {} at {} (Ctrl-C to stop)",
+        file.bold(),
+        format!("http://127.0.0.1:{port}/").cyan()
+    );
+    vlog(&format!("stage = {}", stage.display()));
+    vlog(&format!("entry vfs = {}", staged.entry_vfs));
+    vlog(&format!("vfs files = {:?}", staged.files));
+
+    let code = serve_mui_listen(&stage, port);
+    let _ = std::fs::remove_dir_all(&stage);
+    code
+}
+
+/// Stage a complete browser package into `out` (wasm host + generated boot +
+/// project sources + fonts/media). Shared by `build_web` and `run_listen`.
+fn prepare_web_package(
+    file: &str,
+    out: &Path,
+    prefer_release: bool,
+) -> Result<StagedMui, String> {
+    let abs = std::fs::canonicalize(file)
+        .map(|p| strip_unc(&p))
+        .unwrap_or_else(|_| file.to_string());
+    let web = find_mui_web_dir(prefer_release).ok_or_else(|| {
+        "Could not find the MUI WASM site host (mui-dev.js + mui_dev.wasm).\n\
+         Set MUI_WEB_DIR, or place OndaEngine/site/www next to copper-lang / mocida."
+            .to_string()
+    })?;
+
+    for name in ["mui-dev.js", "mui_dev.wasm", "mui_dev.data", "logo.png"] {
+        let src = web.join(name);
+        if src.is_file() {
+            std::fs::copy(&src, out.join(name))
+                .map_err(|e| format!("Failed to stage {}: {e}", src.display()))?;
+            // Ship precompressed siblings when present (mobile Safari).
+            let br = PathBuf::from(format!("{}.br", src.display()));
+            if br.is_file() {
+                let _ = std::fs::copy(&br, out.join(format!("{name}.br")));
+            }
+        } else if matches!(name, "mui-dev.js" | "mui_dev.wasm") {
+            return Err(format!("{name} is missing from {}", web.display()));
+        }
+    }
+
+    let staged = stage_mui_import_graph(Path::new(&abs), out)?;
+
+    let disk_sources: Vec<PathBuf> = match mui_syntax::loader::load(Path::new(&abs)) {
+        Ok(loaded) => loaded.sources,
+        Err(_) => vec![canon_path(Path::new(&abs))],
+    };
+    let entry_canon = canon_path(Path::new(&abs));
+    let project_root = mui_project_root(&entry_canon, &disk_sources);
+    let (font_vfs, media_vfs) = collect_mui_asset_refs(&disk_sources);
+
+    stage_listen_fonts(&web, out, &project_root, &font_vfs)?;
+    stage_listen_media(&web, out, &project_root, &media_vfs)?;
+
+    // Scene3D / Sprite3D read textures from MEMFS — put media paths on the
+    // manifest so listen_boot.js can fetchIntoVfs before first paint.
+    {
+        let mut files = staged.files.clone();
+        for m in &media_vfs {
+            push_unique(&mut files, m.clone());
+        }
+        let manifest = serde_json::json!({
+            "entry": staged.entry_vfs,
+            "files": files,
+            "media": media_vfs,
+        });
+        std::fs::write(
+            out.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    let stamp = compute_build_stamp(out)?;
+    let mut early: Vec<String> = Vec::new();
+    for f in &font_vfs {
+        push_unique(&mut early, f.clone());
+    }
+    early.push("/manifest.json".to_string());
+    early.push("/build-id.json".to_string());
+    for f in &staged.files {
+        push_unique(&mut early, f.clone());
+    }
+    for m in &media_vfs {
+        push_unique(&mut early, m.clone());
+    }
+    let title = mui_app_title(&abs);
+    write_listen_host(out, &stamp, &title, &font_vfs, &early)?;
+
+    vlog(&format!("web host = {}", web.display()));
+    vlog(&format!("build_id = {}  built_at = {}", stamp.id, stamp.built_at_iso));
+    Ok(staged)
+}
+
+fn write_web_serve_helper(out: &Path, pkg_name: &str) {
+    // Auto-emitted by cforge — never hand-edited. Prefer `cforge run --listen`
+    // for day-to-day; this is only a static preview of the built package.
+    let script = format!(
+        "#!/usr/bin/env python3\n\
+         # Generated by cforge build --web — do not edit.\n\
+         import os\n\
+         from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler\n\
+         os.chdir(os.path.dirname(os.path.abspath(__file__)) or '.')\n\
+         print('Serving {pkg} at http://127.0.0.1:3000/ (Ctrl-C to stop)')\n\
+         print('Tip: day-to-day use `cforge run --listen your.mui` instead.')\n\
+         ThreadingHTTPServer(('0.0.0.0', 3000), SimpleHTTPRequestHandler).serve_forever()\n",
+        pkg = pkg_name
+    );
+    let path = out.join("serve.py");
+    if std::fs::write(&path, script).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+}
+
+struct StagedMui {
+    entry_vfs: String,
+    files: Vec<String>,
+    warnings: Vec<String>,
+}
+
+fn canon_path(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p)
+        .map(|p| PathBuf::from(strip_unc(&p)))
+        .unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Smallest directory that contains the entry and every successfully-loaded
+/// import — so `import { X } from "../card/card.mui"` keeps the same relative
+/// layout under the VFS as on disk.
+fn mui_project_root(entry: &Path, sources: &[PathBuf]) -> PathBuf {
+    let mut root = entry
+        .parent()
+        .map(canon_path)
+        .unwrap_or_else(|| PathBuf::from("."));
+    for src in sources {
+        let src = canon_path(src);
+        while !src.starts_with(&root) {
+            match root.parent() {
+                Some(parent) if parent != root => root = parent.to_path_buf(),
+                _ => break,
+            }
+        }
+    }
+    root
+}
+
+fn vfs_path(root: &Path, file: &Path) -> Option<String> {
+    let rel = file.strip_prefix(root).ok()?;
+    if rel.as_os_str().is_empty() {
+        return None;
+    }
+    let s = rel.to_string_lossy().replace('\\', "/");
+    if s.is_empty() || s.contains("..") {
+        return None;
+    }
+    Some(format!("/{s}"))
+}
+
+/// Stage the entry + import graph under `stage/` with the same relative layout
+/// as on disk. Writes `manifest.json` so the WASM host opens the real entry
+/// path (not a flattened `/app.mui`), matching desktop `import` resolution.
+fn stage_mui_import_graph(entry: &Path, stage: &Path) -> Result<StagedMui, String> {
+    let loaded = mui_syntax::loader::load(entry).map_err(|e| e.to_string())?;
+    let entry_canon = canon_path(entry);
+    let root = mui_project_root(&entry_canon, &loaded.sources);
+    let entry_vfs = vfs_path(&root, &entry_canon)
+        .ok_or_else(|| format!("entry {} is outside project root", entry.display()))?;
+
+    let mut files: Vec<String> = Vec::new();
+    for src in &loaded.sources {
+        let src_canon = canon_path(src);
+        let Some(vfs) = vfs_path(&root, &src_canon) else {
+            continue;
+        };
+        // Only ship MUI/CRM sources into the browser VFS (Copper/Rust imports
+        // are native-host concerns and are skipped with a warning).
+        let ext = src_canon
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(ext.as_str(), "mui" | "crm") {
+            continue;
+        }
+        let rel = src_canon
+            .strip_prefix(&root)
+            .map_err(|_| format!("{} escapes project root", src.display()))?;
+        let dest = stage.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(&src_canon, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
+        if !files.iter().any(|f| f == &vfs) {
+            files.push(vfs);
+        }
+    }
+    if !files.iter().any(|f| f == &entry_vfs) {
+        let rel = entry_canon
+            .strip_prefix(&root)
+            .map_err(|_| "entry escapes project root".to_string())?;
+        let dest = stage.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(&entry_canon, &dest).map_err(|e| e.to_string())?;
+        files.insert(0, entry_vfs.clone());
+    }
+
+    // Compatibility alias for older boots that only fetch `/app.mui`.
+    std::fs::copy(&entry_canon, stage.join("app.mui")).map_err(|e| e.to_string())?;
+    if !files.iter().any(|f| f == "/app.mui") {
+        files.push("/app.mui".to_string());
+    }
+
+    let manifest = serde_json::json!({
+        "entry": entry_vfs,
+        "files": files,
+    });
+    std::fs::write(
+        stage.join("manifest.json"),
+        serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(StagedMui {
+        entry_vfs,
+        files,
+        warnings: loaded.warnings,
+    })
+}
+
+/// Canonical browser host — always regenerated by `run_listen` / `build --web`
+/// (never hand-edited). Placeholders: `__ASSET_VER__` / `__BUILD_ID__`,
+/// `__BUILT_AT__`, `__APP_TITLE__`, `__EARLY_FILES__`, `__FONT_FILES__`.
+const LISTEN_INDEX_HTML: &str = include_str!("listen_index.html");
+const LISTEN_BOOT_JS: &str = include_str!("listen_boot.js");
+const LISTEN_SW_JS: &str = include_str!("listen_sw.js");
+const LISTEN_BUILD_GATE_JS: &str = include_str!("listen_build_gate.js");
+
+fn push_unique(list: &mut Vec<String>, value: String) {
+    if !list.iter().any(|v| v == &value) {
+        list.push(value);
+    }
+}
+
+/// Content fingerprint of the staged web app. Changes only when wasm / JS /
+/// `.mui` bytes change — used as Cache Storage key + `?v=` bust token.
+struct BuildStamp {
+    id: String,
+    built_at: u64,
+    built_at_iso: String,
+}
+
+fn hash_file(hasher: &mut Sha256, path: &Path) {
+    if let Ok(bytes) = std::fs::read(path) {
+        hasher.update(path.to_string_lossy().as_bytes());
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+}
+
+fn compute_build_stamp(stage: &Path) -> Result<BuildStamp, String> {
+    let mut hasher = Sha256::new();
+    // Runtime binary + glue — the shipped "app build".
+    hash_file(&mut hasher, &stage.join("mui_dev.wasm"));
+    hash_file(&mut hasher, &stage.join("mui-dev.js"));
+    // Project sources staged beside them (entry + imports), any depth.
+    let mut mui_files: Vec<PathBuf> = Vec::new();
+    for ent in walkdir::WalkDir::new(stage)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let p = ent.path();
+        if !p.is_file() {
+            continue;
+        }
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if ext == "mui" || ext == "crm" {
+            mui_files.push(p.to_path_buf());
+        }
+    }
+    mui_files.sort();
+    for p in &mui_files {
+        hash_file(&mut hasher, p);
+    }
+    let digest = hasher.finalize();
+    // 16 hex chars = 64 bits — enough to detect code changes, short for URLs.
+    let id = digest
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let built_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let built_at_iso = unix_secs_to_rfc3339(built_at);
+    Ok(BuildStamp {
+        id,
+        built_at,
+        built_at_iso,
+    })
+}
+
+/// Minimal UTC RFC3339 (`YYYY-MM-DDTHH:MM:SSZ`) without pulling chrono.
+fn unix_secs_to_rfc3339(mut secs: u64) -> String {
+    const DAY: u64 = 86400;
+    let days = secs / DAY;
+    secs %= DAY;
+    let hh = secs / 3600;
+    let mm = (secs % 3600) / 60;
+    let ss = secs % 60;
+    // Civil date from days since 1970-01-01 (Howard Hinnant algorithm).
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+fn js_string_array(paths: &[String]) -> String {
+    let parts: Vec<String> = paths
+        .iter()
+        .map(|p| format!("\"{}\"", p.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect();
+    format!("[{}]", parts.join(","))
+}
+
+fn write_listen_host(
+    stage: &Path,
+    stamp: &BuildStamp,
+    app_title: &str,
+    fonts: &[String],
+    early: &[String],
+) -> Result<(), String> {
+    let title = if app_title.trim().is_empty() {
+        "MUI"
+    } else {
+        app_title.trim()
+    };
+    let title_esc = title
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;");
+    let asset_ver = stamp.id.as_str();
+    let boot = LISTEN_BOOT_JS
+        .replace("__ASSET_VER__", asset_ver)
+        .replace("__BUILD_ID__", asset_ver)
+        .replace("__BUILT_AT__", &stamp.built_at_iso)
+        .replace("__EARLY_FILES__", &js_string_array(early))
+        .replace("__FONT_FILES__", &js_string_array(fonts));
+    let gate = LISTEN_BUILD_GATE_JS
+        .replace("__BUILD_ID__", asset_ver)
+        .replace("__BUILT_AT__", &stamp.built_at_iso);
+    let index = LISTEN_INDEX_HTML
+        .replace("__ASSET_VER__", asset_ver)
+        .replace("__BUILD_ID__", asset_ver)
+        .replace("__BUILT_AT__", &stamp.built_at_iso)
+        .replace("__APP_TITLE__", &title_esc);
+    let sw = LISTEN_SW_JS
+        .replace("__ASSET_VER__", asset_ver)
+        .replace("__BUILD_ID__", asset_ver)
+        .replace("__BUILT_AT__", &stamp.built_at_iso);
+    let build_id_json = format!(
+        "{{\n  \"id\": \"{}\",\n  \"builtAt\": {},\n  \"builtAtIso\": \"{}\"\n}}\n",
+        stamp.id, stamp.built_at, stamp.built_at_iso
+    );
+    std::fs::write(stage.join("boot.js"), boot).map_err(|e| e.to_string())?;
+    std::fs::write(stage.join("build-gate.js"), gate).map_err(|e| e.to_string())?;
+    std::fs::write(stage.join("index.html"), index).map_err(|e| e.to_string())?;
+    std::fs::write(stage.join("sw.js"), sw).map_err(|e| e.to_string())?;
+    std::fs::write(stage.join("build-id.json"), build_id_json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// `App() { title: "..." }` → browser `<title>` / a11y label.
+fn mui_app_title(file: &str) -> String {
+    let src = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(_) => return "MUI".into(),
+    };
+    mui_syntax::parse(&src)
+        .app
+        .and_then(|a| a.title)
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| "MUI".into())
+}
+
+/// Scan `.mui` sources for `FontFace(..., "path")`, `Image("path"...)`,
+/// and `Sprite3D("path"...)` (Scene3D loads from MEMFS, not HTTP fetch).
+fn collect_mui_asset_refs(sources: &[PathBuf]) -> (Vec<String>, Vec<String>) {
+    let font_re = regex::Regex::new(
+        r#"FontFace\s*\(\s*"[^"]*"\s*,\s*"([^"]+\.(?:ttf|otf|woff2?))"\s*\)"#,
+    )
+    .expect("font regex");
+    let image_re =
+        regex::Regex::new(r#"Image\s*\(\s*"([^"]+\.(?:png|jpe?g|webp|gif|svg))"\s*"#)
+            .expect("image regex");
+    let sprite_re =
+        regex::Regex::new(r#"Sprite3D\s*\(\s*"([^"]+\.(?:png|jpe?g|webp|gif|svg))"\s*"#)
+            .expect("sprite regex");
+
+    let mut fonts: Vec<String> = Vec::new();
+    let mut media: Vec<String> = Vec::new();
+    for src in sources {
+        let Ok(text) = std::fs::read_to_string(src) else {
+            continue;
+        };
+        for cap in font_re.captures_iter(&text) {
+            let path = normalize_asset_vfs(&cap[1]);
+            push_unique(&mut fonts, path);
+        }
+        for cap in image_re.captures_iter(&text) {
+            let path = normalize_asset_vfs(&cap[1]);
+            push_unique(&mut media, path);
+        }
+        for cap in sprite_re.captures_iter(&text) {
+            let path = normalize_asset_vfs(&cap[1]);
+            push_unique(&mut media, path);
+        }
+    }
+    if fonts.is_empty() {
+        fonts.push("/fonts/Inter-Regular.ttf".to_string());
+        fonts.push("/fonts/Inter-Bold.ttf".to_string());
+    }
+    (fonts, media)
+}
+
+fn normalize_asset_vfs(raw: &str) -> String {
+    let s = raw.trim().replace('\\', "/");
+    if s.starts_with('/') {
+        s
+    } else {
+        format!("/{s}")
+    }
+}
+
+fn mocida_fonts_dir() -> Option<PathBuf> {
+    let ws = find_mocida_rs()?;
+    // mocida-rs lives beside `mocida/` → `../mocida/fonts`
+    let cand = ws.parent()?.join("mocida").join("fonts");
+    if cand.is_dir() {
+        return Some(cand);
+    }
+    let cand = ws.join("..").join("mocida").join("fonts");
+    cand.canonicalize().ok().filter(|p| p.is_dir())
+}
+
+fn resolve_staged_asset(
+    vfs: &str,
+    web: &Path,
+    stage: &Path,
+    project_root: &Path,
+) -> Option<PathBuf> {
+    let rel = vfs.trim_start_matches('/');
+    if rel.is_empty() || rel.contains("..") {
+        return None;
+    }
+    let candidates = [
+        stage.join(rel),
+        web.join(rel),
+        project_root.join(rel),
+        project_root.join(Path::new(rel).file_name().unwrap_or_default()),
+    ];
+    for c in &candidates {
+        if c.is_file() {
+            return Some(c.clone());
+        }
+    }
+    if let Some(name) = Path::new(rel).file_name() {
+        if let Some(fonts) = mocida_fonts_dir() {
+            let c = fonts.join(name);
+            if c.is_file() {
+                return Some(c);
+            }
+        }
+        let web_font = web.join("fonts").join(name);
+        if web_font.is_file() {
+            return Some(web_font);
+        }
+    }
+    None
+}
+
+fn stage_listen_fonts(
+    web: &Path,
+    stage: &Path,
+    project_root: &Path,
+    fonts: &[String],
+) -> Result<(), String> {
+    // Copy whole web/fonts tree when present (covers defaults).
+    let fonts_src = web.join("fonts");
+    if fonts_src.is_dir() {
+        copy_dir_recursive(&fonts_src, &stage.join("fonts")).map_err(|e| e.to_string())?;
+    }
+    for vfs in fonts {
+        let dest = stage.join(vfs.trim_start_matches('/'));
+        if dest.is_file() {
+            continue;
+        }
+        let Some(src) = resolve_staged_asset(vfs, web, stage, project_root) else {
+            eprintln!(
+                "{} font {} not found — FontFace may fail in browser",
+                "⚠️ ".yellow(),
+                vfs
+            );
+            continue;
+        };
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(&src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
+    }
+    Ok(())
+}
+
+fn stage_listen_media(
+    web: &Path,
+    stage: &Path,
+    project_root: &Path,
+    media: &[String],
+) -> Result<(), String> {
+    // Optional media/ from the web host (screenshots, logo).
+    let media_src = web.join("media");
+    if media_src.is_dir() {
+        let _ = copy_dir_recursive(&media_src, &stage.join("media"));
+    }
+    for vfs in media {
+        let dest = stage.join(vfs.trim_start_matches('/'));
+        if dest.is_file() {
+            continue;
+        }
+        let Some(src) = resolve_staged_asset(vfs, web, stage, project_root) else {
+            eprintln!(
+                "{} image {} not found — Image() may fail in browser",
+                "⚠️ ".yellow(),
+                vfs
+            );
+            continue;
+        };
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(&src, &dest).map_err(|e| format!("{}: {e}", src.display()))?;
+    }
+    Ok(())
+}
+
+fn find_mui_web_dir(prefer_release: bool) -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("MUI_WEB_DIR") {
+        let p = PathBuf::from(dir);
+        if web_dir_ok(&p) {
+            return Some(p);
+        }
+    }
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+        }
+    }
+    if let Some(ws) = find_mocida_rs() {
+        roots.push(ws.clone());
+        if let Some(parent) = ws.parent() {
+            roots.push(parent.to_path_buf());
+            if let Some(gp) = parent.parent() {
+                roots.push(gp.to_path_buf());
+            }
+        }
+    }
+
+    // Prefer the matching emscripten profile for release/debug builds.
+    if let Some(ws) = find_mocida_rs() {
+        let profiles = if prefer_release {
+            ["release", "debug"]
+        } else {
+            ["debug", "release"]
+        };
+        for profile in profiles {
+            let cand = ws
+                .join("target")
+                .join("wasm32-unknown-emscripten")
+                .join(profile);
+            if web_dir_ok(&cand) {
+                return Some(cand);
+            }
+        }
+    }
+
+    // Fall back to a full site shell (fonts/media often live here).
+    let rels = [
+        "site/www",
+        "OndaEngine/site/www",
+        "../OndaEngine/site/www",
+        "../../OndaEngine/site/www",
+        "www",
+    ];
+    for root in &roots {
+        for rel in rels {
+            let cand = root.join(rel);
+            if web_dir_ok(&cand) {
+                return std::fs::canonicalize(&cand)
+                    .ok()
+                    .map(|p| PathBuf::from(strip_unc(&p)))
+                    .or(Some(cand));
+            }
+        }
+    }
+    None
+}
+
+fn web_dir_ok(dir: &Path) -> bool {
+    // `.data` preload pack is optional — fonts/images ship over HTTP.
+    dir.join("mui-dev.js").is_file() && dir.join("mui_dev.wasm").is_file()
+}
+
+/// Map a request URL to a path relative to the listen stage. Allows the wasm
+/// shell, `manifest.json`, `/app.mui`, and any nested `.mui` / `.crm` from the
+/// staged import graph. Rejects `..` and unknown extensions.
+fn listen_rel_path(url_path: &str) -> Option<String> {
+    let path = url_path.split('?').next().unwrap_or("/");
+    if path.contains('\0') || path.contains('\\') || path.split('/').any(|s| s == "..") {
+        return None;
+    }
+    let rel = match path {
+        "/" | "/index.html" => "index.html".to_string(),
+        "/boot.js" => "boot.js".to_string(),
+        "/mui-dev.js" => "mui-dev.js".to_string(),
+        "/mui_dev.wasm" => "mui_dev.wasm".to_string(),
+        "/mui_dev.data" => "mui_dev.data".to_string(),
+        "/manifest.json" => "manifest.json".to_string(),
+        "/build-id.json" => "build-id.json".to_string(),
+        "/build-gate.js" => "build-gate.js".to_string(),
+        "/app.mui" => "app.mui".to_string(),
+        "/logo.png" | "/favicon.ico" => "logo.png".to_string(),
+        "/sw.js" => "sw.js".to_string(),
+        other if other.starts_with('/') => {
+            let trimmed = other.trim_start_matches('/');
+            if trimmed.is_empty() {
+                return None;
+            }
+            let ext = Path::new(trimmed)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if matches!(
+                ext.as_str(),
+                "mui" | "crm" | "json" | "png" | "jpg" | "jpeg" | "webp" | "gif" | "svg"
+                    | "ttf" | "otf" | "woff" | "woff2" | "js" | "wasm" | "data" | "html"
+            ) {
+                trimmed.to_string()
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    Some(rel)
+}
+
+fn serve_mui_listen(root: &Path, port: u16) -> i32 {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::sync::Arc;
+
+    let listener = match TcpListener::bind(("0.0.0.0", port)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("❌ Could not bind 0.0.0.0:{port}: {e}");
+            return 1;
+        }
+    };
+    let root = Arc::new(root.to_path_buf());
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { continue };
+        let root = Arc::clone(&root);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let n = match stream.read(&mut buf) {
+                Ok(n) if n > 0 => n,
+                _ => return,
+            };
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .unwrap_or("/");
+            let path = path.split('?').next().unwrap_or("/");
+            let rel = match listen_rel_path(path) {
+                Some(r) => r,
+                None => {
+                    let _ = write_listen_response(&mut stream, 404, "text/plain", "no-store", b"");
+                    vlog(&format!("404 {path}"));
+                    return;
+                }
+            };
+            let file = root.join(&rel);
+            // Refuse anything that escapes the stage directory.
+            let Ok(canon_root) = std::fs::canonicalize(root.as_path()) else {
+                let _ = write_listen_response(&mut stream, 404, "text/plain", "no-store", b"");
+                return;
+            };
+            let Ok(canon_file) = std::fs::canonicalize(&file) else {
+                let _ = write_listen_response(&mut stream, 404, "text/plain", "no-store", b"");
+                return;
+            };
+            if !canon_file.starts_with(&canon_root) || !canon_file.is_file() {
+                let _ = write_listen_response(&mut stream, 404, "text/plain", "no-store", b"");
+                return;
+            }
+            let data = match std::fs::read(&canon_file) {
+                Ok(d) => d,
+                Err(_) => {
+                    let _ = write_listen_response(&mut stream, 404, "text/plain", "no-store", b"");
+                    return;
+                }
+            };
+            let ctype = match Path::new(&rel)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+            {
+                "html" => "text/html; charset=utf-8",
+                "js" => "text/javascript; charset=utf-8",
+                "json" => "application/json; charset=utf-8",
+                "wasm" => "application/wasm",
+                "data" => "application/octet-stream",
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "webp" => "image/webp",
+                "gif" => "image/gif",
+                "svg" => "image/svg+xml",
+                "ttf" => "font/ttf",
+                "otf" => "font/otf",
+                "woff" => "font/woff",
+                "woff2" => "font/woff2",
+                "mui" | "crm" => "text/plain; charset=utf-8",
+                _ => "application/octet-stream",
+            };
+            let cache = listen_cache_control(&rel);
+            let _ = write_listen_response(&mut stream, 200, ctype, cache, &data);
+        });
+    }
+    0
+}
+
+/// Versioned heavy assets can live in the browser / SW cache forever; shell
+/// files stay revalidating so listen/rebuild picks up new boot/html/.mui.
+fn listen_cache_control(rel: &str) -> &'static str {
+    let name = Path::new(rel)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(rel);
+    if name == "sw.js"
+        || name == "index.html"
+        || name == "build-id.json"
+        || name == "build-gate.js"
+        || rel == "index.html"
+    {
+        return "no-cache";
+    }
+    match Path::new(rel)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+    {
+        // Versioned boot.js / mui-dev.js stay immutable via ?v=BUILD_ID.
+        "wasm" | "js" | "png" | "jpg" | "jpeg" | "webp" | "gif" | "svg" | "ttf" | "otf"
+        | "woff" | "woff2" | "data" => "public, max-age=31536000, immutable",
+        "mui" | "crm" | "json" | "html" => "no-cache",
+        _ => "no-cache",
+    }
+}
+
+fn write_listen_response(
+    stream: &mut impl std::io::Write,
+    status: u16,
+    content_type: &str,
+    cache_control: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "Error",
+    };
+    write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\n\
+         Content-Type: {content_type}\r\n\
+         Content-Length: {}\r\n\
+         Cache-Control: {cache_control}\r\n\
+         Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n\
+         Connection: close\r\n\
+         \r\n",
+        body.len()
+    )?;
+    stream.write_all(body)
+}
+
 /// Render a `.mui` / `.crm` file by handing it to the `mui-dev` host. Returns
 /// the child's exit code (0 = ok). Prints actionable guidance if the renderer
 /// can't be located or built.
@@ -1033,6 +1975,21 @@ fn is_mocida_rs(dir: &Path) -> bool {
         Ok(s) => s.contains("mocida-sys"),
         Err(_) => false,
     }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &to)?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), to)?;
+        }
+    }
+    Ok(())
 }
 
 /// Strip the Windows `\\?\` UNC prefix that `canonicalize` adds, so paths
